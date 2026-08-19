@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "auto-school tab recorder",
+  "version": "0.1.0",
+  "description": "Records the meeting TAB (isolated video+audio) and ships webm chunks to auto-school",
+  "permissions": ["tabCapture", "offscreen", "scripting"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://teams.microsoft.com/*",
+    "https://teams.cloud.microsoft/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://teams.microsoft.com/*", "https://teams.cloud.microsoft/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

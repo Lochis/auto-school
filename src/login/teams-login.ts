@@ -161,8 +161,9 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
       "--disable-blink-features=AutomationControlled",
       "--window-size=1920,1080", // 1080p capture target
       "--start-maximized",
-      // auto-answer getDisplayMedia WITHOUT the picker (tab/window capture for recording)
-      "--auto-select-desktop-capture-source=Microsoft Teams",
+      // tabCapture recorder extension (isolated tab video+audio; screen capture leaked other windows)
+      `--disable-extensions-except=${resolve("extension")}`,
+      `--load-extension=${resolve("extension")}`,
       "--use-fake-ui-for-media-stream", // auto-grant in-page media permissions
     ],
   });
