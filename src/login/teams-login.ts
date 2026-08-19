@@ -249,20 +249,28 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
 
         // ---- heartbeat: never look "stopped" ----
         iter++;
-        if (iter % 8 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
+        if (iter % 4 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
 
-        // stay signed in? (KMSI) — only the REAL page (No-button visible, Yes enabled)
+        // stay signed in? (KMSI) — real page has an ENABLED Yes (+#idBtn_Back);
+        // processing placeholders have a disabled one. Wait up to 6s for enable.
         if (await visibleText(page, SEL.staySignedInText)) {
-          const noBtn = await visible(page, [SEL.staySignedInNo]);
-          const yesEnabled = await page.locator(SEL.staySignedInYes).first()
-            .isEnabled({ timeout: 1_000 }).catch(() => false);
-          if (noBtn || yesEnabled) {
-            await page.locator(SEL.staySignedInYes).first().click();
+          const yes = page.locator(SEL.staySignedInYes).first();
+          let clicked = false;
+          for (let i = 0; i < 12 && !clicked; i++) {
+            const noBtn = await visible(page, [SEL.staySignedInNo]);
+            const enabled = await yes.isEnabled({ timeout: 500 }).catch(() => false);
+            if (noBtn || enabled) {
+              await yes.click({ timeout: 3_000 }).then(() => (clicked = true)).catch(() => {});
+            } else {
+              await page.waitForTimeout(500);
+            }
+          }
+          if (clicked) {
             console.log("[login] 'stay signed in' -> clicked Yes");
             await page.waitForTimeout(1_500);
             continue;
           }
-          // disabled placeholder on a processing page — just wait for the real one
+          console.log("[login] KMSI text present but Yes not clickable yet — waiting");
         }
 
         // ---- WSO2 MFA picker: "Select a login option" / after cannot-authenticate ----
@@ -284,10 +292,10 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
             const num = matchNum?.match(/\d{2,3}/)?.[0];
             console.log(`[login] MFA challenge detected (${mfaSel ?? mfaTxt})${num ? ` match number: ${num}` : ""}`);
             await notify(
-              `🔐 **2FA requested** for auto-school Teams login\n` +
-              `Approve/enter it (school myLogin MFA or Microsoft Authenticator).\n` +
+              `🔐 **2FA needed — auto-school is signing in to Teams**\n` +
+              `The class-attendance bot needs you to approve this MFA (school myLogin or Microsoft Authenticator) so it can continue.\n` +
               (num ? `**Match number: ${num}**\n` : "") +
-              `Waiting up to ${Math.round(config.mfaWaitMs / 60_000)} min — session expired or first login on this profile.`,
+              `Waiting up to ${Math.round(config.mfaWaitMs / 60_000)} min.`,
             );
           }
           if (Date.now() > mfaDeadline) {
