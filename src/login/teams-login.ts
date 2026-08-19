@@ -61,6 +61,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
   const ctx = await chromium.launchPersistentContext(userDataDir, {
     headless: false, // run in a VM with a desktop session (see README)
     channel: config.browserChannel,
+    chromiumSandbox: true, // else Playwright passes --no-sandbox, which Edge banners as unsupported
     viewport: { width: 1280, height: 800 },
     args: ["--disable-blink-features=AutomationControlled"],
   });
