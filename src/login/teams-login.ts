@@ -33,7 +33,7 @@ export interface LoginResult {
 async function visible(page: Page, selectors: readonly string[]): Promise<string | null> {
   for (const sel of selectors) {
     try {
-      if (await page.locator(sel).first().isVisible({ timeout: 1_500 })) return sel;
+      if (await page.locator(sel).first().isVisible({ timeout: 500 })) return sel;
     } catch {
       /* not present */
     }
@@ -44,7 +44,7 @@ async function visible(page: Page, selectors: readonly string[]): Promise<string
 async function visibleText(page: Page, texts: readonly string[]): Promise<string | null> {
   for (const t of texts) {
     try {
-      if (await page.getByText(t, { exact: false }).first().isVisible({ timeout: 1_500 })) return t;
+      if (await page.getByText(t, { exact: false }).first().isVisible({ timeout: 500 })) return t;
     } catch {
       /* not present */
     }
@@ -59,7 +59,7 @@ async function findActionablePage(ctx: BrowserContext): Promise<Page | null> {
     if (p.isClosed()) continue;
     if (await visible(p, [SEL.email, SEL.password, SEL.centennialUser])) return p;
     for (const sel of SEL.mfa) {
-      try { if (await p.locator(sel).first().isVisible({ timeout: 800 })) return p; } catch {}
+      try { if (await p.locator(sel).first().isVisible({ timeout: 400 })) return p; } catch {}
     }
     if (await visibleText(p, SEL.mfaText)) return p;
     if (await visibleText(p, SEL.cannotAuthenticateText)) return p;
@@ -119,7 +119,11 @@ async function doMicrosoftTotp(page: Page): Promise<boolean> {
   if (!(await input.isVisible({ timeout: 3_000 }).catch(() => false))) {
     input = page.getByPlaceholder("Code").first();
   }
-  if (!(await input.isVisible({ timeout: 3_000 }).catch(() => false))) return false;
+  if (!(await input.isVisible({ timeout: 3_000 }).catch(() => false))) {
+    const t = await page.evaluate(() => document.body?.innerText?.slice(0, 300)).catch(() => "");
+    console.log(`[login] TOTP: code input not found. page says: ${JSON.stringify((t ?? "").replace(/\s+/g, " ").slice(0, 280))}`);
+    return false;
+  }
   const code = generateTotp(config.totpSecret);
   await input.fill(code);
   console.log("[login] TOTP: code entered");
@@ -180,7 +184,8 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     const wasFresh = !!opts.fresh;
     let lastEmailTry = 0;
     let iter = 0;
-    let totpTried = false;
+    let totpTries = 0;
+    let lastTotpTry = 0;
     const mfaDeadline = Date.now() + config.mfaWaitMs;
     const started = Date.now();
 
@@ -303,10 +308,10 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           continue;
         }
 
-        // ---- heartbeat + page-content dump: make every stall self-explanatory ----
+        // ---- heartbeat + page read: always show life; dump page text every 3 iters ----
         iter++;
-        if (iter % 2 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
-        if (iter % 12 === 0) {
+        console.log(`[login] poll#${iter} url: ${url.slice(0, 70)}`);
+        if (iter % 3 === 0) {
           const txt = await page.evaluate(() => document.body?.innerText?.slice(0, 300)).catch(() => "");
           console.log(`[login] page says: ${JSON.stringify((txt ?? "").replace(/\s+/g, " ").slice(0, 280))}`);
         }
@@ -352,11 +357,12 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
         // ---- Microsoft MFA with TOTP: trigger DIRECTLY on the option being visible ----
         // (the "additional sign in methods" chooser lists "Use a verification code"
         //  directly — no "I can't use my app" link, so text-only detection can miss it)
-        if (config.totpSecret && !totpTried && url.includes("login.microsoftonline.com")) {
+        if (config.totpSecret && totpTries < 3 && Date.now() - lastTotpTry > 8_000 && url.includes("login.microsoftonline.com")) {
           const codeOpt = await page.getByText("use a verification code", { exact: false }).first()
             .isVisible({ timeout: 800 }).catch(() => false);
           if (codeOpt) {
-            totpTried = true;
+            totpTries++;
+            lastTotpTry = Date.now();
             console.log("[login] verification-code option visible — attempting automatic TOTP");
             await notify("🔐 MFA needed — auto-school is entering a TOTP code automatically");
             try {
@@ -376,8 +382,8 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
         const mfaTxt = await visibleText(page, SEL.mfaText);
         if (mfaSel || mfaTxt) {
           // (TOTP attempt for chooser pages handled above; this catches push-style MFA)
-          if (config.totpSecret && url.includes("login.microsoftonline.com") && !totpTried) {
-            totpTried = true;
+          if (config.totpSecret && url.includes("login.microsoftonline.com") && totpTries < 3 && Date.now() - lastTotpTry > 8_000) {
+            totpTries++; lastTotpTry = Date.now();
             console.log("[login] MFA detected — attempting automatic TOTP");
             await notify("🔐 MFA needed — auto-school is entering a TOTP code automatically");
             try {
