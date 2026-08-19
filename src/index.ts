@@ -85,6 +85,13 @@ switch (cmd) {
     await r.ctx!.close();
     break;
   }
+  case "transcribe": {
+    const file = process.argv[3];
+    if (!file) { console.log("usage: node src/index.ts transcribe <file.webm|wav|mp4>"); process.exit(1); }
+    const { transcribeCli } = await import("./transcribe/transcribe.ts");
+    await transcribeCli(file);
+    break;
+  }
   default:
     console.log(`usage: node src/index.ts login [--fresh] [--hold]\n       node src/index.ts meetings`);
     process.exit(1);
