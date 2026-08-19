@@ -62,6 +62,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     headless: false, // run in a VM with a desktop session (see README)
     channel: config.browserChannel,
     chromiumSandbox: true, // else Playwright passes --no-sandbox, which Edge banners as unsupported
+    timeout: 30_000, // fail fast (default 180s) — a hang here means attach failed, not slow start
     viewport: { width: 1280, height: 800 },
     args: ["--disable-blink-features=AutomationControlled"],
   });
