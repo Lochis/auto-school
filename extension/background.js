@@ -15,7 +15,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 });
 
 async function start(tabId, port, title) {
-  if (capturing) return;
+  if (capturing) { console.warn("already capturing"); return; }
   capturing = true;
 
   // offscreen document must exist BEFORE the streamId is consumed
@@ -26,13 +26,20 @@ async function start(tabId, port, title) {
         reasons: ["USER_MEDIA"],
         justification: "Record the meeting tab via tabCapture",
       });
+      console.log("auto-school: offscreen doc created");
     }
-  } catch { /* already exists */ }
+  } catch (e) { console.warn("offscreen create:", e); }
 
-  const streamId = await new Promise((res) =>
-    chrome.tabCapture.getMediaStreamId({ target: { tabId } }, (id) => res(id)));
-  if (!streamId) throw new Error("getMediaStreamId returned nothing (tab not capturable?)");
-
-  await chrome.runtime.sendMessage({ type: "capture", streamId, port, title });
-  console.log("auto-school: capture started for tab", tabId);
+  try {
+    const streamId = await new Promise((res) =>
+      chrome.tabCapture.getMediaStreamId({ target: { tabId } }, (id) => res(id)));
+    if (!streamId) throw new Error("getMediaStreamId returned nothing");
+    await chrome.runtime.sendMessage({ type: "capture", streamId, port, title });
+    console.log("auto-school: capture started for tab", tabId);
+  } catch (e) {
+    capturing = false;
+    console.error("capture start failed:", e);
+    // surface to the page so Node can see it
+    chrome.tabs.sendMessage(tabId, { type: "capture-error", error: String(e) }).catch(() => {});
+  }
 }

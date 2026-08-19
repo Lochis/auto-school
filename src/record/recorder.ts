@@ -91,6 +91,10 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
   const port = (server.address() as any).port;
 
   // tell the extension (via page -> content script -> background) to start
+  page.on("console", (m) => {
+    const t = m.text();
+    if (t.includes("auto-school") || t.includes("capture-error")) console.log(`[rec:page] ${t}`);
+  });
   await page.evaluate(
     ({ p, t }) => window.postMessage({ autoschool: { type: "start", port: p, title: t } }, "*"),
     { p: port, t: meetingTitle },
@@ -102,9 +106,21 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
     new Promise<boolean>((res) => setTimeout(() => res(true), 20_000)),
   ]);
   if (timedOut) {
-    await page.evaluate(() => window.postMessage({ autoschool: { type: "stop" } }, "*")).catch(() => {});
-    server.close();
-    throw new Error("extension capture never started — is --load-extension active and the content script injected?");
+    // RETRY: content script may have missed the first message (injected late).
+    // Re-post once more after a beat before giving up.
+    await page.evaluate(
+      ({ p, t }) => window.postMessage({ autoschool: { type: "start", port: p, title: t } }, "*"),
+      { p: port, t: meetingTitle },
+    ).catch(() => {});
+    const second = await Promise.race([
+      firstChunkP.then(() => false),
+      new Promise<boolean>((res) => setTimeout(() => res(true), 8_000)),
+    ]);
+    if (second) {
+      await page.evaluate(() => window.postMessage({ autoschool: { type: "stop" } }, "*")).catch(() => {});
+      server.close();
+      throw new Error("extension capture never started — check [rec:page]/[rec:ext] logs above");
+    }
   }
   console.log(`[rec] ✓ tab capture running${meta ? ` @ ${meta}` : ""} (sink :${port})`);
   await notify(`🔴 Recording (tab-isolated): **${meetingTitle}**${meta ? ` @ ${meta}` : ""}`);
