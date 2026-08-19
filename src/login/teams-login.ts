@@ -256,26 +256,34 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           console.log(`[login] page says: ${JSON.stringify((txt ?? "").replace(/\s+/g, " ").slice(0, 280))}`);
         }
 
-        // stay signed in? (KMSI) — real page has an ENABLED Yes (+#idBtn_Back);
-        // processing placeholders have a disabled one. Wait up to 6s for enable.
+        // stay signed in? (KMSI) — real page: form action="/kmsi", enabled Yes, No btn.
+        // Strategy: tick "don't show again", click Yes; if the click won't land,
+        // submit the form directly (hidden LoginOptions=3 == accepting KMSI).
         if (await visibleText(page, SEL.staySignedInText)) {
-          const yes = page.locator(SEL.staySignedInYes).first();
+          console.log("[login] KMSI page detected");
+          try {
+            await page.locator("#KmsiCheckboxField").first().check({ timeout: 2_000 });
+          } catch { /* optional */ }
           let clicked = false;
-          for (let i = 0; i < 12 && !clicked; i++) {
-            const noBtn = await visible(page, [SEL.staySignedInNo]);
-            const enabled = await yes.isEnabled({ timeout: 500 }).catch(() => false);
-            if (noBtn || enabled) {
-              await yes.click({ timeout: 3_000 }).then(() => (clicked = true)).catch(() => {});
+          const yes = page.locator(SEL.staySignedInYes).first();
+          for (let i = 0; i < 6 && !clicked; i++) {
+            if (await yes.isEnabled({ timeout: 500 }).catch(() => false)) {
+              await yes.click({ timeout: 2_000 }).then(() => (clicked = true)).catch(() => {});
             } else {
               await page.waitForTimeout(500);
             }
           }
-          if (clicked) {
+          if (!clicked) {
+            console.log("[login] KMSI Yes not clickable — submitting form directly");
+            await page.evaluate(() => {
+              const f = document.querySelector('form[action="/kmsi"]');
+              if (f) (f as HTMLFormElement).submit();
+            });
+          } else {
             console.log("[login] 'stay signed in' -> clicked Yes");
-            await page.waitForTimeout(1_500);
-            continue;
           }
-          console.log("[login] KMSI text present but Yes not clickable yet — waiting");
+          await page.waitForTimeout(2_000);
+          continue;
         }
 
         // ---- WSO2 MFA picker: "Select a login option" / after cannot-authenticate ----
@@ -320,6 +328,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     }
   } catch (err) {
     if (urlPoll) clearInterval(urlPoll);
+    console.error("[login] FAILED:", err); // ALWAYS print the failure — never exit silently
     await notify(`❌ Teams login **failed**: \`${String(err).slice(0, 180)}\``);
     await ctx.close().catch(() => {});
     return { ok: false, method: "fresh", detail: String(err) };
