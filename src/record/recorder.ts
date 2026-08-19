@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { Page } from "playwright";
 import { notify } from "../notify.ts";
+import { processSegment, type TimelineEntry } from "../pipeline/segment.ts";
 
 const SEGMENT_MS = 5 * 60_000;
 export const RECORD_DIR = "segments";
@@ -40,8 +41,25 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
 
   const state: RecordingResult = { segments: [], bytes: 0, ms: 0 };
   const files: string[] = [];
+  const timeline: TimelineEntry[] = [];
   let started = false;
+  const inFlight = new Set<Promise<void>>();
   const t0 = Date.now();
+
+  // kick off Gemini video processing for a finalized segment (fire-and-forget,
+  // tracked so stop() can await stragglers)
+  const queueProcessing = (file: string, idx: number) => {
+    const p = processSegment(`${RECORD_DIR}/${file}`, idx, meetingTitle, (e) => timeline.push(e))
+      .then(() => undefined)
+      .catch(async (e) => {
+        console.warn(`[pipe] ! segment ${idx} failed: ${String(e).slice(0, 150)} — retrying once in 20s`);
+        await new Promise((r) => setTimeout(r, 20_000));
+        return processSegment(`${RECORD_DIR}/${file}`, idx, meetingTitle, (e) => timeline.push(e)).then(() => undefined,
+          (e2) => { console.warn(`[pipe] !! segment ${idx} failed twice: ${String(e2).slice(0, 150)}`); });
+      });
+    inFlight.add(p);
+    p.finally(() => inFlight.delete(p));
+  };
 
   await page.exposeFunction("__seg", (idx: number, b64: string, title: string) => {
     if (!files[idx]) {
@@ -49,8 +67,12 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
       state.segments.push(files[idx]);
       console.log(`[rec] segment -> ${files[idx]}`);
       if (files[idx - 1]) {
-        void rebuildSeekPoints(files[idx - 1]).then((ok) =>
-          ok ? console.log(`[rec] seek points rebuilt: ${files[idx - 1]}`) : console.warn(`[rec] ! remux failed: ${files[idx - 1]}`));
+        void rebuildSeekPoints(files[idx - 1]).then((ok) => {
+          if (ok) {
+            console.log(`[rec] seek points rebuilt: ${files[idx - 1]}`);
+            queueProcessing(files[idx - 1], idx - 1); // segment complete → Gemini
+          } else console.warn(`[rec] ! remux failed: ${files[idx - 1]}`);
+        });
       }
     }
     const buf = Buffer.from(b64, "base64");
@@ -159,10 +181,23 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
     }).catch(() => {});
     await new Promise((res) => setTimeout(res, 1_500));
     console.log("[rec] rebuilding seek points (ffmpeg remux)...");
+    const lastIndex = state.segments.length - 1;
     for (const seg of state.segments) {
       if (!(await rebuildSeekPoints(seg))) console.warn(`[rec] ! remux failed: ${seg} (raw copy kept)`);
     }
     console.log("[rec] ✓ all segments finalized with seek index");
+    if (lastIndex >= 0) queueProcessing(state.segments[lastIndex], lastIndex); // tail segment
+    // wait for in-flight Gemini jobs before final report
+    if (inFlight.size) {
+      console.log(`[pipe] waiting for ${inFlight.size} in-flight segment analysis...`);
+      await Promise.allSettled([...inFlight]);
+    }
+    if (timeline.length) {
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync("out/timeline.json", JSON.stringify(timeline.sort((a, b) => a.offsetSec - b.offsetSec), null, 2));
+      console.log(`[pipe] ✓ timeline complete: ${timeline.length} segment(s) → out/timeline.json + timeline.jsonl`);
+      await notify(`🧠 Meeting analysis ready: ${timeline.length} segment(s) processed (out/timeline.json)`);
+    }
     return state;
   };
   (page as any).__recStop = stop;
