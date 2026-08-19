@@ -19,29 +19,15 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
 
   // SPA hash navigation — works on both teams.microsoft.com and teams.cloud.microsoft
   const base = new URL(page.url()).origin;
-  console.log(`[meetings] opening calendar (${base}/#/calendar) ...`);
-  await page.goto(base + "/#/calendar", { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(4_000);
-
-  // hash nav may be ignored by the booted SPA — verify, else CLICK the rail button
-  const calendarMarkers = ["week", "day", "month", "monday", "tuesday", "wednesday"];
-  const looksLikeCalendar = async (): Promise<boolean> => {
-    const txt = (await page.evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "")).toLowerCase();
-    return calendarMarkers.some((mk) => txt.includes(mk));
-  };
-  if (!(await looksLikeCalendar())) {
-    console.log("[meetings] hash nav didn't switch view — clicking Calendar rail button");
-    const cal = page.locator('[data-tid*="calendar"], [aria-label*="Calendar"], [title*="Calendar"]')
-      .filter({ hasText: /^\s*Calendar\s*$/ }).first();
-    if (await cal.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await cal.click();
-      console.log("[meetings] Calendar rail clicked");
-    } else {
-      const byText = page.getByText("Calendar", { exact: true }).first();
-      await byText.click({ timeout: 5_000 });
-      console.log("[meetings] Calendar clicked (text fallback)");
-    }
+  console.log(`[meetings] clicking Calendar rail button ...`);
+  const cal = page.locator('[data-tid*="calendar"], [aria-label*="Calendar"], [title*="Calendar"]')
+    .filter({ hasText: /^\s*Calendar\s*$/ }).first();
+  if (!(await cal.isVisible({ timeout: 5_000 }).catch(() => false))) {
+    await page.getByText("Calendar", { exact: true }).first().click({ timeout: 5_000 });
+  } else {
+    await cal.click();
   }
+  console.log("[meetings] Calendar rail clicked");
   await page.waitForTimeout(8_000); // let the calendar render
 
   await page.screenshot({ path: "out/calendar.png" });
@@ -63,6 +49,26 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   }
   const text = dump.join("\n\n");
   writeFileSync("out/calendar.txt", text);
+
+  // ---- event-element dump from the OWA calendar frame (calibration pass) ----
+  const calFrame = page.frames().find((f) => f.url().includes("outlook.office.com"));
+  if (calFrame) {
+    const evDump = await calFrame.evaluate(() => {
+      const out: string[] = [];
+      // OWA events: role=button with AM/PM-bearing aria-label, plus anything Join-like
+      for (const el of document.querySelectorAll('[role="button"][aria-label], [aria-label*="Join"]')) {
+        const al = el.getAttribute("aria-label") ?? "";
+        const txt = (el as HTMLElement).innerText?.trim().slice(0, 120) ?? "";
+        if (/\d{1,2}:\d{2}\s?(AM|PM)/i.test(al) || /\d{1,2}:\d{2}\s?(AM|PM)/i.test(txt) || /join/i.test(al + txt)) {
+          out.push(`ARIA: ${al.slice(0, 220)} | TEXT: ${txt.replace(/\s+/g, " ")}`);
+        }
+      }
+      return [...new Set(out)];
+    }).catch(() => [] as string[]);
+    writeFileSync("out/calendar-events.txt", evDump.join("\n"));
+    console.log(`[meetings] event-element dump: ${evDump.length} candidates -> out/calendar-events.txt`);
+    for (const e of evDump.slice(0, 10)) console.log(`  · ${e}`);
+  }
 
   // heuristic parse: a line containing a time range, title on the same or next line
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
