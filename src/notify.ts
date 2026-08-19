@@ -1,7 +1,6 @@
 import { writeFileSync } from "node:fs";
 
 /** Discord webhook helpers with optional file attachment (screenshot). */
-import { writeFileSync } from "node:fs";
 
 export async function notify(content: string, screenshot?: Buffer): Promise<void> {
   const url = process.env.DISCORD_WEBHOOK_URL;
