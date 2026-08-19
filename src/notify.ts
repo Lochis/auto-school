@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+
 /** Discord webhook helpers with optional file attachment (screenshot). */
 import { writeFileSync } from "node:fs";
 
