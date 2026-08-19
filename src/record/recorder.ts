@@ -63,6 +63,9 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
           audioBitsPerSecond: 128_000,
         });
         rec.ondataavailable = (e) => {
+          // capture idx NOW — reading it inside r.onload races segment rotation
+          // (final chunks would carry the NEXT segment's idx -> file corruption)
+          const segIdx = (window as any).__rec.idx;
           if (e.data.size) {
             const r = new FileReader();
             // NOTE: data URL MIME contains a comma ("codecs=vp8,opus") — split(",")
@@ -70,7 +73,7 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
             r.onload = () => {
               const s = String(r.result);
               const i = s.indexOf(";base64,");
-              (window as any).__seg((window as any).__rec.idx, i >= 0 ? s.slice(i + 8) : s);
+              (window as any).__seg(segIdx, i >= 0 ? s.slice(i + 8) : s);
             };
             r.readAsDataURL(e.data);
           }
@@ -85,6 +88,7 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
         const r = (window as any).__rec;
         if (r.stopped) return;
         r.cur.onstop = () => {
+          if (r.stopped) return; // shutting down — never start another segment
           r.idx++;
           startSegment();
         };
