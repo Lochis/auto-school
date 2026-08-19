@@ -214,7 +214,7 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
         await notify(`⚠️ Notes finalize failed — raw running summary kept`);
       }
       try {
-        await consolidateSession(meetingTitle, state.segments.map((s) => `${RECORD_DIR}/${s}`));
+        await consolidateSession(meetingTitle, state.segments.map((s) => `${RECORD_DIR}/${s}`), state.ms / 1000);
       } catch (e) {
         console.warn(`[consolidate] ! ${String(e).slice(0, 150)} — segments left in ${RECORD_DIR}/`);
       }

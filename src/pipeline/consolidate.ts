@@ -31,10 +31,13 @@ function human(bytes: number): string {
   return bytes > 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(0)} MB`;
 }
 
-/** Consolidate a session's segments. Returns { mp4, savedBytes } or null on failure. */
+/** Consolidate a session's segments. expectedSec (wall-clock recording length,
+ *  from the recorder) is used for verification — webm segment metadata reports
+ *  bogus durations, so summing ffprobe of sources is unreliable. */
 export async function consolidateSession(
   meetingTitle: string,
   segmentFiles: string[], // paths relative to repo (e.g. segments/xxx.webm)
+  expectedSec?: number,
 ): Promise<{ mp4: string; rawBytes: number; outBytes: number } | null> {
   const existing = segmentFiles.filter((f) => existsSync(f));
   if (!existing.length) return null;
@@ -66,14 +69,16 @@ export async function consolidateSession(
     return null;
   }
 
-  // verify duration before deleting anything
-  const expected = (
-    await Promise.all(existing.map((f) => durationSec(f)))
-  ).reduce((a, b) => a + b, 0);
+  // verify duration before deleting anything — only against wall-clock if given
+  // (webm sources report bad durations; mp4 re-encode is the accurate one)
   const got = await durationSec(mp4);
-  if (Math.abs(got - expected) > 3) {
-    console.warn(`[consolidate] ! duration mismatch (expected ${expected.toFixed(0)}s got ${got.toFixed(0)}s) — raw segments kept`);
+  if (expectedSec && Math.abs(got - expectedSec) > 5) {
+    console.warn(`[consolidate] ! duration mismatch (wall-clock ${expectedSec.toFixed(0)}s vs mp4 ${got.toFixed(0)}s) — raw segments kept`);
     await notify(`⚠️ Consolidation duration mismatch for **${paths.course.name}** — raw segments kept`);
+    return null;
+  }
+  if (got < 10) {
+    console.warn(`[consolidate] ! mp4 suspiciously short (${got.toFixed(0)}s) — raw segments kept`);
     return null;
   }
 
