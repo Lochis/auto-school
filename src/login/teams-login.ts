@@ -68,7 +68,9 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
   page.setDefaultTimeout(15_000);
 
   try {
+    console.log(`[login] navigating to ${TEAMS_URL} ...`);
     await page.goto(TEAMS_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    console.log(`[login] landed on ${page.url()}`);
 
     let password: string | null = config.password || null;
     let emailDone = false;
