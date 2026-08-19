@@ -3,9 +3,10 @@
  * Phase 1 is intentionally diagnostic-first — we dump raw text + screenshot +
  * any join links so selectors can be calibrated against the real DOM.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import type { Page } from "playwright";
 import { parseCalendar, markInProgress, type Meeting } from "./parse.ts";
+import { notify } from "../notify.ts";
 
 export interface Meeting {
   title: string;

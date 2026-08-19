@@ -167,6 +167,12 @@ export async function joinMeeting(
     await notify(`⚠️ Joined **${meeting.title}** but could NOT confirm mic is muted — check immediately!`);
   }
 
-  await notify(`✅ In meeting: ${meeting.title} — muted, recording phase can start`);
+  // 6. success webhook WITH screenshot
+  try {
+    await target.screenshot({ path: "out/joined.png" });
+    await notify(`✅ In meeting: **${meeting.title}** — muted & recording phase can start`, "out/joined.png");
+  } catch (e) {
+    await notify(`✅ In meeting: ${meeting.title} (screenshot failed: ${String(e).slice(0, 80)})`);
+  }
   return target;
 }
