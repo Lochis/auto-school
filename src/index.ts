@@ -15,9 +15,21 @@ switch (cmd) {
     const r = await loginTeams({ keepOpen: true });
     if (!r.ok || !r.page || !r.ctx) process.exit(1);
     const { listMeetings } = await import("./meetings/list.ts");
-    await listMeetings(r.page);
-    console.log("[meetings] browser held open for inspection — Ctrl+C when done");
-    await new Promise(() => {});
+    const meetings = await listMeetings(r.page);
+    const { joinMeeting } = await import("./meetings/join.ts");
+    const live = meetings.filter((m) => m.joinableNow);
+    if (flags.has("--join") && live.length) {
+      console.log(`[auto-school] --join: joining first live meeting (${live[0].title})`);
+      const page = await joinMeeting(r.ctx!, live[0]);
+      if (page) {
+        console.log("[join] in-meeting; holding browser open — Ctrl+C to leave");
+        await new Promise(() => {});
+      }
+    } else if (live.length) {
+      console.log("[meetings] live meeting(s) available — re-run with --join to enter");
+    }
+    await r.ctx!.close();
+    break;
   }
   default:
     console.log(`usage: node src/index.ts login [--fresh] [--hold]\n       node src/index.ts meetings`);
