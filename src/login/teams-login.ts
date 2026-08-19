@@ -219,10 +219,10 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           continue;
         }
 
-        // stay signed in?
-        if (await visibleText(page, ["stay signed in", "keep you signed in"])) {
-          await page.locator(SEL.next).first().click();
-          console.log("[login] 'stay signed in' -> yes (extends session life)");
+        // stay signed in? (KMSI) — click Yes: longer-lived session, fewer MFA prompts
+        if (await visibleText(page, SEL.staySignedInText)) {
+          await page.locator(SEL.staySignedInYes).first().click();
+          console.log("[login] 'stay signed in' -> clicked Yes");
           await page.waitForTimeout(1_500);
           continue;
         }

@@ -7,7 +7,13 @@ export const SEL = {
   email: 'input[type="email"]',
   password: 'input[type="password"]',
   next: "#idSIButton9", // "Next" / "Sign in" / "Yes" (stay signed in)
-  staySignedInNo: "#idBtn_Back", // "No" on the stay-signed-in page
+  // Microsoft "stay signed in?" prompt (KMSI)
+  staySignedInYes: "#idSIButton9", // "Yes"
+  staySignedInText: [
+    "stay signed in",
+    "keep you signed in",
+    "stay signed in to all your apps",
+  ],
   // account picker ("Pick an account") tiles contain the email as text
   accountTile: '[role="option"], [role="button"], [data-test-id]', // fallback: text match on email
 
