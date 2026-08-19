@@ -1,12 +1,13 @@
 /**
- * Cloud transcription via any OpenAI-compatible /audio/transcriptions endpoint
- * (Groq whisper-large-v3-turbo default — free & fast; Zhipu/OpenAI work too).
- * ffmpeg locally flattens to 16k mono wav and chunks to fit API limits.
+ * Transcription via Google Gemini (AI Studio key, generous free tier) —
+ * multimodal generateContent with inline audio/video. Same key/client later
+ * powers the frame-understanding (VLM) pass.
+ * ffmpeg chunks to keep inline payloads under the 20MB limit.
  */
 import { spawn } from "node:child_process";
-import { createReadStream, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { createReadStream, mkdirSync, writeFileSync, unlinkSync, readFile } from "node:fs";
 
-const CHUNK_SEC = 600; // 10 min per request (25MB API limit ≈ 13min @16k mono wav)
+const CHUNK_SEC = 300; // 5min @16k mono wav ≈ 10MB — under 20MB inline limit
 
 export interface TranscriptChunk {
   offsetSec: number;
@@ -35,23 +36,30 @@ async function durationSec(file: string): Promise<number> {
   });
 }
 
-async function transcribeChunk(wav: string): Promise<string> {
-  const base = process.env.ASR_BASE_URL ?? "https://api.groq.com/openai/v1";
-  const key = process.env.ASR_API_KEY;
-  const model = process.env.ASR_MODEL ?? "whisper-large-v3-turbo";
-  if (!key) throw new Error("ASR_API_KEY not set in .env (Groq: console.groq.com — free tier)");
+async function transcribeChunk(mediaPath: string, mime: string): Promise<string> {
+  const key = process.env.GEMINI_API_KEY;
+  const model = process.env.ASR_MODEL ?? "gemini-2.5-flash";
+  if (!key) throw new Error("GEMINI_API_KEY not set in .env (aistudio.google.com/apikey — free)");
 
-  const form = new FormData();
-  form.append("file", new Blob([await (await import("node:fs/promises")).readFile(wav)], { type: "audio/wav" }), "chunk.wav");
-  form.append("model", model);
-  form.append("response_format", "json");
-  const res = await fetch(`${base}/audio/transcriptions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}` },
-    body: form,
-  });
-  if (!res.ok) throw new Error(`ASR ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return ((await res.json()) as any).text ?? "";
+  const data = await readFile(mediaPath);
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: "Transcribe this recording verbatim. Output ONLY the transcript text — no preamble, no timestamps, no speaker labels unless obvious multiple speakers (then 'Speaker A:' prefix)." },
+            { inline_data: { mime_type: mime, data: data.toString("base64") } },
+          ],
+        }],
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const json = (await res.json()) as any;
+  return json?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
 }
 
 /** Transcribe any media file ffmpeg can read. Returns text + per-chunk offsets. */
@@ -67,8 +75,8 @@ export async function transcribeFile(input: string): Promise<Transcript> {
     const wav = `out/transcribe/chunk_${i}.wav`;
     await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(offset), "-t", String(CHUNK_SEC),
       "-i", input, "-vn", "-ac", "1", "-ar", "16000", wav]);
-    console.log(`[asr] chunk ${i + 1}/${nChunks} (${offset}s+) -> ${base()}`);
-    const text = (await transcribeChunk(wav)).trim();
+    console.log(`[asr] chunk ${i + 1}/${nChunks} (${offset}s+) -> Gemini ${process.env.ASR_MODEL ?? "gemini-2.5-flash"}`);
+    const text = (await transcribeChunk(wav, "audio/wav")).trim();
     if (text) chunks.push({ offsetSec: offset, text });
     unlinkSync(wav);
   }
@@ -76,7 +84,7 @@ export async function transcribeFile(input: string): Promise<Transcript> {
 }
 
 function base(): string {
-  return process.env.ASR_BASE_URL?.includes("groq") ? "groq" : process.env.ASR_BASE_URL?.includes("bigmodel") ? "zhipu" : "cloud";
+  return "gemini";
 }
 
 /** CLI entry: node src/index.ts transcribe <file> */
