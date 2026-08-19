@@ -17,7 +17,8 @@ import { resolve } from "node:path";
 import { chromium, type Page, type BrowserContext } from "playwright";
 import { config } from "../config.ts";
 import { notify } from "../notify.ts";
-import { SEL, MFA_NUMBER_SEL } from "./selectors.ts";
+import { SEL, MFA_NUMBER_SEL, MS_MFA } from "./selectors.ts";
+import { generateTotp } from "./totp.ts";
 
 const TEAMS_URL = "https://teams.microsoft.com";
 const POLL_MS = 800;
@@ -83,6 +84,59 @@ async function tryClickAuthenticator(page: Page): Promise<boolean> {
   return false;
 }
 
+/** Microsoft MFA → "can't use app" → "verification code" → TOTP → 30d → Verify.
+ *  login.microsoftonline.com only. Returns true if Verify was clicked. */
+async function doMicrosoftTotp(page: Page): Promise<boolean> {
+  // 1. "I can't use my Microsoft Authenticator app right now"
+  for (const label of MS_MFA.cantUseAuthenticator) {
+    try {
+      const link = page.getByText(label, { exact: false }).first();
+      if (await link.isVisible({ timeout: 800 })) {
+        await link.click();
+        console.log(`[login] TOTP: clicked "${label}"`);
+        await page.waitForTimeout(2_000);
+        break;
+      }
+    } catch { /* try next */ }
+  }
+  // 2. "Use a verification code"
+  let pickedCode = false;
+  for (const label of MS_MFA.useVerificationCode) {
+    try {
+      const opt = page.getByText(label, { exact: false }).first();
+      if (await opt.isVisible({ timeout: 800 })) {
+        await opt.click();
+        console.log(`[login] TOTP: clicked "${label}"`);
+        await page.waitForTimeout(2_000);
+        pickedCode = true;
+        break;
+      }
+    } catch { /* try next */ }
+  }
+  if (!pickedCode) return false;
+  // 3. Enter code (input id, or placeholder "Code")
+  let input = page.locator(MS_MFA.totpInput).first();
+  if (!(await input.isVisible({ timeout: 3_000 }).catch(() => false))) {
+    input = page.getByPlaceholder("Code").first();
+  }
+  if (!(await input.isVisible({ timeout: 3_000 }).catch(() => false))) return false;
+  const code = generateTotp(config.totpSecret);
+  await input.fill(code);
+  console.log("[login] TOTP: code entered");
+  // 4. "Don't ask again for 30 days"
+  try {
+    const cb = page.locator(MS_MFA.dontAsk30d).first();
+    if (await cb.isVisible({ timeout: 1_500 })) {
+      if (!(await cb.isChecked())) await cb.check();
+      console.log("[login] TOTP: 30-day checkbox checked");
+    }
+  } catch { /* optional */ }
+  // 5. Verify
+  await page.locator(MS_MFA.verify).first().click({ timeout: 5_000 });
+  console.log("[login] TOTP: Verify clicked");
+  return true;
+}
+
 export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {}): Promise<LoginResult> {
   const userDataDir = resolve(config.userDataDir);
   if (opts.fresh) {
@@ -126,6 +180,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     const wasFresh = !!opts.fresh;
     let lastEmailTry = 0;
     let iter = 0;
+    let totpTried = false;
     const mfaDeadline = Date.now() + config.mfaWaitMs;
     const started = Date.now();
 
@@ -298,6 +353,22 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
         const mfaSel = await visible(page, SEL.mfa);
         const mfaTxt = await visibleText(page, SEL.mfaText);
         if (mfaSel || mfaTxt) {
+          // Auto-MFA: Microsoft page + TOTP secret configured -> no human needed
+          if (config.totpSecret && url.includes("login.microsoftonline.com") && !totpTried) {
+            totpTried = true;
+            console.log("[login] MFA detected — attempting automatic TOTP");
+            await notify("🔐 MFA needed — auto-school is entering a TOTP code automatically");
+            try {
+              if (await doMicrosoftTotp(page)) {
+                await page.waitForTimeout(2_500);
+                continue;
+              }
+              console.log("[login] TOTP flow incomplete — falling back to manual MFA");
+            } catch (e) {
+              console.log(`[login] TOTP flow failed (${String(e).slice(0, 100)}) — falling back to manual MFA`);
+            }
+            await page.waitForTimeout(1_000);
+          }
           if (!mfaPinged) {
             mfaPinged = true;
             const matchNum = await page.locator(MFA_NUMBER_SEL).first()

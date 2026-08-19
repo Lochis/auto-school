@@ -63,3 +63,18 @@ export const SEL = {
 } as const;
 
 export const MFA_NUMBER_SEL = "#idRichContext_DisplaySign";
+
+/** Microsoft MFA fallback flow (TOTP automation) — login.microsoftonline.com only. */
+export const MS_MFA = {
+  // link on the Authenticator-push page
+  cantUseAuthenticator: [
+    "I can't use my Microsoft Authenticator app right now",
+    "sign in another way",
+  ],
+  // option tile on the credential picker
+  useVerificationCode: ["use a verification code", "verification code"],
+  // "Enter the code" page
+  totpInput: "#idTxtBx_SAOTCC_OTC",
+  dontAsk30d: "#idChkBx_SAOTCC_OTC_OnPromote, input[type='checkbox']",
+  verify: "#idSubmit_SAOTCC_Continue, button:has-text('Verify'), input[value='Verify']",
+} as const;

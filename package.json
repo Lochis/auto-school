@@ -10,6 +10,7 @@
     "install-browser": "npx playwright install chromium"
   },
   "dependencies": {
+    "otpauth": "^9.5.1",
     "playwright": "^1.56.0"
   },
   "devDependencies": {

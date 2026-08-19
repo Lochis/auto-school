@@ -15,4 +15,6 @@ export const config = {
   mfaWaitMs: (Number(process.env.MFA_WAIT_MINUTES ?? 10) || 10) * 60_000,
   /** "" -> bundled Chromium; "msedge" -> Edge channel */
   browserChannel: process.env.BROWSER_CHANNEL || undefined,
+  /** Base32 TOTP secret — enables fully-automatic MFA via "use a verification code" */
+  totpSecret: process.env.TOTP_SECRET || "",
 };
