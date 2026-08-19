@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import type { Page } from "playwright";
 import { notify } from "../notify.ts";
 import { processSegment, type TimelineEntry } from "../pipeline/segment.ts";
+import { foldSegment, finalizeNotes } from "../pipeline/notes.ts";
 
 const SEGMENT_MS = 5 * 60_000;
 export const RECORD_DIR = "segments";
@@ -56,6 +57,14 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
         await new Promise((r) => setTimeout(r, 20_000));
         return processSegment(`${RECORD_DIR}/${file}`, idx, meetingTitle, (e) => timeline.push(e)).then(() => undefined,
           (e2) => { console.warn(`[pipe] !! segment ${idx} failed twice: ${String(e2).slice(0, 150)}`); });
+      })
+      // fold into the running summary after each successful analysis
+      .then(async () => {
+        const e = timeline.find((t) => t.offsetSec === idx * 300);
+        if (e) {
+          try { await foldSegment(meetingTitle, e); }
+          catch (err) { console.warn(`[notes] ! fold failed for segment ${idx}: ${String(err).slice(0, 120)}`); }
+        }
       });
     inFlight.add(p);
     p.finally(() => inFlight.delete(p));
@@ -196,7 +205,13 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
       const { writeFileSync } = await import("node:fs");
       writeFileSync("out/timeline.json", JSON.stringify(timeline.sort((a, b) => a.offsetSec - b.offsetSec), null, 2));
       console.log(`[pipe] ✓ timeline complete: ${timeline.length} segment(s) → out/timeline.json + timeline.jsonl`);
-      await notify(`🧠 Meeting analysis ready: ${timeline.length} segment(s) processed (out/timeline.json)`);
+      // final polish pass on the notes
+      try {
+        await finalizeNotes(meetingTitle, timeline);
+      } catch (e) {
+        console.warn(`[notes] ! finalize failed: ${String(e).slice(0, 150)} — running summary remains at out/notes-*.running.md`);
+        await notify(`⚠️ Notes finalize failed — raw running summary kept (out/notes-*.running.md)`);
+      }
     }
     return state;
   };
