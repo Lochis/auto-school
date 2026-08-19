@@ -6,6 +6,7 @@
  * Teams meeting opens (new tab or in-app) -> pre-join screen: mic/cam OFF ->
  * "Join now" -> wait for "Leave" confirmation.
  */
+import { writeFileSync } from "node:fs";
 import type { BrowserContext, Page } from "playwright";
 import { notify } from "../notify.ts";
 import type { Meeting } from "./parse.ts";
