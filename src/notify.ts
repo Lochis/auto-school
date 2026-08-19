@@ -1,23 +1,18 @@
 /** Discord webhook helpers with optional file attachment (screenshot). */
-import { readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { writeFileSync } from "node:fs";
 
-export async function notify(content: string, screenshotPath?: string): Promise<void> {
+export async function notify(content: string, screenshot?: Buffer): Promise<void> {
   const url = process.env.DISCORD_WEBHOOK_URL;
   if (!url) {
     console.warn(`[notify] (no webhook configured) ${content}`);
     return;
   }
   try {
-    if (screenshotPath) {
-      // multipart upload: file + message json
-      const blob = new Blob([readFileSync(screenshotPath)], { type: "image/png" });
+    if (screenshot?.length) {
+      // multipart upload: raw PNG buffer + message json
       const form = new FormData();
-      form.append("payload_json", JSON.stringify({
-        username: "auto-school",
-        content,
-      }));
-      form.append("files[0]", blob, basename(screenshotPath));
+      form.append("payload_json", JSON.stringify({ username: "auto-school", content }));
+      form.append("files[0]", new Blob([screenshot], { type: "image/png" }), "screenshot.png");
       const res = await fetch(url, { method: "POST", body: form });
       if (!res.ok) console.warn(`[notify] webhook returned ${res.status}`);
       return;

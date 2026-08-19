@@ -167,10 +167,12 @@ export async function joinMeeting(
     await notify(`⚠️ Joined **${meeting.title}** but could NOT confirm mic is muted — check immediately!`);
   }
 
-  // 6. success webhook WITH screenshot
+  // 6. success webhook WITH screenshot (raw buffer — no file round-trip)
   try {
-    await target.screenshot({ path: "out/joined.png" });
-    await notify(`✅ In meeting: **${meeting.title}** — muted & recording phase can start`, "out/joined.png");
+    const shot = await target.screenshot({ type: "png" });
+    writeFileSync("out/joined.png", shot); // local archive
+    console.log(`[join] screenshot: ${shot.length} bytes`);
+    await notify(`✅ In meeting: **${meeting.title}** — muted & recording phase can start`, shot);
   } catch (e) {
     await notify(`✅ In meeting: ${meeting.title} (screenshot failed: ${String(e).slice(0, 80)})`);
   }
