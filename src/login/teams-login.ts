@@ -270,10 +270,44 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           continue;
         }
 
+        // stay signed in? (KMSI) — MUST run before the account picker: the KMSI page
+        // has a [role=button] ("..." link) and the email in the identity banner,
+        // which the picker branch would click forever instead of Yes.
+        if (await visibleText(page, SEL.staySignedInText)) {
+          console.log("[login] KMSI page detected");
+          try {
+            await page.locator("#KmsiCheckboxField").first().check({ timeout: 2_000 });
+          } catch { /* optional */ }
+          let clicked = false;
+          const yes = page.locator(SEL.staySignedInYes).first();
+          for (let i = 0; i < 6 && !clicked; i++) {
+            if (await yes.isEnabled({ timeout: 500 }).catch(() => false)) {
+              await yes.click({ timeout: 2_000 }).then(() => (clicked = true)).catch(() => {});
+            } else {
+              await page.waitForTimeout(500);
+            }
+          }
+          if (!clicked) {
+            console.log("[login] KMSI Yes not clickable — submitting form directly");
+            await page.evaluate(() => {
+              const f = document.querySelector('form[action="/kmsi"]');
+              if (f) (f as HTMLFormElement).submit();
+            });
+          } else {
+            console.log("[login] 'stay signed in' -> clicked Yes");
+          }
+          await page.waitForTimeout(2_000);
+          continue;
+        }
+
         // account picker: click our tile if email is known
-        if (config.email && (await visible(page, [SEL.accountTile])) &&
-            (await page.getByText(config.email).first().isVisible({ timeout: 1_000 }).catch(() => false))) {
+        // (guarded: never on a KMSI page — identity banner also shows the email)
+        if (config.email && !(await visibleText(page, SEL.staySignedInText)) &&
+            (await visible(page, [SEL.accountTile])) &&
+            (await page.getByText(config.email).first().isVisible({ timeout: 1_000 }).catch(() => false)) &&
+            !(await visible(page, [SEL.staySignedInNo]))) {
           await page.getByText(config.email).first().click();
+          console.log("[login] account tile clicked");
           await page.waitForTimeout(2_000);
           continue;
         }
@@ -316,35 +350,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           console.log(`[login] page says: ${JSON.stringify((txt ?? "").replace(/\s+/g, " ").slice(0, 280))}`);
         }
 
-        // stay signed in? (KMSI) — real page: form action="/kmsi", enabled Yes, No btn.
-        // Strategy: tick "don't show again", click Yes; if the click won't land,
-        // submit the form directly (hidden LoginOptions=3 == accepting KMSI).
-        if (await visibleText(page, SEL.staySignedInText)) {
-          console.log("[login] KMSI page detected");
-          try {
-            await page.locator("#KmsiCheckboxField").first().check({ timeout: 2_000 });
-          } catch { /* optional */ }
-          let clicked = false;
-          const yes = page.locator(SEL.staySignedInYes).first();
-          for (let i = 0; i < 6 && !clicked; i++) {
-            if (await yes.isEnabled({ timeout: 500 }).catch(() => false)) {
-              await yes.click({ timeout: 2_000 }).then(() => (clicked = true)).catch(() => {});
-            } else {
-              await page.waitForTimeout(500);
-            }
-          }
-          if (!clicked) {
-            console.log("[login] KMSI Yes not clickable — submitting form directly");
-            await page.evaluate(() => {
-              const f = document.querySelector('form[action="/kmsi"]');
-              if (f) (f as HTMLFormElement).submit();
-            });
-          } else {
-            console.log("[login] 'stay signed in' -> clicked Yes");
-          }
-          await page.waitForTimeout(2_000);
-          continue;
-        }
+        // (KMSI handling moved ABOVE the account picker — see note there)
 
         // ---- WSO2 MFA picker: "Select a login option" / after cannot-authenticate ----
         if (url.includes("authenticationendpoint") || (await visibleText(page, SEL.cannotAuthenticateText))) {
