@@ -156,8 +156,15 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
     channel: config.browserChannel,
     chromiumSandbox: true, // else Playwright passes --no-sandbox, which Edge banners as unsupported
     timeout: 30_000, // fail fast (default 180s) — a hang here means attach failed, not slow start
-    viewport: { width: 1280, height: 800 },
-    args: ["--disable-blink-features=AutomationControlled"],
+    viewport: null, // let the window size rule (recording wants real 1080p, not a clipped viewport)
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--window-size=1920,1080", // 1080p capture target
+      "--start-maximized",
+      // auto-answer getDisplayMedia WITHOUT the picker (tab/window capture for recording)
+      "--auto-select-desktop-capture-source=Microsoft Teams",
+      "--use-fake-ui-for-media-stream", // auto-grant in-page media permissions
+    ],
   });
   let page = ctx.pages()[0] ?? (await ctx.newPage());
   page.setDefaultTimeout(15_000);
