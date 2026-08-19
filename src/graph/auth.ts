@@ -46,6 +46,11 @@ function save(t: TokenCache) {
 
 /** Get a valid access token: cached -> refresh -> device-code interactive. */
 export async function getAccessToken(): Promise<string> {
+  if (!process.env.GRAPH_CLIENT_ID) {
+    throw new Error(
+      "GRAPH_CLIENT_ID is empty — create an app registration (see README 'Graph API setup') and put its Application (client) ID in .env",
+    );
+  }
   let cached: TokenCache | null = null;
   if (existsSync(tokenPath)) {
     try { cached = JSON.parse(readFileSync(tokenPath, "utf8")); } catch { cached = null; }
