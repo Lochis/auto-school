@@ -83,9 +83,13 @@ export async function finalizeNotes(meeting: string, timeline: TimelineEntry[]):
     `## Action Items (only if mentioned)\n`,
   );
 
-  const outPath = path.replace(".running.md", ".notes.md");
+  const paths = sessionPaths(meeting);
+  const outPath = paths.notesMd;
   writeFileSync(outPath, final);
-  console.log(`[notes] ✓ final notes written: ${outPath}`);
-  await notify(`📝 Class notes ready: **${meeting}** (${final.split(/\s+/).length} words)`);
+  // keep the session timeline alongside the notes
+  try { writeFileSync(paths.timelineJson, JSON.stringify(timeline, null, 2)); } catch { /* optional */ }
+  rebuildIndex();
+  console.log(`[notes] ✓ final notes written: ${outPath} (course: ${paths.course.slug})`);
+  await notify(`📝 Class notes ready: **${paths.course.name}** → ${outPath}`);
   return final;
 }
