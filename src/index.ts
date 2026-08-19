@@ -14,6 +14,9 @@ switch (cmd) {
     console.log("[auto-school] listing today's meetings (browser session)");
     const r = await loginTeams({ keepOpen: true });
     if (!r.ok || !r.page || !r.ctx) process.exit(1);
+    // Pre-grant mic/cam so the NATIVE browser permission prompt never blocks the
+    // meeting tab (that prompt is not page DOM — it can't be clicked via selectors)
+    await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
     const { listMeetings } = await import("./meetings/list.ts");
     const meetings = await listMeetings(r.page);
     const { joinMeeting } = await import("./meetings/join.ts");
