@@ -13,6 +13,7 @@ import type { Page } from "playwright";
 import { notify } from "../notify.ts";
 import { processSegment, type TimelineEntry } from "../pipeline/segment.ts";
 import { foldSegment, finalizeNotes } from "../pipeline/notes.ts";
+import { consolidateSession } from "../pipeline/consolidate.ts";
 
 const SEGMENT_MS = 5 * 60_000;
 export const RECORD_DIR = "segments";
@@ -205,12 +206,17 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
       const { writeFileSync } = await import("node:fs");
       writeFileSync("out/timeline.json", JSON.stringify(timeline.sort((a, b) => a.offsetSec - b.offsetSec), null, 2));
       console.log(`[pipe] ✓ timeline complete: ${timeline.length} segment(s) → out/timeline.json + timeline.jsonl`);
-      // final polish pass on the notes
+      // final polish pass on the notes, then consolidate the recording
       try {
         await finalizeNotes(meetingTitle, timeline);
       } catch (e) {
-        console.warn(`[notes] ! finalize failed: ${String(e).slice(0, 150)} — running summary remains at out/notes-*.running.md`);
-        await notify(`⚠️ Notes finalize failed — raw running summary kept (out/notes-*.running.md)`);
+        console.warn(`[notes] ! finalize failed: ${String(e).slice(0, 150)} — running summary remains at notes/**/...running.md`);
+        await notify(`⚠️ Notes finalize failed — raw running summary kept`);
+      }
+      try {
+        await consolidateSession(meetingTitle, state.segments.map((s) => `${RECORD_DIR}/${s}`));
+      } catch (e) {
+        console.warn(`[consolidate] ! ${String(e).slice(0, 150)} — segments left in ${RECORD_DIR}/`);
       }
     }
     return state;
