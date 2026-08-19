@@ -24,11 +24,24 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   await page.waitForTimeout(8_000); // let the SPA render
 
   await page.screenshot({ path: "out/calendar.png" });
-  const text = (await page.evaluate(() => document.body?.innerText ?? "")) ?? "";
+
+  // calendar likely lives in an <iframe> — body.innerText doesn't cross frames.
+  // Dump EVERY frame separately so nothing hides.
+  const dump: string[] = [];
+  const joinUrls: string[] = [];
+  for (const f of page.frames()) {
+    const label = f === page.mainFrame() ? "MAIN" : (f.url().slice(0, 100) || "(no url)");
+    const txt = (await f
+      .evaluate(() => document.body?.innerText ?? "")
+      .catch(() => "")) ?? "";
+    dump.push(`===== FRAME ${label} =====\n${txt}`);
+    const links = await f
+      .$$eval('a[href*="meetup-join"]', (as) => as.map((a) => (a as HTMLAnchorElement).href))
+      .catch(() => [] as string[]);
+    joinUrls.push(...links);
+  }
+  const text = dump.join("\n\n");
   writeFileSync("out/calendar.txt", text);
-  const joinUrls = await page
-    .$$eval('a[href*="meetup-join"]', (as) => as.map((a) => (a as HTMLAnchorElement).href))
-    .catch(() => [] as string[]);
 
   // heuristic parse: a line containing a time range, title on the same or next line
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
