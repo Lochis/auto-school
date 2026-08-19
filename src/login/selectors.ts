@@ -29,8 +29,14 @@ export const SEL = {
     "one-time password",
   ],
 
-  // Teams app shell (login complete)
-  teamsApp: "#app, [data-testid='app'], #element-for-chat-list",
+  // Teams app shell — POST-LOGIN-ONLY markers (never present on the /v2/ pre-login
+  // landing, which also has #app — do NOT add #app here)
+  teamsApp: [
+    '#element-for-chat-list',
+    '[data-tid="chat-list"]',
+    '#chat-list',
+    '[data-tid="app-layout-left-rail"]',
+  ],
 
   // --- Centennial myLogin (WSO2 Identity Server, federated school SSO) ---
   // URL marker: /authenticationendpoint/ (e.g. idp.centennialcollege.ca)

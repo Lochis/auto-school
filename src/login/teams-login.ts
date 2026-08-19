@@ -103,6 +103,8 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     let centennialDone = false;
     let mfaPinged = false;
     let firstTeamsTs: number | undefined; // continuous-presence tracker for success fallback
+    let sawLoginUrl = false; // proof of an actual login flow on this run
+    const wasFresh = !!opts.fresh;
     const mfaDeadline = Date.now() + config.mfaWaitMs;
     const started = Date.now();
 
@@ -115,32 +117,30 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
       }
       const url = page.url();
       if (url !== lastLoggedUrl) { lastLoggedUrl = url; console.log(`[login] url: ${url}`); }
+      if (/login\.microsoftonline\.com|authenticationendpoint|\/commonauth|aka\.ms/.test(url)) sawLoginUrl = true;
 
-      // ---- success: back on Teams app shell ----
+      // ---- success: POST-LOGIN DOM only, and on fresh runs only after a login flow was seen ----
       if (url.startsWith("https://teams.microsoft.com")) {
-        // NOTE: #app matches the PRE-LOGIN landing too — shell alone is not proof.
         const signInUi = await visibleText(page, ["sign in", "get started with teams", "download teams"]);
-        if (!signInUi) {
-          const shell = await visible(page, [SEL.teamsApp]);
-          if (shell) {
-            const method: LoginResult["method"] = passwordDone || centennialDone ? "fresh" : "session";
-            console.log(`[login] ✓ logged in (${method})`);
-            await notify(`✅ Teams login **succeeded** (${method} login)`);
-            if (opts.hold) {
-              console.log("[login] --hold: browser stays open until Ctrl+C");
-              await new Promise(() => {});
-            }
-            await ctx.close();
-            return { ok: true, method, detail: url };
+        const shell = await visible(page, SEL.teamsApp); // specific post-login markers only
+        const sawAuthFlow = sawLoginUrl || passwordDone || centennialDone;
+        if (shell) { // specific post-login DOM matched — that IS proof
+          const method: LoginResult["method"] = passwordDone || centennialDone ? "fresh" : "session";
+          console.log(`[login] ✓ logged in (${method}) — app shell confirmed`);
+          await notify(`✅ Teams login **succeeded** (${method} login)`);
+          if (opts.hold) {
+            console.log("[login] --hold: browser stays open until Ctrl+C");
+            await new Promise(() => {});
           }
+          await ctx.close();
+          return { ok: true, method, detail: url };
         }
-        // fallback: no sign-in UI and staying on teams URL 20s+ continuously = authed app
-        // (fresh profiles sit on /v2/ several seconds BEFORE redirecting to login —
-        //  that redirect must not be mistaken for success)
-        if (!signInUi) {
+        // fallback: authed-session heuristic — only when a login flow happened (fresh)
+        // or the profile pre-existed (session), and page stayed clean 20s+
+        if (!signInUi && (sawAuthFlow || !wasFresh)) {
           firstTeamsTs ??= Date.now();
           if (Date.now() - firstTeamsTs > 20_000) {
-            console.log(`[login] ✓ logged in (app shell not matched; 20s on Teams with no sign-in UI)`);
+            console.log(`[login] ✓ logged in (20s on Teams, no sign-in UI)`);
             await notify(`✅ Teams login **succeeded** (heuristic: 20s on Teams, no sign-in UI)`);
             if (opts.hold) {
               console.log("[login] --hold: browser stays open until Ctrl+C");
@@ -150,8 +150,10 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
             return { ok: true, method: "session", detail: url };
           }
         } else {
-          firstTeamsTs = undefined; // sign-in UI visible — definitely not logged in yet
+          firstTeamsTs = undefined;
         }
+        // fresh profile still sitting on /v2/ before its login redirect: keep waiting,
+        // NEVER declare success here — /v2/ is also the pre-login landing.
       } else {
         firstTeamsTs = undefined;
       }
