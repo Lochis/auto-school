@@ -22,9 +22,9 @@ New Webhook → Copy URL into `.env`.
 ## Test the login flow (the prototype)
 
 ```bash
-bun run login            # normal — reuses profile, usually no MFA after 1st run
-bun run login:fresh      # wipe profile, forces full email+password+MFA
-bun run src/index.ts login --hold   # keep browser open after success to inspect
+npm run login            # normal — reuses profile, usually no MFA after 1st run
+npm run login:fresh      # wipe profile, forces full email+password+MFA
+node src/index.ts login --hold   # keep browser open after success to inspect
 ```
 
 What happens:

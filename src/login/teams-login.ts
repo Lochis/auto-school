@@ -15,9 +15,9 @@
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium, type Page } from "playwright";
-import { config } from "../config";
-import { notify } from "../notify";
-import { SEL, MFA_NUMBER_SEL } from "./selectors";
+import { config } from "../config.ts";
+import { notify } from "../notify.ts";
+import { SEL, MFA_NUMBER_SEL } from "./selectors.ts";
 
 const TEAMS_URL = "https://teams.microsoft.com";
 const POLL_MS = 800;

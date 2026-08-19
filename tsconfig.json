@@ -6,6 +6,7 @@
     "types": ["bun"],
     "strict": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "forceConsistentCasingInFileNames": true
   },

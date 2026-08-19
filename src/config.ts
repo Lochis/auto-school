@@ -1,6 +1,8 @@
-/** Env config (Bun auto-loads .env). */
+/** Env config. Node has no auto-.env; Bun users get it free but we run under Node on Windows. */
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+try { process.loadEnvFile(); } catch { /* no .env — env vars may come from elsewhere */ }
 
 export const config = {
   email: process.env.TEAMS_EMAIL ?? "",

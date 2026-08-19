@@ -5,9 +5,9 @@
   "module": true,
   "type": "module",
   "scripts": {
-    "login": "bun run src/index.ts login",
-    "login:fresh": "bun run src/index.ts login --fresh",
-    "install-browser": "playwright install chromium"
+    "login": "node src/index.ts login",
+    "login:fresh": "node src/index.ts login --fresh",
+    "install-browser": "npx playwright install chromium"
   },
   "dependencies": {
     "playwright": "^1.56.0"

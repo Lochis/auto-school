@@ -1,4 +1,4 @@
-import { loginTeams } from "./login/teams-login";
+import { loginTeams } from "./login/teams-login.ts";
 
 const cmd = process.argv[2] ?? "login";
 const flags = new Set(process.argv.slice(3));
@@ -11,6 +11,6 @@ switch (cmd) {
       : process.exit(1);
     break;
   default:
-    console.log(`usage: bun run src/index.ts login [--fresh] [--hold]`);
+    console.log(`usage: node src/index.ts login [--fresh] [--hold]`);
     process.exit(1);
 }
