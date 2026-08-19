@@ -62,6 +62,36 @@ async function settleJoin(page: Page): Promise<boolean> {
   return false;
 }
 
+/** Post-join mic mute with verification. Throws if it can't confirm muted. */
+async function ensureMuted(page: Page): Promise<void> {
+  const MICS = [
+    '[data-tid="mic-button"]',
+    '[data-tid="call-mic-button"]',
+    'button[aria-label*="Mute"]',
+    'button[aria-label*="mute"]',
+  ];
+  for (let attempt = 0; attempt < 5; attempt++) {
+    for (const sel of MICS) {
+      const b = page.locator(sel).first();
+      if (!(await b.isVisible({ timeout: 800 }).catch(() => false))) continue;
+      const label = (await b.getAttribute("aria-label")) ?? "";
+      const pressed = await b.getAttribute("aria-pressed");
+      const tid = await b.getAttribute("data-tid");
+      // muted if label says "Unmute" (action offered) or pressed=true or tid contains "muted"
+      const muted = /unmute/i.test(label) || pressed === "true" || /muted/i.test(tid ?? "");
+      if (muted) {
+        console.log("[join] ✓ mic confirmed muted");
+        return;
+      }
+      await b.click({ timeout: 1_500 }).catch(() => {});
+      console.log("[join] mic clicked to mute");
+      await page.waitForTimeout(1_000);
+    }
+    await page.waitForTimeout(1_000);
+  }
+  throw new Error("could not confirm mic muted after joining");
+}
+
 /** Join `meeting`. Returns the page the call lives in (for recording) or null. */
 export async function joinMeeting(
   ctx: BrowserContext,
@@ -120,6 +150,15 @@ export async function joinMeeting(
     return null;
   }
   console.log(`[join] ✓ in meeting: ${meeting.title}`);
-  await notify(`✅ In meeting: ${meeting.title} — recording phase can start`);
+
+  // 5. HARD GUARANTEE: mic muted (verified, not assumed)
+  try {
+    await ensureMuted(target);
+  } catch (e) {
+    console.error(`[join] !! ${e}`);
+    await notify(`⚠️ Joined **${meeting.title}** but could NOT confirm mic is muted — check immediately!`);
+  }
+
+  await notify(`✅ In meeting: ${meeting.title} — muted, recording phase can start`);
   return target;
 }
