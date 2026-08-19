@@ -6,13 +6,16 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { notify } from "../notify.ts";
 import type { TimelineEntry } from "./segment.ts";
+import { sessionPaths, rebuildIndex } from "./courses.ts";
+import { textCall } from "./llm.ts";
 
 function statePath(meeting: string) {
   mkdirSync("out", { recursive: true });
   return `out/notes-${meeting.replace(/[^\w -]/g, "").slice(0, 40).trim().replace(/ /g, "_")}.running.md`;
 }
 
-async function gemini(prompt: string): Promise<string> {
+async function gemini(prompt: string): Promise<string> { return textCall(prompt); }
+async function _unused_gemini(prompt: string): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
   const model = process.env.ASR_MODEL ?? "gemini-3.6-flash";
   if (!key) throw new Error("GEMINI_API_KEY not set");
@@ -34,19 +37,24 @@ async function gemini(prompt: string): Promise<string> {
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
-/** Fold one segment's transcript+visuals into the running summary (called per segment). */
+/** Fold entries (one call per batch — cheap on GLM). */
 export async function foldSegment(meeting: string, entry: TimelineEntry): Promise<string> {
+  return foldSegments(meeting, [entry]);
+}
+
+export async function foldSegments(meeting: string, entries: TimelineEntry[]): Promise<string> {
   const path = statePath(meeting);
   const existing = existsSync(path) ? readFileSync(path, "utf8") : "(nothing yet — this is the first segment)";
 
-  const newMaterial =
+  const newMaterial = entries.map((entry) =>
     `## Segment @ ${fmt(entry.offsetSec)}\n` +
     (entry.transcript ? `Speech:\n${entry.transcript}\n` : `(no speech)\n`) +
     (entry.visualNotes.length
       ? `On screen:\n${entry.visualNotes.map((v) => `- [${v.t}] ${v.note}`).join("\n")}`
-      : "(no visual notes)");
+      : "(no visual notes)")
+  ).join("\n\n");
 
-  const summary = await gemini(
+  const summary = await textCall(
     `You are building running notes for the class meeting "${meeting}".\n\n` +
     `CURRENT RUNNING SUMMARY (from earlier in the meeting):\n${existing}\n\n` +
     `NEW SEGMENT MATERIAL (starts at ${fmt(entry.offsetSec)} into the meeting):\n${newMaterial}\n\n` +
@@ -71,7 +79,7 @@ export async function finalizeNotes(meeting: string, timeline: TimelineEntry[]):
       `| visuals: ${e.visualNotes.map((v) => v.note.slice(0, 100)).join(" / ")}`)
     .join("\n");
 
-  const final = await gemini(
+  const final = await textCall(
     `Produce final study notes for the class "${meeting}".\n\n` +
     `RUNNING SUMMARY (built incrementally during the meeting):\n${running}\n\n` +
     `RAW TIMELINE (for verification and detail):\n${timelineText}\n\n` +

@@ -11,8 +11,8 @@ import { mkdirSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { Page } from "playwright";
 import { notify } from "../notify.ts";
-import { processSegment, type TimelineEntry } from "../pipeline/segment.ts";
-import { foldSegment, finalizeNotes } from "../pipeline/notes.ts";
+import { processSegments, type TimelineEntry } from "../pipeline/segment.ts";
+import { foldSegments, finalizeNotes } from "../pipeline/notes.ts";
 import { consolidateSession } from "../pipeline/consolidate.ts";
 
 const SEGMENT_MS = 5 * 60_000;
@@ -50,25 +50,44 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
 
   // kick off Gemini video processing for a finalized segment (fire-and-forget,
   // tracked so stop() can await stragglers)
-  const queueProcessing = (file: string, idx: number) => {
-    const p = processSegment(`${RECORD_DIR}/${file}`, idx, meetingTitle, (e) => timeline.push(e))
-      .then(() => undefined)
-      .catch(async (e) => {
-        console.warn(`[pipe] ! segment ${idx} failed: ${String(e).slice(0, 150)} — retrying once in 20s`);
-        await new Promise((r) => setTimeout(r, 20_000));
-        return processSegment(`${RECORD_DIR}/${file}`, idx, meetingTitle, (e) => timeline.push(e)).then(() => undefined,
-          (e2) => { console.warn(`[pipe] !! segment ${idx} failed twice: ${String(e2).slice(0, 150)}`); });
-      })
-      // fold into the running summary after each successful analysis
-      .then(async () => {
-        const e = timeline.find((t) => t.offsetSec === idx * 300);
-        if (e) {
-          try { await foldSegment(meetingTitle, e); }
-          catch (err) { console.warn(`[notes] ! fold failed for segment ${idx}: ${String(err).slice(0, 120)}`); }
+  // BATCHED Gemini pipeline: segments queue up, flush when the batch is full
+  // or at stop. Token math (measured): 5-min segment ≈ 25k input tokens, peak
+  // allowance 250k — so 4 segments/request uses <half the budget while cutting
+  // request count 4x. Quota is per-DAY requests, not tokens.
+  const BATCH = Math.min(6, Math.max(1, Number(process.env.BATCH_SEGMENTS ?? 4) || 4));
+  const pending: { file: string; idx: number }[] = [];
+  const timeline: TimelineEntry[] = [];
+  const inFlight = new Set<Promise<void>>();
+  let started = false;
+  const t0 = Date.now();
+
+  const flush = (): void => {
+    if (!pending.length) return;
+    const batch = pending.splice(0, pending.length);
+    const p = (async () => {
+      const run = () => processSegments(batch, meetingTitle, (e) => timeline.push(e));
+      let entries: TimelineEntry[];
+      try {
+        entries = await run();
+      } catch (e) {
+        console.warn(`[pipe] ! batch [${batch.map((b) => b.idx).join(",")}] failed: ${String(e).slice(0, 150)} — retry in 30s`);
+        await new Promise((r) => setTimeout(r, 30_000));
+        try { entries = await run(); }
+        catch (e2) {
+          console.warn(`[pipe] !! batch failed twice — segments skipped this pass`);
+          return;
         }
-      });
+      }
+      try { await foldSegments(meetingTitle, entries); }
+      catch (err) { console.warn(`[notes] ! fold failed: ${String(err).slice(0, 120)}`); }
+    })();
     inFlight.add(p);
     p.finally(() => inFlight.delete(p));
+  };
+
+  const queueProcessing = (file: string, idx: number): void => {
+    pending.push({ file: `${RECORD_DIR}/${file}`, idx });
+    if (pending.length >= BATCH) flush();
   };
 
   await page.exposeFunction("__seg", (idx: number, b64: string, title: string) => {
@@ -197,6 +216,7 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
     }
     console.log("[rec] ✓ all segments finalized with seek index");
     if (lastIndex >= 0) queueProcessing(state.segments[lastIndex], lastIndex); // tail segment
+    flush(); // send any partial batch immediately
     // wait for in-flight Gemini jobs before final report
     if (inFlight.size) {
       console.log(`[pipe] waiting for ${inFlight.size} in-flight segment analysis...`);

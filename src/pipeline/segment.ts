@@ -1,12 +1,12 @@
 /**
- * Per-segment processing: after a 5-min webm finalizes (seek points rebuilt),
- * compact it (360p @2fps, small audio) and send to Gemini as VIDEO — one call
- * returns transcript + visual scene notes. Results append to out/timeline.jsonl
- * with meeting-relative offsets. Runs concurrently with ongoing recording.
+ * Batched per-segment analysis: several finalized segments go to Gemini as ONE
+ * request (multiple inline videos) — cuts quota usage ~2x. Each batch returns
+ * one timeline entry per segment. Batches append to out/timeline.jsonl.
  */
 import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdirSync, existsSync, unlinkSync } from "node:fs";
+import { mkdirSync, appendFileSync, unlinkSync } from "node:fs";
 import { readFile as rf } from "node:fs/promises";
+import { geminiCall } from "./llm.ts";
 
 export interface TimelineEntry {
   meeting: string;
@@ -24,84 +24,68 @@ function run(cmd: string, args: string[]): Promise<void> {
   });
 }
 
-/** Compact a segment for upload: 360p, 2fps, tiny audio → ~8MB per 5min. */
 async function compact(input: string, output: string): Promise<void> {
   await run("ffmpeg", ["-y", "-loglevel", "error", "-i", input,
     "-vf", "scale=640:-2,fps=2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
     "-c:a", "aac", "-b:a", "48k", output]);
 }
 
-async function geminiVideo(media: Buffer, mime: string, prompt: string): Promise<string> {
-  const key = process.env.GEMINI_API_KEY;
-  const model = process.env.ASR_MODEL ?? "gemini-3.6-flash";
-  if (!key) throw new Error("GEMINI_API_KEY not set");
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: media.toString("base64") } }] }],
-        generationConfig: { responseMimeType: "application/json" },
-      }),
-    },
-  );
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as any;
-  return json?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
-}
-
 const SEG_SEC = 300;
+const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
-/** Process one finalized segment (called after seek-point remux). Fire-and-forget safe. */
-export async function processSegment(
-  file: string,
-  segIdx: number,
+/** Analyze a batch of finalized segments in ONE Gemini request. */
+export async function processSegments(
+  items: { file: string; idx: number }[],
   meetingTitle: string,
   onDone?: (e: TimelineEntry) => void,
-): Promise<TimelineEntry> {
-  mkdirSync("out", { recursive: true });
-  const compactPath = `out/transcribe/seg_${String(segIdx).padStart(3, "0")}_compact.mp4`;
-  const offsetSec = segIdx * SEG_SEC;
-  const mmss = `${Math.floor(offsetSec / 60)}:${String(offsetSec % 60).padStart(2, "0")}`;
+): Promise<TimelineEntry[]> {
+  mkdirSync("out/transcribe", { recursive: true });
+  const parts: any[] = [];
+  const tmps: string[] = [];
 
-  console.log(`[pipe] segment ${segIdx}: compacting for Gemini...`);
-  await compact(`${file}`, compactPath);
-  const media = await rf(compactPath);
-  console.log(`[pipe] segment ${segIdx}: ${mmss}+ → Gemini as video (${(media.length / 1e6).toFixed(1)} MB)`);
+  for (const it of items) {
+    const tmp = `out/transcribe/seg_${String(it.idx).padStart(3, "0")}_compact.mp4`;
+    await compact(it.file, tmp);
+    const media = await rf(tmp);
+    tmps.push(tmp);
+    parts.push({ text: `Clip ${it.idx} (starts at ${fmt(it.idx * SEG_SEC)} into the meeting):` });
+    parts.push({ inline_data: { mime_type: "video/mp4", data: media.toString("base64") } });
+  }
 
-  const prompt =
-    `This is a 5-minute clip of a recorded online class. The clip starts at ${mmss} into the meeting. ` +
-    `Analyze BOTH audio and visuals. Return ONLY JSON: ` +
-    `{"transcript": "verbatim speech transcript; empty string if silence", ` +
-    `"visualNotes": [{"t": "m:ss (time within this clip)", "note": "what is shown on screen — slides, code, diagrams, whiteboard, shared content; be specific about titles/numbers/visible text"}]}. ` +
-    `visualNotes covers scene changes — every distinct screen state gets one entry.`;
+  console.log(`[pipe] batch of ${items.length} segment(s) [${items.map((i) => i.idx).join(",")}] → Gemini`);
+  parts.unshift({
+    text:
+      `These are sequential 5-minute clips of the recorded class "${meetingTitle}". ` +
+      `Analyze BOTH audio and visuals of each clip. Return ONLY a JSON array, one object per clip in order: ` +
+      `[{"idx": <clip number>, "transcript": "verbatim speech; empty string if silence", ` +
+      `"visualNotes": [{"t": "m:ss within clip", "note": "what is on screen — slides, code, diagrams; be specific"}]}]. ` +
+      `Every distinct screen state gets a visual note.`,
+  });
 
-  let parsed: { transcript?: string; visualNotes?: { t: string; note: string }[] };
+  const raw = await geminiCall(parts, { json: true });
+  let parsed: any[];
   try {
-    const raw = await geminiVideo(media, "video/mp4", prompt);
-    parsed = JSON.parse(raw);
+    const m = raw.match(/\[[\s\S]*\]/); // tolerate prose wrappers
+    parsed = JSON.parse(m ? m[0] : raw);
+  } catch {
+    throw new Error(`unparseable batch response: ${raw.slice(0, 120)}`);
   } finally {
-    try { unlinkSync(compactPath); } catch { /* already gone */ }
+    for (const t of tmps) { try { unlinkSync(t); } catch { /* gone */ } }
   }
 
-  const entry: TimelineEntry = {
-    meeting: meetingTitle,
-    offsetSec,
-    file,
-    transcript: (parsed.transcript ?? "").trim(),
-    visualNotes: Array.isArray(parsed.visualNotes) ? parsed.visualNotes : [],
-  };
-
-  // append to timeline (one JSON per line)
-  const line = JSON.stringify(entry) + "\n";
-  const { appendFileSync } = await import("node:fs");
-  appendFileSync("out/timeline.jsonl", line);
-
-  console.log(`[pipe] ✓ segment ${segIdx} done — transcript ${entry.transcript.split(/\s+/).length} words, ${entry.visualNotes.length} visual notes → out/timeline.jsonl`);
-  if (entry.visualNotes.length) {
-    for (const v of entry.visualNotes.slice(0, 3)) console.log(`        [${v.t}] ${v.note.slice(0, 90)}`);
-  }
-  onDone?.(entry);
-  return entry;
+  const entries: TimelineEntry[] = items.map((it) => {
+    const p = parsed.find((x: any) => x.idx === it.idx) ?? {};
+    const e: TimelineEntry = {
+      meeting: meetingTitle,
+      offsetSec: it.idx * SEG_SEC,
+      file: it.file.split("/").pop() ?? it.file,
+      transcript: (p.transcript ?? "").trim(),
+      visualNotes: Array.isArray(p.visualNotes) ? p.visualNotes : [],
+    };
+    appendFileSync("out/timeline.jsonl", JSON.stringify(e) + "\n");
+    console.log(`[pipe] ✓ segment ${it.idx} analyzed — ${e.transcript.split(/\s+/).length} words, ${e.visualNotes.length} visual notes`);
+    return e;
+  });
+  entries.forEach((e) => onDone?.(e));
+  return entries;
 }
