@@ -21,7 +21,28 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   const base = new URL(page.url()).origin;
   console.log(`[meetings] opening calendar (${base}/#/calendar) ...`);
   await page.goto(base + "/#/calendar", { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(8_000); // let the SPA render
+  await page.waitForTimeout(4_000);
+
+  // hash nav may be ignored by the booted SPA — verify, else CLICK the rail button
+  const calendarMarkers = ["week", "day", "month", "monday", "tuesday", "wednesday"];
+  const looksLikeCalendar = async (): Promise<boolean> => {
+    const txt = (await page.evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "")).toLowerCase();
+    return calendarMarkers.some((mk) => txt.includes(mk));
+  };
+  if (!(await looksLikeCalendar())) {
+    console.log("[meetings] hash nav didn't switch view — clicking Calendar rail button");
+    const cal = page.locator('[data-tid*="calendar"], [aria-label*="Calendar"], [title*="Calendar"]')
+      .filter({ hasText: /^\s*Calendar\s*$/ }).first();
+    if (await cal.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await cal.click();
+      console.log("[meetings] Calendar rail clicked");
+    } else {
+      const byText = page.getByText("Calendar", { exact: true }).first();
+      await byText.click({ timeout: 5_000 });
+      console.log("[meetings] Calendar clicked (text fallback)");
+    }
+  }
+  await page.waitForTimeout(8_000); // let the calendar render
 
   await page.screenshot({ path: "out/calendar.png" });
 
