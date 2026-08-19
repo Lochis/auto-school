@@ -1,23 +1,19 @@
 /**
- * Tab-isolated recorder (tabCapture extension edition).
+ * Tab-isolated recorder — in-page getDisplayMedia with preferCurrentTab.
  *
- * getDisplayMedia auto-select captured the SCREEN (osu leaked in) and window
- * sources get no audio — so instead: an unpacked extension uses chrome.tabCapture
- * to record the meeting TAB (video+audio, perfectly isolated), its offscreen
- * document runs MediaRecorder in rolling 5-min segments, and chunks are POSTed
- * to this module's localhost sink. ffmpeg rebuilds seek points per segment.
+ * Why: tabCapture extension hit MV3 user-invocation walls; plain getDisplayMedia
+ * grabbed the whole screen (osu leaked). preferCurrentTab + displaySurface:"browser"
+ * constrains the source to THE CURRENT TAB ONLY — video + tab audio, picker-free
+ * under our automation launch flags. All recorder fixes retained: idx captured at
+ * dataavailable time, rotation-stop guard, lazy segment naming, ffmpeg seek remux.
  */
 import { mkdirSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { createServer, type Server } from "node:http";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { Page } from "playwright";
 import { notify } from "../notify.ts";
 
 const SEGMENT_MS = 5 * 60_000;
 export const RECORD_DIR = "segments";
-export const EXTENSION_DIR = resolve("extension");
 
 export interface RecordingResult {
   segments: string[];
@@ -25,7 +21,6 @@ export interface RecordingResult {
   ms: number;
 }
 
-/** MediaRecorder webm lacks Cues — remux with -c copy to rebuild (fast, lossless). */
 async function rebuildSeekPoints(file: string): Promise<boolean> {
   const tmp = file.replace(/\.webm$/, ".cued.webm");
   const ok = await new Promise<boolean>((res) => {
@@ -45,91 +40,124 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
 
   const state: RecordingResult = { segments: [], bytes: 0, ms: 0 };
   const files: string[] = [];
-  let meta = "";
-  let firstChunk: (() => void) | null = null;
-  const firstChunkP = new Promise<void>((res) => (firstChunk = res));
+  let started = false;
   const t0 = Date.now();
 
-  const fileFor = (idx: number, title: string) =>
-    `${title.replace(/[^\w -]/g, "").slice(0, 40).trim().replace(/ /g, "_") || "meeting"}__${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}__${String(idx).padStart(3, "0")}.webm`;
-
-  const server: Server = createServer(async (req, res) => {
-    res.writeHead(204);
-    if (req.method === "POST" && req.url === "/chunk") {
-      try {
-        const { idx, b64, title } = JSON.parse((await readFile(req)).toString());
-        if (!files[idx]) {
-          files[idx] = fileFor(idx, title ?? meetingTitle);
-          state.segments.push(files[idx]);
-          console.log(`[rec] segment -> ${files[idx]}`);
-          if (files[idx - 1]) {
-            void rebuildSeekPoints(files[idx - 1]).then((ok) =>
-              ok ? console.log(`[rec] seek points rebuilt: ${files[idx - 1]}`) : console.warn(`[rec] ! remux failed: ${files[idx - 1]}`));
-          }
-        }
-        const buf = Buffer.from(b64, "base64");
-        if (buf.length) {
-          writeFileSync(`${RECORD_DIR}/${files[idx]}`, buf, { flag: "a" });
-          state.bytes += buf.length;
-          firstChunk?.();
-          firstChunk = null;
-        }
-      } catch (e) {
-        console.warn(`[rec] chunk parse failed: ${String(e).slice(0, 100)}`);
+  await page.exposeFunction("__seg", (idx: number, b64: string, title: string) => {
+    if (!files[idx]) {
+      files[idx] = `${(title ?? meetingTitle).replace(/[^\w -]/g, "").slice(0, 40).trim().replace(/ /g, "_") || "meeting"}__${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}__${String(idx).padStart(3, "0")}.webm`;
+      state.segments.push(files[idx]);
+      console.log(`[rec] segment -> ${files[idx]}`);
+      if (files[idx - 1]) {
+        void rebuildSeekPoints(files[idx - 1]).then((ok) =>
+          ok ? console.log(`[rec] seek points rebuilt: ${files[idx - 1]}`) : console.warn(`[rec] ! remux failed: ${files[idx - 1]}`));
       }
-    } else if (req.method === "POST" && req.url === "/log") {
-      const msg = (await readFile(req)).toString();
-      if (msg.startsWith("META")) {
-        meta = msg.slice(5);
-        console.log(`[rec] capture settings: ${meta}`);
-        firstChunk?.();
-        firstChunk = null;
-      } else console.log(`[rec:ext] ${msg}`);
+    }
+    const buf = Buffer.from(b64, "base64");
+    if (buf.length) {
+      writeFileSync(`${RECORD_DIR}/${files[idx]}`, buf, { flag: "a" });
+      state.bytes += buf.length;
     }
   });
-  await new Promise<void>((res) => server.listen(0, "127.0.0.1", res));
-  const port = (server.address() as any).port;
 
-  // tell the extension (via page -> content script -> background) to start
-  page.on("console", (m) => {
-    const t = m.text();
-    if (t.includes("auto-school") || t.includes("capture-error")) console.log(`[rec:page] ${t}`);
-  });
-  await page.evaluate(
-    ({ p, t }) => window.postMessage({ autoschool: { type: "start", port: p, title: t } }, "*"),
-    { p: port, t: meetingTitle },
-  );
+  await page.evaluate((segMs: number) => {
+    (window as any).__rec = { idx: 0, stopped: false };
+    (async () => {
+      // CURRENT-TAB-ONLY capture: preferCurrentTab + browser surface. Audio: tab audio.
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          displaySurface: "browser",        // tabs only — screens/windows excluded
+          selfBrowserSurface: "include",    // allow capturing our own tab (required)
+          monitorTypeSurfaces: "exclude",   // never offer the monitor
+          surfaceSwitching: "exclude",
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 },
+        } as MediaTrackConstraints,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        } as MediaTrackConstraints,
+        preferCurrentTab: true,            // self-capture: the ONLY choice is this tab
+      });
+      (window as any).__recStream = stream;
+      const vt = stream.getVideoTracks()[0];
+      const st = vt?.getSettings?.() ?? {};
+      console.log(`[auto-school] capture surface=${st.displaySurface} ${st.width}x${st.height} ${st.frameRate}fps audio=${stream.getAudioTracks().length}`);
+      vt.addEventListener("ended", () => { (window as any).__rec && ((window as any).__rec.stopped = true); });
 
-  // wait for capture to actually begin (meta or first chunk) — 20s
-  const timedOut = await Promise.race([
-    firstChunkP.then(() => false),
-    new Promise<boolean>((res) => setTimeout(() => res(true), 20_000)),
-  ]);
-  if (timedOut) {
-    // RETRY: content script may have missed the first message (injected late).
-    // Re-post once more after a beat before giving up.
-    await page.evaluate(
-      ({ p, t }) => window.postMessage({ autoschool: { type: "start", port: p, title: t } }, "*"),
-      { p: port, t: meetingTitle },
-    ).catch(() => {});
-    const second = await Promise.race([
-      firstChunkP.then(() => false),
-      new Promise<boolean>((res) => setTimeout(() => res(true), 8_000)),
-    ]);
-    if (second) {
-      await page.evaluate(() => window.postMessage({ autoschool: { type: "stop" } }, "*")).catch(() => {});
-      server.close();
-      throw new Error("extension capture never started — check [rec:page]/[rec:ext] logs above");
+      const startSegment = () => {
+        const rec = new MediaRecorder(stream, {
+          mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+            ? "video/webm;codecs=vp9,opus"
+            : "video/webm;codecs=vp8,opus",
+          videoBitsPerSecond: 4_000_000,
+          audioBitsPerSecond: 128_000,
+        });
+        rec.ondataavailable = (e) => {
+          // capture idx NOW — reading it in onload races rotation
+          const segIdx = (window as any).__rec.idx;
+          if (!e.data.size) return;
+          const r = new FileReader();
+          // data-URL MIME contains commas ("codecs=vp8,opus") — slice from ;base64,
+          r.onload = () => {
+            const s = String(r.result);
+            const i = s.indexOf(";base64,");
+            (window as any).__seg(segIdx, i >= 0 ? s.slice(i + 8) : s, (window as any).__rec.title);
+          };
+          r.readAsDataURL(e.data);
+        };
+        rec.start(1000);
+        (window as any).__rec.cur = rec;
+      };
+      startSegment();
+
+      (window as any).__rec.timer = setInterval(() => {
+        const r = (window as any).__rec;
+        if (r.stopped) return;
+        r.cur.onstop = () => {
+          if (r.stopped) return; // shutting down — never start another segment
+          r.idx++;
+          startSegment();
+        };
+        r.cur.stop();
+      }, segMs);
+    })().catch((e) => { (window as any).__recError = String(e); });
+  }, SEGMENT_MS);
+
+  page.on("console", (m) => { if (m.text().includes("auto-school")) console.log(`[rec:page] ${m.text()}`); });
+  await page.evaluate((title: string) => {
+    if ((window as any).__rec) (window as any).__rec.title = title;
+    else (window as any).__recTitle = title;
+  }, meetingTitle).catch(() => {});
+
+  for (let i = 0; i < 40; i++) {
+    const st = await page.evaluate(() => {
+      const r = (window as any).__rec ?? {};
+      return { running: !!r.cur, err: (window as any).__recError, title: r.title ?? (window as any).__recTitle };
+    }).catch(() => ({ running: false, err: "page gone", title: meetingTitle }));
+    if (st.err) throw new Error(`capture failed: ${st.err}`);
+    if (st.running) {
+      if (st.title && !(page as any).__recTitle) {
+        // ensure title known for segment naming (title may have been set late)
+        (page as any).__recTitle = st.title;
+      }
+      started = true;
+      break;
     }
+    await page.waitForTimeout(500);
   }
-  console.log(`[rec] ✓ tab capture running${meta ? ` @ ${meta}` : ""} (sink :${port})`);
-  await notify(`🔴 Recording (tab-isolated): **${meetingTitle}**${meta ? ` @ ${meta}` : ""}`);
+  if (!started) throw new Error("capture never started (getDisplayMedia denied?)");
 
   const stop = async (): Promise<RecordingResult> => {
     state.ms = Date.now() - t0;
-    await page.evaluate(() => window.postMessage({ autoschool: { type: "stop" } }, "*")).catch(() => {});
-    await new Promise((res) => setTimeout(res, 2_000)); // flush last chunks
-    server.close();
+    await page.evaluate(() => {
+      const r = (window as any).__rec;
+      if (r) { r.stopped = true; clearInterval(r.timer); r.cur?.state !== "inactive" && r.cur?.stop(); }
+      (window as any).__recStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
+    }).catch(() => {});
+    await new Promise((res) => setTimeout(res, 1_500));
     console.log("[rec] rebuilding seek points (ffmpeg remux)...");
     for (const seg of state.segments) {
       if (!(await rebuildSeekPoints(seg))) console.warn(`[rec] ! remux failed: ${seg} (raw copy kept)`);
@@ -138,10 +166,11 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
     return state;
   };
   (page as any).__recStop = stop;
+
+  await notify(`🔴 Recording (tab-only): **${meetingTitle}**`);
   return state;
 }
 
-/** Stop + finalize; safe multiple times. */
 export async function stopRecording(page: Page): Promise<RecordingResult | null> {
   const stop = (page as any).__recStop as (() => Promise<RecordingResult>) | undefined;
   if (!stop) return null;
@@ -149,7 +178,6 @@ export async function stopRecording(page: Page): Promise<RecordingResult | null>
   return stop();
 }
 
-/** Is the call still alive? */
 export async function stillInMeeting(page: Page): Promise<boolean> {
   return page
     .locator('button[aria-label*="Leave"], [data-tid="call-screen"], [data-tid="presentation-status"]')
