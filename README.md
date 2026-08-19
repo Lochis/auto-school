@@ -21,13 +21,13 @@ New Webhook → Copy URL into `.env`.
 
 ## Graph API setup (meeting discovery) — one-time
 
-1. Go to https://portal.azure.com → **Microsoft Entra ID** → **App registrations** → **New registration** (any school account can usually create one; name it `auto-school`).
-2. Supported account types: **Accounts in this organizational directory only**.
-3. After creation: **Authentication** → Add platform → **Mobile and desktop applications** → check `https://login.microsoftonline.com/common/oauth2/nativeclient` → and toggle **Allow public client flows = Yes** (this enables device code).
-4. Copy the **Application (client) ID** into `.env` as `GRAPH_CLIENT_ID`.
-5. Run `npm run meetings` — it prints a code + link (also pinged to Discord), you approve once in any browser (school login + MFA fine), tokens cache to `~/.auto-school/graph-tokens.json` and refresh automatically thereafter.
+**Default path (no registration):** `.env` ships with Microsoft's **Graph PowerShell** first-party client ID (`14d82eec-...`). It's a public client with device-code flow — everything runs as **your account**, nothing to register. Just `npm run meetings`, approve the device code once, done.
 
-If your school blocks app registrations entirely, tell me — fallback is the Teams-calendar-UI scraper that's already in `src/meetings/list.ts`.
+If your tenant blocks that client (admin consent error), fallbacks:
+1. Register your own app (below), or
+2. `src/meetings/list.ts` UI-scraper (reads the logged-in Teams calendar page).
+
+Own registration (only if needed): portal.azure.com → Entra ID → App registrations → New → Authentication → Mobile and desktop app → **Allow public client flows = Yes** → put client ID in `.env`.
 
 ## Test the login flow (the prototype)
 

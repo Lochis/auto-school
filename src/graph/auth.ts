@@ -48,7 +48,7 @@ function save(t: TokenCache) {
 export async function getAccessToken(): Promise<string> {
   if (!process.env.GRAPH_CLIENT_ID) {
     throw new Error(
-      "GRAPH_CLIENT_ID is empty — create an app registration (see README 'Graph API setup') and put its Application (client) ID in .env",
+      "GRAPH_CLIENT_ID is empty — set a client ID in .env (default: Microsoft's Graph PowerShell public client 14d82eec-204b-4c2f-b7e8-296a70dab67e — no app registration needed)",
     );
   }
   let cached: TokenCache | null = null;
