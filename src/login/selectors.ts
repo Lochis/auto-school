@@ -24,10 +24,20 @@ export const SEL = {
     "approve sign in request",
     "enter the number displayed",
     "approve the request",
+    // WSO2 / generic IdP MFA wording
+    "verification code",
+    "one-time password",
   ],
 
   // Teams app shell (login complete)
   teamsApp: "#app, [data-testid='app'], #element-for-chat-list",
+
+  // --- Centennial myLogin (WSO2 Identity Server, federated school SSO) ---
+  // URL marker: /authenticationendpoint/ (e.g. idp.centennialcollege.ca)
+  centennialUser: "#usernameUserInput",
+  centennialPassword: "#password",
+  centennialSubmit: "#loginForm button[type='submit'], .eds-button--primary",
+  centennialError: "#error-msg", // "Authentication Failed! Please Retry"
 } as const;
 
 export const MFA_NUMBER_SEL = "#idRichContext_DisplaySign";

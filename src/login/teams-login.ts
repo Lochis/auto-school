@@ -73,6 +73,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     let password: string | null = config.password || null;
     let emailDone = false;
     let passwordDone = false;
+    let centennialDone = false;
     let mfaPinged = false;
     const mfaDeadline = Date.now() + config.mfaWaitMs;
     const started = Date.now();
@@ -101,6 +102,32 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
         (await visible(page, [SEL.email, SEL.password])) !== null;
 
       if (isLoginPage) {
+        // ---- Centennial myLogin (WSO2 IdP): 9-digit ID + password on one form ----
+        // MUST run before the generic password branch below — that branch would
+        // otherwise type the *Teams* password into Centennial's #password field.
+        const centUser = await visible(page, [SEL.centennialUser]);
+        if (centUser) {
+          const failed = await visible(page, [SEL.centennialError]);
+          if (centennialDone && failed) {
+            throw new Error("Centennial myLogin rejected credentials (Authentication Failed) — check CENTENNIAL_USER / CENTENNIAL_PASSWORD");
+          }
+          if (!centennialDone) {
+            if (!config.centennialUser || !config.centennialPassword) {
+              throw new Error("Centennial myLogin page detected but CENTENNIAL_USER / CENTENNIAL_PASSWORD not set in .env");
+            }
+            await page.locator(SEL.centennialUser).first().fill(config.centennialUser);
+            await page.locator(SEL.centennialPassword).first().fill(config.centennialPassword);
+            await page.locator(SEL.centennialSubmit).first().click();
+            centennialDone = true;
+            console.log("[login] Centennial myLogin: credentials submitted");
+            await page.waitForTimeout(2_500); // WSO2 does an AJAX /logincontext hop before form submit
+            continue;
+          }
+          // already submitted, no error yet — waiting on redirect/MFA
+          await page.waitForTimeout(POLL_MS);
+          continue;
+        }
+
         // account picker: click our tile if email is known
         if (config.email && (await visible(page, [SEL.accountTile])) &&
             (await page.getByText(config.email).first().isVisible({ timeout: 1_000 }).catch(() => false))) {
@@ -121,7 +148,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
         }
 
         const pwField = await visible(page, [SEL.password]);
-        if (pwField) {
+        if (pwField && !centUser) { // centUser handled above (WSO2 #password also matches input[type=password])
           password ??= await promptPassword();
           await page.locator(pwField).first().fill(password);
           (await visible(page, [SEL.next])) && (await page.locator(SEL.next).first().click());
@@ -151,7 +178,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
             console.log(`[login] MFA challenge detected (${mfaSel ?? mfaTxt})${num ? ` match number: ${num}` : ""}`);
             await notify(
               `🔐 **2FA requested** for auto-school Teams login\n` +
-              `Approve it in Microsoft Authenticator / enter the code.\n` +
+              `Approve/enter it (school myLogin MFA or Microsoft Authenticator).\n` +
               (num ? `**Match number: ${num}**\n` : "") +
               `Waiting up to ${Math.round(config.mfaWaitMs / 60_000)} min — session expired or first login on this profile.`,
             );

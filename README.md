@@ -31,10 +31,12 @@ What happens:
 
 1. Headful Chromium opens `teams.microsoft.com` (persistent profile in `user-data/`).
 2. Types email → password (prompted if not in `.env`).
-3. When the MFA challenge appears, you get a **Discord ping** — including the
-   **number to match** when it's an Authenticator push. You approve, the bot
-   continues on its own.
-4. Subsequent runs: profile session is reused → usually straight into Teams,
+3. School SSO redirect (e.g. Centennial myLogin — WSO2 IdP): auto-fills
+   `CENTENNIAL_USER` + `CENTENNIAL_PASSWORD` from `.env` and submits.
+4. When an MFA challenge appears (school or Microsoft), you get a **Discord ping** —
+   including the **number to match** when it's an Authenticator push. You approve,
+   the bot continues on its own.
+5. Subsequent runs: profile session is reused → usually straight into Teams,
    no password, no MFA, no ping.
 
 ## Running in a VM
