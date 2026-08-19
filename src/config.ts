@@ -1,5 +1,6 @@
 /** Env config (Bun auto-loads .env). */
-import { homedir, join } from "node:path";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export const config = {
   email: process.env.TEAMS_EMAIL ?? "",
