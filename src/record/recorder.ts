@@ -65,7 +65,13 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
         rec.ondataavailable = (e) => {
           if (e.data.size) {
             const r = new FileReader();
-            r.onload = () => (window as any).__seg((window as any).__rec.idx, r.result.split(",")[1]);
+            // NOTE: data URL MIME contains a comma ("codecs=vp8,opus") — split(",")
+            // truncates at it. Slice from the base64 marker instead.
+            r.onload = () => {
+              const s = String(r.result);
+              const i = s.indexOf(";base64,");
+              (window as any).__seg((window as any).__rec.idx, i >= 0 ? s.slice(i + 8) : s);
+            };
             r.readAsDataURL(e.data);
           }
         };
