@@ -95,18 +95,21 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
 
       // ---- success: back on Teams app shell ----
       if (url.startsWith("https://teams.microsoft.com")) {
-        const shell = await visible(page, [SEL.teamsApp]);
+        // NOTE: #app matches the PRE-LOGIN landing too — shell alone is not proof.
         const signInUi = await visibleText(page, ["sign in", "get started with teams", "download teams"]);
-        if (shell) {
-          const method: LoginResult["method"] = passwordDone || centennialDone ? "fresh" : "session";
-          console.log(`[login] ✓ logged in (${method})`);
-          await notify(`✅ Teams login **succeeded** (${method} login)`);
-          if (opts.hold) {
-            console.log("[login] --hold: browser stays open until Ctrl+C");
-            await new Promise(() => {});
+        if (!signInUi) {
+          const shell = await visible(page, [SEL.teamsApp]);
+          if (shell) {
+            const method: LoginResult["method"] = passwordDone || centennialDone ? "fresh" : "session";
+            console.log(`[login] ✓ logged in (${method})`);
+            await notify(`✅ Teams login **succeeded** (${method} login)`);
+            if (opts.hold) {
+              console.log("[login] --hold: browser stays open until Ctrl+C");
+              await new Promise(() => {});
+            }
+            await ctx.close();
+            return { ok: true, method, detail: url };
           }
-          await ctx.close();
-          return { ok: true, method, detail: url };
         }
         // fallback: no sign-in UI and staying on teams URL 20s+ continuously = authed app
         // (fresh profiles sit on /v2/ several seconds BEFORE redirecting to login —
