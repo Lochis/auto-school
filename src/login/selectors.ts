@@ -7,8 +7,10 @@ export const SEL = {
   email: 'input[type="email"]',
   password: 'input[type="password"]',
   next: "#idSIButton9", // "Next" / "Sign in" / "Yes" (stay signed in)
-  // Microsoft "stay signed in?" prompt (KMSI)
+  // Microsoft "stay signed in?" prompt (KMSI). The real KMSI page shows BOTH buttons;
+  // intermediate processing pages have a disabled #idSIButton9 placeholder.
   staySignedInYes: "#idSIButton9", // "Yes"
+  staySignedInNo: "#idBtn_Back", // "No" — present only on real KMSI page
   staySignedInText: [
     "stay signed in",
     "keep you signed in",

@@ -251,12 +251,18 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
         iter++;
         if (iter % 8 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
 
-        // stay signed in? (KMSI) — click Yes: longer-lived session, fewer MFA prompts
+        // stay signed in? (KMSI) — only the REAL page (No-button visible, Yes enabled)
         if (await visibleText(page, SEL.staySignedInText)) {
-          await page.locator(SEL.staySignedInYes).first().click();
-          console.log("[login] 'stay signed in' -> clicked Yes");
-          await page.waitForTimeout(1_500);
-          continue;
+          const noBtn = await visible(page, [SEL.staySignedInNo]);
+          const yesEnabled = await page.locator(SEL.staySignedInYes).first()
+            .isEnabled({ timeout: 1_000 }).catch(() => false);
+          if (noBtn || yesEnabled) {
+            await page.locator(SEL.staySignedInYes).first().click();
+            console.log("[login] 'stay signed in' -> clicked Yes");
+            await page.waitForTimeout(1_500);
+            continue;
+          }
+          // disabled placeholder on a processing page — just wait for the real one
         }
 
         // ---- WSO2 MFA picker: "Select a login option" / after cannot-authenticate ----
