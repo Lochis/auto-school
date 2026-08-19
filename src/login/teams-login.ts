@@ -164,8 +164,11 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
   let urlPoll: ReturnType<typeof setInterval> | undefined;
   try {
     page.on("crash", () => console.log("[login] ! renderer CRASHED"));
-    page.on("requestfailed", (r) =>
-      console.log(`[login] request failed: ${r.url().slice(0, 90)} — ${r.failure()?.errorText}`));
+    page.on("requestfailed", (r) => {
+      // ERR_ABORTED = Teams aborting/retrying its own calls during boot — not our problem
+      if (r.failure()?.errorText !== "net::ERR_ABORTED")
+        console.log(`[login] request failed: ${r.url().slice(0, 90)} — ${r.failure()?.errorText}`);
+    });
     urlPoll = setInterval(() => console.log(`[login] url now: ${page.url()}`), 5_000);
 
     console.log(`[login] navigating to ${TEAMS_URL} ...`);
@@ -201,7 +204,8 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
       if (/login\.microsoftonline\.com|authenticationendpoint|\/commonauth|aka\.ms/.test(url)) sawLoginUrl = true;
 
       // ---- success: POST-LOGIN DOM only, and on fresh runs only after a login flow was seen ----
-      if (url.startsWith("https://teams.microsoft.com")) {
+      // NOTE: new Teams redirects to teams.cloud.microsoft — both domains count.
+      if (url.startsWith("https://teams.microsoft.com") || url.startsWith("https://teams.cloud.microsoft")) {
         const signInUi = await visibleText(page, ["sign in", "get started with teams", "download teams"]);
         const shell = await visible(page, SEL.teamsApp); // specific post-login markers only
         const sawAuthFlow = sawLoginUrl || passwordDone || centennialDone;
