@@ -123,6 +123,8 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     let firstTeamsTs: number | undefined; // continuous-presence tracker for success fallback
     let sawLoginUrl = false; // proof of an actual login flow on this run
     const wasFresh = !!opts.fresh;
+    let lastEmailTry = 0;
+    let iter = 0;
     const mfaDeadline = Date.now() + config.mfaWaitMs;
     const started = Date.now();
 
@@ -216,14 +218,22 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
         }
 
         const emailField = await visible(page, [SEL.email]);
-        if (emailField && !emailDone) {
+        if (emailField) {
           if (!config.email) throw new Error("TEAMS_EMAIL not set in .env");
-          await page.locator(emailField).first().fill(config.email);
-          (await visible(page, [SEL.next])) && (await page.locator(SEL.next).first().click());
-          emailDone = true;
-          console.log("[login] email submitted");
-          await page.waitForTimeout(1_500);
-          continue;
+          // re-drive: if email field is STILL visible 6s after submit, the click missed — retry
+          const stalled = emailDone && Date.now() - lastEmailTry > 6_000;
+          if (!emailDone || stalled) {
+            await page.locator(emailField).first().fill(config.email);
+            const next = await visible(page, [SEL.next]);
+            if (next) {
+              await page.locator(SEL.next).first().click();
+              emailDone = true;
+              lastEmailTry = Date.now();
+              console.log(stalled ? "[login] email re-submitted (page unchanged)" : "[login] email submitted");
+              await page.waitForTimeout(2_000);
+              continue;
+            }
+          }
         }
 
         const pwField = await visible(page, [SEL.password]);
@@ -236,6 +246,10 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           await page.waitForTimeout(1_500);
           continue;
         }
+
+        // ---- heartbeat: never look "stopped" ----
+        iter++;
+        if (iter % 8 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
 
         // stay signed in? (KMSI) — click Yes: longer-lived session, fewer MFA prompts
         if (await visibleText(page, SEL.staySignedInText)) {
