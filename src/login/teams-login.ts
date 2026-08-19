@@ -68,10 +68,17 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
   const page = ctx.pages()[0] ?? (await ctx.newPage());
   page.setDefaultTimeout(15_000);
 
+  let urlPoll: ReturnType<typeof setInterval> | undefined;
   try {
+    page.on("crash", () => console.log("[login] ! renderer CRASHED"));
+    page.on("requestfailed", (r) =>
+      console.log(`[login] request failed: ${r.url().slice(0, 90)} — ${r.failure()?.errorText}`));
+    urlPoll = setInterval(() => console.log(`[login] url now: ${page.url()}`), 5_000);
+
     console.log(`[login] navigating to ${TEAMS_URL} ...`);
     await page.goto(TEAMS_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
     console.log(`[login] landed on ${page.url()}`);
+    clearInterval(urlPoll);
 
     let password: string | null = config.password || null;
     let emailDone = false;
@@ -202,6 +209,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
       await page.waitForTimeout(POLL_MS);
     }
   } catch (err) {
+    if (urlPoll) clearInterval(urlPoll);
     await notify(`❌ Teams login **failed**: \`${String(err).slice(0, 180)}\``);
     await ctx.close().catch(() => {});
     return { ok: false, method: "fresh", detail: String(err) };
