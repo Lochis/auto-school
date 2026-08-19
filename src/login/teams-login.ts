@@ -65,6 +65,23 @@ async function findActionablePage(ctx: BrowserContext): Promise<Page | null> {
   return null;
 }
 
+/** WSO2 MFA picker: click the Authenticator option if present. True if clicked. */
+async function tryClickAuthenticator(page: Page): Promise<boolean> {
+  for (const sel of SEL.authenticatorOption) {
+    try {
+      const loc = page.locator(sel).first();
+      if (await loc.isVisible({ timeout: 800 })) {
+        await loc.click();
+        console.log(`[login] authenticator option clicked`);
+        return true;
+      }
+    } catch {
+      /* not present */
+    }
+  }
+  return false;
+}
+
 export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {}): Promise<LoginResult> {
   const userDataDir = resolve(config.userDataDir);
   if (opts.fresh) {
@@ -97,7 +114,8 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     console.log(`[login] landed on ${page.url()}`);
     clearInterval(urlPoll);
 
-    let password: string | null = config.password || null;
+    // env only — no interactive prompts. TEAMS_PASSWORD unset => school password.
+    let password: string | null = config.password || config.centennialPassword || null;
     let emailDone = false;
     let passwordDone = false;
     let centennialDone = false;
@@ -210,7 +228,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
 
         const pwField = await visible(page, [SEL.password]);
         if (pwField && !centUser) { // centUser handled above (WSO2 #password also matches input[type=password])
-          password ??= await promptPassword();
+          if (!password) throw new Error("password field appeared but neither TEAMS_PASSWORD nor CENTENNIAL_PASSWORD is set in .env");
           await page.locator(pwField).first().fill(password);
           (await visible(page, [SEL.next])) && (await page.locator(SEL.next).first().click());
           passwordDone = true;
@@ -225,6 +243,14 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           console.log("[login] 'stay signed in' -> clicked Yes");
           await page.waitForTimeout(1_500);
           continue;
+        }
+
+        // ---- WSO2 MFA picker: "Select a login option" / after cannot-authenticate ----
+        if (url.includes("authenticationendpoint") || (await visibleText(page, SEL.cannotAuthenticateText))) {
+          if (await tryClickAuthenticator(page)) {
+            await page.waitForTimeout(1_500);
+            continue;
+          }
         }
 
         // ---- MFA ----
@@ -265,16 +291,4 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     await ctx.close().catch(() => {});
     return { ok: false, method: "fresh", detail: String(err) };
   }
-}
-
-/** Hidden-ish console password prompt (only reached if TEAMS_PASSWORD is blank). */
-async function promptPassword(): Promise<string> {
-  const { createInterface } = await import("node:readline");
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((res) => {
-    rl.question("Teams password (input hidden is NOT supported in plain terminal; prefer .env): ", (a) => {
-      rl.close();
-      res(a);
-    });
-  });
 }

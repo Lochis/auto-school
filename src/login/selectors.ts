@@ -45,11 +45,19 @@ export const SEL = {
   ],
 
   // --- Centennial myLogin (WSO2 Identity Server, federated school SSO) ---
-  // URL marker: /authenticationendpoint/ (e.g. idp.centennialcollege.ca)
+  // URL marker: /authenticationendpoint/ (e.g. mysso.centennialcollege.ca)
   centennialUser: "#usernameUserInput",
   centennialPassword: "#password",
   centennialSubmit: "#loginForm button[type='submit'], .eds-button--primary",
   centennialError: "#error-msg", // "Authentication Failed! Please Retry"
+
+  // WSO2 MFA option picker ("Select a login option" after "We cannot authenticate")
+  authenticatorOption: [
+    "button:has-text('authenticator')",
+    "a:has-text('authenticator')",
+    "[role='button']:has-text('authenticator')",
+  ],
+  cannotAuthenticateText: ["cannot authenticate your account", "cannot authenticate"],
 } as const;
 
 export const MFA_NUMBER_SEL = "#idRichContext_DisplaySign";
