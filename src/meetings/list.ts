@@ -5,6 +5,7 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { Page } from "playwright";
+import { parseCalendar, markInProgress, type Meeting } from "./parse.ts";
 
 export interface Meeting {
   title: string;
@@ -12,7 +13,6 @@ export interface Meeting {
   joinUrl?: string;
 }
 
-const TIME_RE = /(\d{1,2}:\d{2}\s?(?:AM|PM)?\s?[–—-]\s?\d{1,2}:\d{2}\s?(?:AM|PM)?)/i;
 
 export async function listMeetings(page: Page): Promise<Meeting[]> {
   mkdirSync("out", { recursive: true });
@@ -50,41 +50,28 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   const text = dump.join("\n\n");
   writeFileSync("out/calendar.txt", text);
 
-  // ---- event-element dump from the OWA calendar frame (calibration pass) ----
+  // ---- parse events from the OWA frame (real parser, calibrated aria-labels) ----
   const calFrame = page.frames().find((f) => f.url().includes("outlook.office.com"));
-  if (calFrame) {
-    const evDump = await calFrame.evaluate(() => {
-      const out: string[] = [];
-      // OWA events: role=button with AM/PM-bearing aria-label, plus anything Join-like
-      for (const el of document.querySelectorAll('[role="button"][aria-label], [aria-label*="Join"]')) {
-        const al = el.getAttribute("aria-label") ?? "";
-        const txt = (el as HTMLElement).innerText?.trim().slice(0, 120) ?? "";
-        if (/\d{1,2}:\d{2}\s?(AM|PM)/i.test(al) || /\d{1,2}:\d{2}\s?(AM|PM)/i.test(txt) || /join/i.test(al + txt)) {
-          out.push(`ARIA: ${al.slice(0, 220)} | TEXT: ${txt.replace(/\s+/g, " ")}`);
-        }
-      }
-      return [...new Set(out)];
-    }).catch(() => [] as string[]);
-    writeFileSync("out/calendar-events.txt", evDump.join("\n"));
-    console.log(`[meetings] event-element dump: ${evDump.length} candidates -> out/calendar-events.txt`);
-    for (const e of evDump.slice(0, 10)) console.log(`  · ${e}`);
+  if (!calFrame) {
+    console.log("[meetings] ! no OWA calendar frame found — see out/calendar.txt");
+    return [];
   }
-
-  // heuristic parse: a line containing a time range, title on the same or next line
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  const meetings: Meeting[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(TIME_RE);
-    if (!m) continue;
-    const sameLineTitle = lines[i].replace(m[1], "").trim();
-    const title = sameLineTitle || lines[i + 1] || "";
-    meetings.push({ time: m[1].trim(), title, joinUrl: joinUrls.find((u) => true) });
-  }
-
-  console.log(`[meetings] found ${meetings.length} candidate meeting(s), ${joinUrls.length} join link(s)`);
+  const meetings = markInProgress(await parseCalendar(calFrame));
+  console.log(`[meetings] ${meetings.length} event(s) in current view:`);
   for (const mt of meetings) {
-    console.log(`  • ${mt.time}  ${mt.title.slice(0, 60)}${mt.joinUrl ? "  [has join link]" : ""}`);
+    const flag = mt.joinableNow ? "🔴 LIVE" : mt.online ? "🌐    " : "     ";
+    const t = (d: Date) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const d = (x: Date) => x.toLocaleDateString([], { weekday: "short" });
+    console.log(`  ${flag} ${d(mt.start)} ${t(mt.start)}–${t(mt.end)}  ${mt.title.slice(0, 55)}`);
   }
-  console.log("[meetings] raw dump: out/calendar.txt | screenshot: out/calendar.png");
+  const live = meetings.filter((m) => m.joinableNow);
+  if (live.length) {
+    console.log(`[meetings] in-progress right now — joinable:`);
+    for (const m of live) console.log(`  → ${m.title}`);
+  }
+  writeFileSync("out/calendar-events.txt", meetings.map((m) =>
+    `${m.start.toISOString()} | ${m.end.toISOString()} | ${m.online ? 1 : 0} | ${m.joinableNow ? 1 : 0} | ${m.title}`
+  ).join("\n"));
+  console.log("[meetings] detail dump: out/calendar-events.txt");
   return meetings;
 }
