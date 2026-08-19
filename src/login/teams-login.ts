@@ -86,6 +86,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     let passwordDone = false;
     let centennialDone = false;
     let mfaPinged = false;
+    let firstTeamsTs: number | undefined; // continuous-presence tracker for success fallback
     const mfaDeadline = Date.now() + config.mfaWaitMs;
     const started = Date.now();
 
@@ -95,8 +96,9 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
       // ---- success: back on Teams app shell ----
       if (url.startsWith("https://teams.microsoft.com")) {
         const shell = await visible(page, [SEL.teamsApp]);
-        if (shell || Date.now() - started > 5_000) {
-          const method: LoginResult["method"] = passwordDone ? "fresh" : "session";
+        const signInUi = await visibleText(page, ["sign in", "get started with teams", "download teams"]);
+        if (shell) {
+          const method: LoginResult["method"] = passwordDone || centennialDone ? "fresh" : "session";
           console.log(`[login] ✓ logged in (${method})`);
           await notify(`✅ Teams login **succeeded** (${method} login)`);
           if (opts.hold) {
@@ -106,6 +108,26 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           await ctx.close();
           return { ok: true, method, detail: url };
         }
+        // fallback: no sign-in UI and staying on teams URL 20s+ continuously = authed app
+        // (fresh profiles sit on /v2/ several seconds BEFORE redirecting to login —
+        //  that redirect must not be mistaken for success)
+        if (!signInUi) {
+          firstTeamsTs ??= Date.now();
+          if (Date.now() - firstTeamsTs > 20_000) {
+            console.log(`[login] ✓ logged in (app shell not matched; 20s on Teams with no sign-in UI)`);
+            await notify(`✅ Teams login **succeeded** (heuristic: 20s on Teams, no sign-in UI)`);
+            if (opts.hold) {
+              console.log("[login] --hold: browser stays open until Ctrl+C");
+              await new Promise(() => {});
+            }
+            await ctx.close();
+            return { ok: true, method: "session", detail: url };
+          }
+        } else {
+          firstTeamsTs = undefined; // sign-in UI visible — definitely not logged in yet
+        }
+      } else {
+        firstTeamsTs = undefined;
       }
 
       // ---- on a login page (microsoftonline / school IdP redirect) ----
