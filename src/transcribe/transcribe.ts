@@ -5,7 +5,8 @@
  * ffmpeg chunks to keep inline payloads under the 20MB limit.
  */
 import { spawn } from "node:child_process";
-import { createReadStream, mkdirSync, writeFileSync, unlinkSync, readFile } from "node:fs";
+import { createReadStream, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 const CHUNK_SEC = 300; // 5min @16k mono wav ≈ 10MB — under 20MB inline limit
 
@@ -38,7 +39,7 @@ async function durationSec(file: string): Promise<number> {
 
 async function transcribeChunk(mediaPath: string, mime: string): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
-  const model = process.env.ASR_MODEL ?? "gemini-2.5-flash";
+  const model = process.env.ASR_MODEL ?? "gemini-3.6-flash";
   if (!key) throw new Error("GEMINI_API_KEY not set in .env (aistudio.google.com/apikey — free)");
 
   const data = await readFile(mediaPath);
@@ -75,7 +76,7 @@ export async function transcribeFile(input: string): Promise<Transcript> {
     const wav = `out/transcribe/chunk_${i}.wav`;
     await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(offset), "-t", String(CHUNK_SEC),
       "-i", input, "-vn", "-ac", "1", "-ar", "16000", wav]);
-    console.log(`[asr] chunk ${i + 1}/${nChunks} (${offset}s+) -> Gemini ${process.env.ASR_MODEL ?? "gemini-2.5-flash"}`);
+    console.log(`[asr] chunk ${i + 1}/${nChunks} (${offset}s+) -> Gemini ${process.env.ASR_MODEL ?? "gemini-3.6-flash"}`);
     const text = (await transcribeChunk(wav, "audio/wav")).trim();
     if (text) chunks.push({ offsetSec: offset, text });
     unlinkSync(wav);
