@@ -24,12 +24,14 @@ export const JOIN_SEL = {
 async function settleJoin(page: Page): Promise<boolean> {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
-    const url = page.url();
-    // 1. already in the meeting?
-    if (url.includes("/meet/") || url.includes("meeting")) {
-      const inCall = await page.locator(JOIN_SEL.inMeeting).first()
-        .isVisible({ timeout: 1_000 }).catch(() => false);
-      if (inCall) return true;
+    // 1. in-meeting markers on ANY url (hash routes don't contain "meet")
+    for (const sel of JOIN_SEL.inMeeting.split(", ")) {
+      try {
+        if (await page.locator(sel).first().isVisible({ timeout: 800 })) {
+          console.log(`[join] in-meeting marker: ${sel.trim()}`);
+          return true;
+        }
+      } catch { /* keep looking */ }
     }
     // 2. pre-join screen?
     const joinBtn = page.locator(JOIN_SEL.joinNow).first();
@@ -47,8 +49,13 @@ async function settleJoin(page: Page): Promise<boolean> {
       // dismiss any "allow mic/cam" dialogs
       const ok = page.locator(JOIN_SEL.dialogOk).first();
       if (await ok.isVisible({ timeout: 300 }).catch(() => false)) await ok.click().catch(() => {});
-      await joinBtn.click({ timeout: 3_000 });
-      console.log("[join] Join now clicked");
+      // NOTE: page may navigate right after this click — a mid-flight click failure
+      // is PROGRESS, not an error. Never let it throw.
+      await joinBtn.click({ timeout: 3_000 }).then(
+        () => console.log("[join] Join now clicked"),
+        (e: unknown) => console.log(`[join] join click raced navigation (${String(e).slice(0, 60)}) — continuing`),
+      );
+      await page.waitForTimeout(1_500);
       continue;
     }
     // 3. random dialogs
@@ -151,7 +158,8 @@ export async function joinMeeting(
   }
   console.log(`[join] ✓ in meeting: ${meeting.title}`);
 
-  // 5. HARD GUARANTEE: mic muted (verified, not assumed)
+  // 5. HARD GUARANTEE: mic muted (verified, not assumed) — wait for toolbar first
+  await target.waitForTimeout(3_000); // call UI settle
   try {
     await ensureMuted(target);
   } catch (e) {
