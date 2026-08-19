@@ -1,0 +1,6 @@
+node_modules/
+.env
+user-data/
+out/
+segments/
+*.log
