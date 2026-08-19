@@ -19,6 +19,16 @@ cp .env.example .env             # fill in TEAMS_EMAIL, DISCORD_WEBHOOK_URL
 Discord webhook: your server → Server Settings → Integrations → Webhooks →
 New Webhook → Copy URL into `.env`.
 
+## Graph API setup (meeting discovery) — one-time
+
+1. Go to https://portal.azure.com → **Microsoft Entra ID** → **App registrations** → **New registration** (any school account can usually create one; name it `auto-school`).
+2. Supported account types: **Accounts in this organizational directory only**.
+3. After creation: **Authentication** → Add platform → **Mobile and desktop applications** → check `https://login.microsoftonline.com/common/oauth2/nativeclient` → and toggle **Allow public client flows = Yes** (this enables device code).
+4. Copy the **Application (client) ID** into `.env` as `GRAPH_CLIENT_ID`.
+5. Run `npm run meetings` — it prints a code + link (also pinged to Discord), you approve once in any browser (school login + MFA fine), tokens cache to `~/.auto-school/graph-tokens.json` and refresh automatically thereafter.
+
+If your school blocks app registrations entirely, tell me — fallback is the Teams-calendar-UI scraper that's already in `src/meetings/list.ts`.
+
 ## Test the login flow (the prototype)
 
 ```bash
