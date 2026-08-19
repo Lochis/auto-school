@@ -35,6 +35,10 @@ export const SEL = {
     // WSO2 / generic IdP MFA wording
     "verification code",
     "one-time password",
+    // "additional sign in methods" chooser page
+    "additional sign in methods",
+    "trouble verifying your account",
+    "approve a request on my microsoft authenticator",
   ],
 
   // Teams app shell — POST-LOGIN-ONLY markers (never present on the /v2/ pre-login

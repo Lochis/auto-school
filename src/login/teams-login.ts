@@ -305,7 +305,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
 
         // ---- heartbeat + page-content dump: make every stall self-explanatory ----
         iter++;
-        if (iter % 4 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
+        if (iter % 2 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
         if (iter % 12 === 0) {
           const txt = await page.evaluate(() => document.body?.innerText?.slice(0, 300)).catch(() => "");
           console.log(`[login] page says: ${JSON.stringify((txt ?? "").replace(/\s+/g, " ").slice(0, 280))}`);
@@ -349,11 +349,33 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           }
         }
 
+        // ---- Microsoft MFA with TOTP: trigger DIRECTLY on the option being visible ----
+        // (the "additional sign in methods" chooser lists "Use a verification code"
+        //  directly — no "I can't use my app" link, so text-only detection can miss it)
+        if (config.totpSecret && !totpTried && url.includes("login.microsoftonline.com")) {
+          const codeOpt = await page.getByText("use a verification code", { exact: false }).first()
+            .isVisible({ timeout: 800 }).catch(() => false);
+          if (codeOpt) {
+            totpTried = true;
+            console.log("[login] verification-code option visible — attempting automatic TOTP");
+            await notify("🔐 MFA needed — auto-school is entering a TOTP code automatically");
+            try {
+              if (await doMicrosoftTotp(page)) {
+                await page.waitForTimeout(2_500);
+                continue;
+              }
+              console.log("[login] TOTP flow incomplete — falling back to manual MFA");
+            } catch (e) {
+              console.log(`[login] TOTP flow failed (${String(e).slice(0, 120)}) — falling back to manual MFA`);
+            }
+          }
+        }
+
         // ---- MFA ----
         const mfaSel = await visible(page, SEL.mfa);
         const mfaTxt = await visibleText(page, SEL.mfaText);
         if (mfaSel || mfaTxt) {
-          // Auto-MFA: Microsoft page + TOTP secret configured -> no human needed
+          // (TOTP attempt for chooser pages handled above; this catches push-style MFA)
           if (config.totpSecret && url.includes("login.microsoftonline.com") && !totpTried) {
             totpTried = true;
             console.log("[login] MFA detected — attempting automatic TOTP");
