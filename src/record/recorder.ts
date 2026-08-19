@@ -4,12 +4,29 @@
  * MediaRecorder -> 1s chunks -> page binding -> rolling 5-min webm segments.
  * Browser-only: no OS capture drivers, no system audio.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, renameSync } from "node:fs";
+import { spawn } from "node:child_process";
 import type { Page } from "playwright";
 import { notify } from "../notify.ts";
 
 const SEGMENT_MS = 5 * 60_000; // 5 min, per architecture
 export const RECORD_DIR = "segments";
+
+/** MediaRecorder webm lacks Cues (seek index) — remux with -c copy to rebuild.
+ *  Fast (no re-encode). Returns true if the file now has proper seek points. */
+async function rebuildSeekPoints(file: string): Promise<boolean> {
+  const tmp = file.replace(/\.webm$/, ".cued.webm");
+  const ok = await new Promise<boolean>((res) => {
+    const p = spawn("ffmpeg", ["-y", "-loglevel", "error", "-err_detect", "ignore_err", "-i", file, "-c", "copy", tmp], { cwd: RECORD_DIR });
+    p.on("close", (c) => res(c === 0));
+    p.on("error", () => res(false));
+  });
+  if (ok && existsSync(`${RECORD_DIR}/${tmp}`)) {
+    renameSync(`${RECORD_DIR}/${tmp}`, `${RECORD_DIR}/${file}`);
+    return true;
+  }
+  return false;
+}
 
 export interface RecordingResult {
   segments: string[];
@@ -33,6 +50,11 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
       files[idx] = `${meetingTitle.replace(/[^\w -]/g, "").slice(0, 40).trim().replace(/ /g, "_") || "meeting"}__${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}__${String(idx).padStart(3, "0")}.webm`;
       state.segments.push(files[idx]);
       console.log(`[rec] segment -> ${files[idx]}`);
+      // previous segment is now finalized — rebuild its seek points in background
+      if (files[idx - 1]) {
+        void rebuildSeekPoints(files[idx - 1]).then((ok) =>
+          ok ? console.log(`[rec] seek points rebuilt: ${files[idx - 1]}`) : console.warn(`[rec] ! remux failed: ${files[idx - 1]}`));
+      }
     }
     const buf = Buffer.from(b64, "base64");
     if (buf.length) {
@@ -125,8 +147,13 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
       if (r) { r.stopped = true; clearInterval(r.timer); r.cur?.stop(); }
       (window as any).__recStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
     }).catch(() => {});
-    // wait for last chunks to flush
+    // wait for last chunks to flush, then rebuild seek points on ALL segments
     await new Promise((res) => setTimeout(res, 1_500));
+    console.log("[rec] rebuilding seek points (ffmpeg remux)...");
+    for (const seg of state.segments) {
+      if (!(await rebuildSeekPoints(seg))) console.warn(`[rec] ! remux failed: ${seg} (raw copy kept)`);
+    }
+    console.log(`[rec] ✓ all segments finalized with seek index`);
     return state;
   };
   (page as any).__recStop = stop;
