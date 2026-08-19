@@ -27,6 +27,9 @@ export interface LoginResult {
   ok: boolean;
   method: "fresh" | "session" ; // session = no password re-entry needed
   detail: string;
+  /** present when keepOpen was requested — caller owns closing the context */
+  page?: Page;
+  ctx?: BrowserContext;
 }
 
 /** First visible selector from a list, else null. */
@@ -141,7 +144,7 @@ async function doMicrosoftTotp(page: Page): Promise<boolean> {
   return true;
 }
 
-export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {}): Promise<LoginResult> {
+export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOpen?: boolean } = {}): Promise<LoginResult> {
   const userDataDir = resolve(config.userDataDir);
   if (opts.fresh) {
     rmSync(userDataDir, { recursive: true, force: true });
@@ -217,6 +220,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
             console.log("[login] --hold: browser stays open until Ctrl+C");
             await new Promise(() => {});
           }
+          if (opts.keepOpen) return { ok: true, method, detail: url, page, ctx };
           await ctx.close();
           return { ok: true, method, detail: url };
         }
@@ -231,6 +235,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
               console.log("[login] --hold: browser stays open until Ctrl+C");
               await new Promise(() => {});
             }
+            if (opts.keepOpen) return { ok: true, method: "session", detail: url, page, ctx };
             await ctx.close();
             return { ok: true, method: "session", detail: url };
           }
