@@ -14,7 +14,7 @@
  */
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
-import { chromium, type Page } from "playwright";
+import { chromium, type Page, type BrowserContext } from "playwright";
 import { config } from "../config.ts";
 import { notify } from "../notify.ts";
 import { SEL, MFA_NUMBER_SEL } from "./selectors.ts";
@@ -51,6 +51,20 @@ async function visibleText(page: Page, texts: readonly string[]): Promise<string
   return null;
 }
 
+/** Login UI can appear on ANY tab (Teams /v2/ opens the login in a new tab) —
+ *  find the tab with actionable login UI, else null. */
+async function findActionablePage(ctx: BrowserContext): Promise<Page | null> {
+  for (const p of ctx.pages()) {
+    if (p.isClosed()) continue;
+    if (await visible(p, [SEL.email, SEL.password, SEL.centennialUser])) return p;
+    for (const sel of SEL.mfa) {
+      try { if (await p.locator(sel).first().isVisible({ timeout: 800 })) return p; } catch {}
+    }
+    if (await visibleText(p, SEL.mfaText)) return p;
+  }
+  return null;
+}
+
 export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {}): Promise<LoginResult> {
   const userDataDir = resolve(config.userDataDir);
   if (opts.fresh) {
@@ -66,8 +80,10 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     viewport: { width: 1280, height: 800 },
     args: ["--disable-blink-features=AutomationControlled"],
   });
-  const page = ctx.pages()[0] ?? (await ctx.newPage());
+  let page = ctx.pages()[0] ?? (await ctx.newPage());
   page.setDefaultTimeout(15_000);
+  let lastLoggedUrl = "";
+  ctx.on("page", (p) => console.log(`[login] new tab opened: ${p.url()}`));
 
   let urlPoll: ReturnType<typeof setInterval> | undefined;
   try {
@@ -91,7 +107,14 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
     const started = Date.now();
 
     while (true) {
+      // login UI may be on a different tab than the one we navigated
+      const actionable = await findActionablePage(ctx);
+      if (actionable && actionable !== page) {
+        console.log(`[login] switching to tab: ${actionable.url()}`);
+        page = actionable;
+      }
       const url = page.url();
+      if (url !== lastLoggedUrl) { lastLoggedUrl = url; console.log(`[login] url: ${url}`); }
 
       // ---- success: back on Teams app shell ----
       if (url.startsWith("https://teams.microsoft.com")) {
