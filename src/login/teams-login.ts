@@ -61,6 +61,7 @@ async function findActionablePage(ctx: BrowserContext): Promise<Page | null> {
       try { if (await p.locator(sel).first().isVisible({ timeout: 800 })) return p; } catch {}
     }
     if (await visibleText(p, SEL.mfaText)) return p;
+    if (await visibleText(p, SEL.cannotAuthenticateText)) return p;
   }
   return null;
 }
@@ -247,9 +248,13 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean } = {})
           continue;
         }
 
-        // ---- heartbeat: never look "stopped" ----
+        // ---- heartbeat + page-content dump: make every stall self-explanatory ----
         iter++;
         if (iter % 4 === 0) console.log(`[login] waiting... (url: ${url.slice(0, 80)}, tab: ${page.url().slice(0, 60)})`);
+        if (iter % 12 === 0) {
+          const txt = await page.evaluate(() => document.body?.innerText?.slice(0, 300)).catch(() => "");
+          console.log(`[login] page says: ${JSON.stringify((txt ?? "").replace(/\s+/g, " ").slice(0, 280))}`);
+        }
 
         // stay signed in? (KMSI) — real page has an ENABLED Yes (+#idBtn_Back);
         // processing placeholders have a disabled one. Wait up to 6s for enable.
