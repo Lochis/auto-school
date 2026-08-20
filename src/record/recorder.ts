@@ -56,10 +56,6 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
   // request count 4x. Quota is per-DAY requests, not tokens.
   const BATCH = Math.min(6, Math.max(1, Number(process.env.BATCH_SEGMENTS ?? 4) || 4));
   const pending: { file: string; idx: number }[] = [];
-  
-  const inFlight = new Set<Promise<void>>();
-  let started = false;
-  const t0 = Date.now();
 
   const flush = (): void => {
     if (!pending.length) return;
