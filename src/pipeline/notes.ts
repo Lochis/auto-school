@@ -10,8 +10,7 @@ import { sessionPaths, rebuildIndex } from "./courses.ts";
 import { textCall } from "./llm.ts";
 
 function statePath(meeting: string) {
-  mkdirSync("out", { recursive: true });
-  return `out/notes-${meeting.replace(/[^\w -]/g, "").slice(0, 40).trim().replace(/ /g, "_")}.running.md`;
+  return sessionPaths(meeting).runningMd; // course tree: notes/<course>/<date>__<course>__running.md
 }
 
 async function gemini(prompt: string): Promise<string> { return textCall(prompt); }
@@ -57,10 +56,10 @@ export async function foldSegments(meeting: string, entries: TimelineEntry[]): P
   const summary = await textCall(
     `You are building running notes for the class meeting "${meeting}".\n\n` +
     `CURRENT RUNNING SUMMARY (from earlier in the meeting):\n${existing}\n\n` +
-    `NEW SEGMENT MATERIAL (starts at ${fmt(entry.offsetSec)} into the meeting):\n${newMaterial}\n\n` +
+    `NEW SEGMENT MATERIAL (${entries.length} new segment(s), each headed by its meeting-relative timestamp):\n${newMaterial}\n\n` +
     `Update the running summary: merge the new material in, keep it compact (bullet points), ` +
     `chronological, and note the timestamp ranges of key topics. Do not invent content. ` +
-    `If the new segment repeats earlier material, tighten rather than duplicate. ` +
+    `If a new segment repeats earlier material, tighten rather than duplicate. ` +
     `Output ONLY the updated summary in markdown.`,
   );
   writeFileSync(path, summary);
