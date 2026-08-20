@@ -56,10 +56,16 @@ export async function processSegments(
   parts.unshift({
     text:
       `These are sequential 5-minute clips of the recorded class "${meetingTitle}". ` +
-      `Analyze BOTH audio and visuals of each clip. Return ONLY a JSON array, one object per clip in order: ` +
-      `[{"idx": <clip number>, "transcript": "verbatim speech; empty string if silence", ` +
-      `"visualNotes": [{"t": "m:ss within clip", "note": "what is on screen — slides, code, diagrams; be specific"}]}]. ` +
-      `Every distinct screen state gets a visual note.`,
+      `For EACH clip, describe everything you can perceive — both what you can SEE and what is SAID.\n` +
+      `VISION: what type of content is on screen (app, website, slide deck, code editor, video, game, camera feed, shared screen), ` +
+      `what it shows specifically (titles, headings, file names, code content, numbers, buttons, diagrams), any text you can read, ` +
+      `and changes over time within the clip.\n` +
+      `AUDIO: verbatim speech transcript — capture what is being said word for word; include who seems to be speaking if discernible; ` +
+      `note significant non-speech sounds (music, game sounds, notifications) briefly.\n` +
+      `Return ONLY a JSON array, one object per clip in order: ` +
+      `[{"idx": <clip number>, "transcript": "...", ` +
+      `"visualNotes": [{"t": "m:ss within clip", "note": "content type + what is specifically visible"}]}]. ` +
+      `Every distinct screen state gets a visual note; prefer specific detail over generic description.`,
   });
 
   const raw = await geminiCall(parts, { json: true });
