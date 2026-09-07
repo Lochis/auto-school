@@ -5,8 +5,11 @@
  * ffmpeg chunks to keep inline payloads under the 20MB limit.
  */
 import { spawn } from "node:child_process";
-import { createReadStream, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { createReadStream, mkdirSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { outPath } from "../paths.ts";
+import { geminiCall } from "../pipeline/llm.ts";
+import { pushEvent, setDetail } from "../status.ts";
 
 const CHUNK_SEC = 300; // 5min @16k mono wav ≈ 10MB — under 20MB inline limit
 
@@ -37,50 +40,86 @@ async function durationSec(file: string): Promise<number> {
   });
 }
 
-async function transcribeChunk(mediaPath: string, mime: string): Promise<string> {
-  const key = process.env.GEMINI_API_KEY;
-  const model = process.env.ASR_MODEL ?? "gemini-3.6-flash";
-  if (!key) throw new Error("GEMINI_API_KEY not set in .env (aistudio.google.com/apikey — free)");
+/** One request carries several opus chunks (multi-part) — a 5-min opus chunk
+ *  is ~1.2MB base64 vs 12.8MB as WAV, so ~45 min of audio fits per request.
+ *  That cuts RPD usage 5-10x vs one-request-per-chunk. */
+const CHUNKS_PER_REQ = Math.max(1, Number(process.env.TRANSCRIBE_BATCH ?? 9));
+const REQ_BYTES_CAP = 14 * 1024 * 1024; // stay clear of the 20MB inline ceiling after base64
 
-  const data = await readFile(mediaPath);
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: "Transcribe this recording verbatim. Output ONLY the transcript text — no preamble, no timestamps, no speaker labels unless obvious multiple speakers (then 'Speaker A:' prefix)." },
-            { inline_data: { mime_type: mime, data: data.toString("base64") } },
-          ],
-        }],
-      }),
-    },
-  );
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as any;
-  return json?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
+const fmtMs = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+
+/** Transcribe a batch of clips in ONE request; returns text per chunk index. */
+async function transcribeBatch(files: string[], offsets: number[]): Promise<Map<number, string>> {
+  const parts: any[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const data = await readFile(files[i]);
+    parts.push({ text: `Clip ${i + 1} (starts at ${fmtMs(offsets[i])} into the recording):` });
+    parts.push({ inline_data: { mime_type: "audio/ogg", data: data.toString("base64") } });
+  }
+  parts.unshift({
+    text:
+      `These are sequential clips of the same recording. Transcribe each verbatim — word for word. ` +
+      `Output ONLY a JSON array, one object per clip in order: ` +
+      `[{"idx": <clip number>, "transcript": "..."}]. ` +
+      `No preamble, no timestamps inside the transcript; use 'Speaker A:' prefixes only if multiple speakers are obvious. ` +
+      `If a clip has no speech, use an empty string.`,
+  });
+  const raw = await geminiCall(parts, { json: true });
+  const out = new Map<number, string>();
+  try {
+    const m = raw.match(/\[[\s\S]*\]/); // tolerate prose wrappers
+    const parsed = JSON.parse(m ? m[0] : raw);
+    for (const p of parsed) out.set(p.idx, String(p.transcript ?? "").trim());
+  } catch {
+    throw new Error(`unparseable transcript batch response: ${raw.slice(0, 120)}`);
+  }
+  return out;
 }
 
 /** Transcribe any media file ffmpeg can read. Returns text + per-chunk offsets. */
 export async function transcribeFile(input: string): Promise<Transcript> {
-  mkdirSync("out/transcribe", { recursive: true });
+  mkdirSync(outPath("transcribe"), { recursive: true });
   const total = await durationSec(input);
-  console.log(`[asr] ${input} — ${Math.round(total)}s audio, chunks of ${CHUNK_SEC}s`);
+  console.log(`[asr] ${input} — ${Math.round(total)}s audio, ${CHUNK_SEC}s opus chunks, ≤${CHUNKS_PER_REQ} per request`);
 
-  const chunks: TranscriptChunk[] = [];
+  // 1) slice to 16k mono opus — ~10x smaller than WAV, speech quality unchanged
   const nChunks = Math.max(1, Math.ceil(total / CHUNK_SEC));
+  const files: string[] = [];
+  const offsets: number[] = [];
   for (let i = 0; i < nChunks; i++) {
-    const offset = i * CHUNK_SEC;
-    const wav = `out/transcribe/chunk_${i}.wav`;
-    await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(offset), "-t", String(CHUNK_SEC),
-      "-i", input, "-vn", "-ac", "1", "-ar", "16000", wav]);
-    console.log(`[asr] chunk ${i + 1}/${nChunks} (${offset}s+) -> Gemini ${process.env.ASR_MODEL ?? "gemini-3.6-flash"}`);
-    const text = (await transcribeChunk(wav, "audio/wav")).trim();
-    if (text) chunks.push({ offsetSec: offset, text });
-    unlinkSync(wav);
+    const ogg = outPath("transcribe", `chunk_${String(i).padStart(3, "0")}.ogg`);
+    await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", String(i * CHUNK_SEC), "-t", String(CHUNK_SEC),
+      "-i", input, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "24k", "-f", "ogg", ogg]);
+    files.push(ogg);
+    offsets.push(i * CHUNK_SEC);
   }
+
+  // 2) batch slices into as few requests as the size cap allows
+  const chunks: TranscriptChunk[] = [];
+  let batch = 0;
+  const nBatches = Math.ceil(nChunks / CHUNKS_PER_REQ);
+  for (let start = 0; start < files.length; start += CHUNKS_PER_REQ) {
+    let end = start;
+    let bytes = 0;
+    while (end < files.length && end - start < CHUNKS_PER_REQ) {
+      const sz = statSync(files[end]).size * 1.34; // base64 inflation
+      if (end > start && bytes + sz > REQ_BYTES_CAP) break;
+      bytes += sz;
+      end++;
+    }
+    batch++;
+    const slice = files.slice(start, end);
+    console.log(`[asr] request ${batch}/${nBatches}: chunks ${start + 1}-${end} (${(bytes / 1e6).toFixed(1)} MB) → model chain`);
+    const texts = await transcribeBatch(slice, offsets.slice(start, end));
+    for (let i = start; i < end; i++) {
+      const t = texts.get(i - start + 1) ?? "";
+      if (t) chunks.push({ offsetSec: offsets[i], text: t });
+    }
+    for (const f of slice) unlinkSync(f);
+    pushEvent(`transcribe: request ${batch}/${nBatches} ✓ (${slice.length} clip(s), model chain)`);
+    setDetail({ transcribe: `request ${batch}/${nBatches}` });
+  }
+  for (const f of files) { try { unlinkSync(f); } catch { /* gone */ } }
   return { text: chunks.map((c) => c.text).join("\n\n"), chunks };
 }
 

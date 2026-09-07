@@ -1,0 +1,49 @@
+# Local Docker test of the full stack (mirrors the k8s pod, but split into
+# services so each is a normal container):
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#   frontend → http://localhost:3000   backend controller → http://localhost:7800
+#
+# `seed` copies the repo's existing notes/recordings/out into the shared volume
+# once, so the UI has content immediately. Remove it after first run if wanted.
+name: auto-school
+
+services:
+  seed:
+    image: alpine:3.20
+    volumes:
+      - data:/data
+      - ../recordings:/src/recordings:ro
+      - ../notes:/src/notes:ro
+      - ../out:/src/out:ro
+    command: >
+      sh -c "cp -r /src/recordings /src/notes /src/out /data/ 2>/dev/null;
+             mkdir -p /data/user-data; chown -R 1000:1000 /data; echo seeded"
+
+  backend:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    stop_grace_period: 5m # let the daemon stop the recorder + consolidate on redeploy
+    env_file: [ ../.env ]
+    environment:
+      CONTROLLER_PORT: "7800"
+      TZ: ${TZ:-America/Toronto}
+    ports: [ "7800:7800" ] # direct debug access to /status + /scan
+    volumes:
+      - data:/data
+    depends_on:
+      seed: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  frontend:
+    build: { context: ../frontend }
+    environment:
+      AUTO_SCHOOL_DATA: /data
+      BACKEND_URL: http://backend:7800 # separate containers here (k8s pod uses localhost)
+      TZ: ${TZ:-America/Toronto}
+    ports: [ "3000:3000" ]
+    volumes:
+      - data:/data:ro
+    depends_on: [ backend ]
+    restart: unless-stopped
+
+volumes:
+  data:

@@ -12,11 +12,12 @@
  *      when present) -> wait up to MFA_WAIT_MINUTES for you to approve
  *   4. success = we land back on teams.microsoft.com app shell
  */
-import { rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { rmSync, writeFileSync } from "node:fs";
+import { resolve, join } from "node:path";
 import { chromium, type Page, type BrowserContext } from "playwright";
 import { config } from "../config.ts";
 import { notify } from "../notify.ts";
+import { outPath } from "../paths.ts";
 import { SEL, MFA_NUMBER_SEL, MS_MFA } from "./selectors.ts";
 import { generateTotp } from "./totp.ts";
 
@@ -151,11 +152,15 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
     console.log(`[login] wiped profile at ${userDataDir}`);
   }
 
-  const ctx = await chromium.launchPersistentContext(userDataDir, {
+  const launchOpts: Parameters<typeof chromium.launchPersistentContext>[1] = {
     headless: false, // run in a VM with a desktop session (see README)
     channel: config.browserChannel,
-    chromiumSandbox: true, // else Playwright passes --no-sandbox, which Edge banners as unsupported
-    timeout: 30_000, // fail fast (default 180s) — a hang here means attach failed, not slow start
+    chromiumSandbox: config.chromiumSandbox, // containers: CHROMIUM_SANDBOX=0 (no userns)
+    // Audio isolation: the recorder browser plays (and therefore captures —
+    // Edge/Linux tab-audio is sink-wide) into its OWN PulseAudio sink. Any
+    // other browser/audio on the box uses the default sink and cannot bleed in.
+    env: { ...process.env, PULSE_SINK: process.env.REC_SINK ?? "rec", PULSE_SOURCE: `${process.env.REC_SINK ?? "rec"}.monitor` },
+    timeout: 60_000, // Edge cold-start in a container can be slow; 30s timed out
     viewport: null, // let the window size rule (recording wants real 1080p, not a clipped viewport)
     args: [
       "--disable-blink-features=AutomationControlled",
@@ -166,7 +171,19 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
       `--load-extension=${resolve("extension")}`,
       "--use-fake-ui-for-media-stream", // auto-grant in-page media permissions
     ],
-  });
+  };
+  let ctx;
+  try {
+    ctx = await chromium.launchPersistentContext(userDataDir, launchOpts);
+  } catch (e) {
+    // a hard-killed Chromium leaves Singleton* symlinks that block every
+    // future launch (observed after container restarts) — clear and retry once
+    for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+      rmSync(join(userDataDir, f), { force: true });
+    }
+    console.warn(`[login] launch failed (${String(e).slice(0, 90)}) — cleared stale profile locks, retrying`);
+    ctx = await chromium.launchPersistentContext(userDataDir, launchOpts);
+  }
   let page = ctx.pages()[0] ?? (await ctx.newPage());
   page.setDefaultTimeout(15_000);
   let lastLoggedUrl = "";
@@ -193,6 +210,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
     let passwordDone = false;
     let centennialDone = false;
     let mfaPinged = false;
+    let tileClicks = 0; // consecutive account-picker clicks without advancing
     let firstTeamsTs: number | undefined; // continuous-presence tracker for success fallback
     let sawLoginUrl = false; // proof of an actual login flow on this run
     const wasFresh = !!opts.fresh;
@@ -324,7 +342,16 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
             (await page.getByText(config.email).first().isVisible({ timeout: 1_000 }).catch(() => false)) &&
             !(await visible(page, [SEL.staySignedInNo]))) {
           await page.getByText(config.email).first().click();
-          console.log("[login] account tile clicked");
+          tileClicks++;
+          console.log(`[login] account tile clicked (#${tileClicks})`);
+          if (tileClicks % 4 === 0) {
+            // stuck: same picker after repeated clicks — dump evidence
+            const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
+            if (shot) writeFileSync(outPath("stuck-picker.png"), shot);
+            const text = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+            if (text) writeFileSync(outPath("stuck-picker.txt"), text.slice(0, 4_000));
+            console.log(`[login] ! stuck on account picker — dumped screenshot+text; url=${page.url().slice(0, 120)}`);
+          }
           await page.waitForTimeout(2_000);
           continue;
         }
@@ -424,13 +451,21 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
             mfaPinged = true;
             const matchNum = await page.locator(MFA_NUMBER_SEL).first()
               .textContent({ timeout: 2_000 }).catch(() => null);
-            const num = matchNum?.match(/\d{2,3}/)?.[0];
+            let num = matchNum?.match(/\d{2,3}/)?.[0];
+            if (!num) {
+              // school IdP (WSO2 myLogin) screens don't use Microsoft's DOM node —
+              // scan the page for a standalone 2-digit line (the match prompt)
+              const body = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+              num = body.split("\n").map((l) => l.trim()).find((l) => /^\d{2}$/.test(l));
+            }
+            const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
             console.log(`[login] MFA challenge detected (${mfaSel ?? mfaTxt})${num ? ` match number: ${num}` : ""}`);
             await notify(
               `🔐 **2FA needed — auto-school is signing in to Teams**\n` +
               `The class-attendance bot needs you to approve this MFA (school myLogin or Microsoft Authenticator) so it can continue.\n` +
               (num ? `**Match number: ${num}**\n` : "") +
               `Waiting up to ${Math.round(config.mfaWaitMs / 60_000)} min.`,
+              shot, // screenshot shows the number even when the DOM scan missed it
             );
           }
           if (Date.now() > mfaDeadline) {

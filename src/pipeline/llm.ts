@@ -1,14 +1,16 @@
 /**
  * Shared LLM client with quota-aware fallback.
  *
- * Gemini video analysis: tries each model in GEMINI_MODELS (quota is per-model,
- * so a chain multiplies the daily budget). 429/quota -> next model; exhausted
- * models are remembered for the session.
+ * Gemini: tries each model in GEMINI_MODELS (quota is per-model, so a chain
+ * multiplies the daily budget). 429 -> learn the real limit from the body,
+ * cool that model down (retry-after for RPM, PT midnight for RPD) and use the
+ * next model. 404/403 -> model dropped for the session. All of it is logged
+ * to the activity feed via status.ts.
  * Text work (folds, finalize): GLM via Zhipu if GLM_API_KEY set (saves Gemini
  * quota for video), else Gemini chain.
  */
 
-let exhausted = new Set<string>(); // models that returned quota errors this session
+import { isModelExhausted, isModelAvailable, recordQuota429, markModelUnavailable, noteModelUsed, getModelQuotas } from "../status.ts";
 
 try { process.loadEnvFile(); } catch { /* .env optional if env vars come from elsewhere */ }
 
@@ -21,14 +23,20 @@ interface Part { text: string; }
 interface MediaPart { inline_data: { mime_type: string; data: string } }
 type AnyPart = Part | MediaPart;
 
+function nearestRecoveryMs(): number {
+  const now = Date.now();
+  const times = getModelQuotas().filter((q) => q.exhausted && q.exhaustedUntil).map((q) => (q.exhaustedUntil as number) - now);
+  return times.length ? Math.max(0, Math.min(...times)) : 60_000;
+}
+
 export async function geminiCall(
   parts: AnyPart[],
   opts: { json?: boolean; temperature?: number } = {},
 ): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
-  const models = geminiModels().filter((m) => !exhausted.has(m));
-  if (!models.length) throw new Error("all Gemini models quota-exhausted for today (GEMINI_MODELS)");
+  const models = geminiModels().filter((m) => !isModelExhausted(m) && isModelAvailable(m));
+  if (!models.length) throw new Error(`all Gemini models cooling down — next recovers in ${Math.ceil(nearestRecoveryMs() / 1000)}s (GEMINI_MODELS)`);
 
   let lastErr = "";
   for (const model of models) {
@@ -45,13 +53,18 @@ export async function geminiCall(
           }),
         },
       );
-      if (res.status === 429 || (await res.clone().text()).includes("RESOURCE_EXHAUSTED")) {
-        exhausted.add(model);
-        console.warn(`[llm] ${model} quota-exhausted → next model`);
+      const body = await res.text();
+      if (res.status === 429 || body.includes("RESOURCE_EXHAUSTED")) {
+        recordQuota429(model, body); // detects limits + schedules recovery + logs activity
         continue;
       }
-      if (!res.ok) throw new Error(`Gemini ${model} ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      const json = (await res.json()) as any;
+      if (res.status === 404 || res.status === 403) {
+        markModelUnavailable(model, res.status); // e.g. gemini-2.5-flash is gone for new keys
+        continue;
+      }
+      if (!res.ok) throw new Error(`Gemini ${model} ${res.status}: ${body.slice(0, 200)}`);
+      const json = JSON.parse(body) as any;
+      noteModelUsed(model);
       return (json?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "").trim();
     } catch (e) {
       lastErr = String(e);

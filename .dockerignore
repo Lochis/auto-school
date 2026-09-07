@@ -1,0 +1,11 @@
+.git
+node_modules
+user-data
+segments
+recordings
+out
+notes
+.env
+*.md
+!README.md
+deploy/k8s

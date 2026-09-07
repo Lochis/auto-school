@@ -9,11 +9,11 @@ export interface Meeting {
   isOnline: boolean;
 }
 
-export async function listTodayMeetings(): Promise<Meeting[]> {
+export async function listTodayMeetings(days = 7): Promise<Meeting[]> {
   const token = await getAccessToken();
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+  const endOfDay = new Date(startOfDay.getTime() + days * 24 * 60 * 60 * 1000);
 
   const url =
     `https://graph.microsoft.com/v1.0/me/calendarview` +

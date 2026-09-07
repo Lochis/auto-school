@@ -1,5 +1,17 @@
 /** Course categorization: parse class identity out of meeting titles. */
 import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { NOTES_DIR, DATA_DIR } from "../paths.ts";
+
+/** Manual title → folder overrides from <data>/mapping.json (managed via the UI).
+ *  Exact title match wins over pattern parsing; invalid JSON is ignored. */
+function mappingOverrides(): Map<string, string> {
+  try {
+    const raw = JSON.parse(readFileSync(`${DATA_DIR}/mapping.json`, "utf8"));
+    return new Map(Object.entries(raw).map(([k, v]) => [k.trim(), String(v).trim()]));
+  } catch {
+    return new Map();
+  }
+}
 
 export interface CourseInfo {
   /** e.g. "26M" — semester/cohort tag, or "GEN" if none found */
@@ -15,6 +27,10 @@ export interface CourseInfo {
  *  "2nd half - 26M --Software Systems Design (SEC. 401)"
  *  fallback: first 4+ words of the title. */
 export function parseCourse(meetingTitle: string): CourseInfo {
+  const mapped = mappingOverrides().get(meetingTitle.trim());
+  if (mapped) {
+    return { code: "MAP", slug: mapped, name: mapped.replace(/_/g, " ") };
+  }
   // strip section markers
   let t = meetingTitle.replace(/\(SEC\.?\s*[^)]*\)/gi, "").trim();
   // "<prefix> - <code> --<Name>" or "<code> --<Name>"
@@ -33,7 +49,7 @@ export function slug(s: string): string {
 }
 
 /** The notes directory for a course (created on demand). */
-export function courseDir(course: CourseInfo, base = "notes"): string {
+export function courseDir(course: CourseInfo, base = NOTES_DIR): string {
   const dir = `${base}/${course.slug}`;
   mkdirSync(dir, { recursive: true });
   return dir;
@@ -45,7 +61,8 @@ export function sessionPaths(meetingTitle: string, date = new Date()): {
 } {
   const course = parseCourse(meetingTitle);
   const dir = courseDir(course);
-  const stem = `${date.toISOString().slice(0, 10)}__${course.slug}`;
+  // local date ("sv-SE" → YYYY-MM-DD) — an 8pm class must not land on tomorrow via UTC
+  const stem = `${date.toLocaleDateString("sv-SE")}__${course.slug}`;
   return {
     course, dir, stem,
     notesMd: `${dir}/${stem}__notes.md`,
@@ -55,7 +72,7 @@ export function sessionPaths(meetingTitle: string, date = new Date()): {
 }
 
 /** Rebuild notes/INDEX.md from the on-disk tree. Called after every finalize. */
-export function rebuildIndex(base = "notes"): void {
+export function rebuildIndex(base = NOTES_DIR): void {
   const courses: { slug: string; sessions: { file: string; stem: string; topics: string }[] }[] = [];
   try {
     

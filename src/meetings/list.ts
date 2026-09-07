@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import type { Page } from "playwright";
 import { parseCalendar, markInProgress, type Meeting } from "./parse.ts";
 import { notify } from "../notify.ts";
+import { OUT_DIR, outPath } from "../paths.ts";
 
 export interface Meeting {
   title: string;
@@ -16,7 +17,7 @@ export interface Meeting {
 
 
 export async function listMeetings(page: Page): Promise<Meeting[]> {
-  mkdirSync("out", { recursive: true });
+  mkdirSync(OUT_DIR, { recursive: true });
 
   // SPA hash navigation — works on both teams.microsoft.com and teams.cloud.microsoft
   const base = new URL(page.url()).origin;
@@ -31,7 +32,7 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   console.log("[meetings] Calendar rail clicked");
   await page.waitForTimeout(8_000); // let the calendar render
 
-  await page.screenshot({ path: "out/calendar.png" });
+  await page.screenshot({ path: outPath("calendar.png") });
 
   // calendar likely lives in an <iframe> — body.innerText doesn't cross frames.
   // Dump EVERY frame separately so nothing hides.
@@ -49,7 +50,7 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
     joinUrls.push(...links);
   }
   const text = dump.join("\n\n");
-  writeFileSync("out/calendar.txt", text);
+  writeFileSync(outPath("calendar.txt"), text);
 
   // ---- parse events from the OWA frame (real parser, calibrated aria-labels) ----
   const calFrame = page.frames().find((f) => f.url().includes("outlook.office.com"));
@@ -61,7 +62,7 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   console.log(`[meetings] ${meetings.length} event(s) in current view:`);
   for (const mt of meetings) {
     const flag = mt.joinableNow ? "🔴 LIVE" : mt.online ? "🌐    " : "     ";
-    const t = (d: Date) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const t = (d: Date) => d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
     const d = (x: Date) => x.toLocaleDateString([], { weekday: "short" });
     console.log(`  ${flag} ${d(mt.start)} ${t(mt.start)}–${t(mt.end)}  ${mt.title.slice(0, 55)}`);
   }
@@ -70,7 +71,7 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
     console.log(`[meetings] in-progress right now — joinable:`);
     for (const m of live) console.log(`  → ${m.title}`);
   }
-  writeFileSync("out/calendar-events.txt", meetings.map((m) =>
+  writeFileSync(outPath("calendar-events.txt"), meetings.map((m) =>
     `${m.start.toISOString()} | ${m.end.toISOString()} | ${m.online ? 1 : 0} | ${m.joinableNow ? 1 : 0} | ${m.title}`
   ).join("\n"));
   console.log("[meetings] detail dump: out/calendar-events.txt");

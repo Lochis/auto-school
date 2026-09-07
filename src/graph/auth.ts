@@ -7,13 +7,18 @@
  * ~/.auto-school/graph-tokens.json and refreshed forever after.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { notify } from "../notify.ts";
+import { config } from "../config.ts";
 
 const SCOPES = ["Calendars.Read", "offline_access", "User.Read"];
 
-const tokenPath = join(homedir(), ".auto-school", "graph-tokens.json");
+// lives next to the browser profile → survives with it (in a pod: /data)
+const tokenPath = join(dirname(config.userDataDir), "graph-tokens.json");
+
+/** live device-code info while an interactive approval is pending (UI reads it) */
+export let lastDeviceCode: { code: string; uri: string; at: number } | null = null;
+export function clearDeviceCode(): void { lastDeviceCode = null; }
 
 interface TokenCache {
   access_token: string;
@@ -40,7 +45,7 @@ async function tokenRequest(body: Record<string, string>): Promise<TokenCache> {
 }
 
 function save(t: TokenCache) {
-  mkdirSync(join(homedir(), ".auto-school"), { recursive: true });
+  mkdirSync(dirname(tokenPath), { recursive: true });
   writeFileSync(tokenPath, JSON.stringify(t, { spaces: 2 }));
 }
 
@@ -102,6 +107,7 @@ export async function getAccessToken(): Promise<string> {
   console.log(`  Open:  ${dj.verification_uri}`);
   console.log(`  Code:  ${dj.user_code}`);
   console.log("═══════════════════════════════════════════════\n");
+  lastDeviceCode = { code: String(dj.user_code), uri: String(dj.verification_uri), at: Date.now() };
   await notify(`🔐 **One-time Graph consent needed** for auto-school\nOpen ${dj.verification_uri} and enter code: **${dj.user_code}**`);
 
   // poll until approved

@@ -1,0 +1,13 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/api/mapping/route": "/api/mapping",
+  "/api/session/route": "/api/session",
+  "/api/models/route": "/api/models",
+  "/api/segments/route": "/api/segments",
+  "/api/backend/route": "/api/backend",
+  "/api/settings/route": "/api/settings",
+  "/api/media/[...path]/route": "/api/media/[...path]",
+  "/course/[slug]/page": "/course/[slug]",
+  "/page": "/",
+  "/settings/page": "/settings"
+}

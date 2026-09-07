@@ -1,0 +1,95 @@
+# Kustomize-flavored base; apply with `kubectl apply -k deploy/k8s`.
+# Secrets are NOT in git — create once (see deploy/README.md):
+#   kubectl -n auto-school create secret generic auto-school-env --from-env-file=.env
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: auto-school
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: auto-school-data
+  namespace: auto-school
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auto-school
+  namespace: auto-school
+  labels: { app: auto-school }
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO PVC — never two pods at once (profile lock)
+  selector:
+    matchLabels: { app: auto-school }
+  template:
+    metadata:
+      labels: { app: auto-school }
+    spec:
+      terminationGracePeriodSeconds: 300 # daemon consolidates the recording before dying
+      securityContext:
+        runAsUser: 1000 # "node" user in the image
+        runAsGroup: 1000
+        fsGroup: 1000 # PVC becomes writable by the app user
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: auto-school
+          # build & load to your cluster's nodes (or push to your registry):
+          #   docker build -t auto-school:local -f deploy/Dockerfile .
+          #   (then) k3s ctr images import auto-school.tar
+          image: auto-school:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef: { name: auto-school-env }
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "2", memory: 4Gi } # headroom for the ffmpeg burst
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "node src"]
+            periodSeconds: 60
+            failureThreshold: 3
+          volumeMounts:
+            - { name: data, mountPath: /data }
+        # ── frontend: reads the same PVC read-only ──────────────────────────
+        # Same pod (not its own Deployment) because Longhorn RWO can only be
+        # mounted on one node. Split later by switching the PVC to RWX.
+        - name: frontend
+          image: auto-school-frontend:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: AUTO_SCHOOL_DATA, value: /data }
+          ports: [{ containerPort: 3000, name: http }]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 30
+          volumeMounts:
+            - { name: data, mountPath: /data, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: auto-school-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-school
+  namespace: auto-school
+spec:
+  selector: { app: auto-school }
+  ports:
+    - { name: http, port: 80, targetPort: http }

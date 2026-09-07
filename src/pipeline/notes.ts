@@ -5,6 +5,7 @@
  */
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { notify } from "../notify.ts";
+import { pushEvent } from "../status.ts";
 import type { TimelineEntry } from "./segment.ts";
 import { sessionPaths, rebuildIndex } from "./courses.ts";
 import { textCall } from "./llm.ts";
@@ -64,12 +65,17 @@ export async function foldSegments(meeting: string, entries: TimelineEntry[]): P
   );
   writeFileSync(path, summary);
   console.log(`[notes] running summary updated (${summary.split(/\s+/).length} words) — ${path}`);
+  pushEvent(`notes: running summary updated (${summary.split(/\s+/).length} words)`);
   return summary;
 }
 
 /** Final pass: running summary + full timeline -> polished class notes. */
-export async function finalizeNotes(meeting: string, timeline: TimelineEntry[]): Promise<string> {
-  const path = statePath(meeting);
+export async function finalizeNotes(
+  meeting: string,
+  timeline: TimelineEntry[],
+  paths?: { notesMd: string; runningMd: string; timelineJson: string; dir: string; course: import("./courses.ts").CourseInfo; stem: string },
+): Promise<string> {
+  const path = paths?.runningMd ?? statePath(meeting);
   const running = existsSync(path) ? readFileSync(path, "utf8") : "";
   const timelineText = timeline
     .sort((a, b) => a.offsetSec - b.offsetSec)
@@ -90,13 +96,13 @@ export async function finalizeNotes(meeting: string, timeline: TimelineEntry[]):
     `## Action Items (only if mentioned)\n`,
   );
 
-  const paths = sessionPaths(meeting);
-  const outPath = paths.notesMd;
+  const p = paths ?? sessionPaths(meeting);
+  const outPath = p.notesMd;
   writeFileSync(outPath, final);
   // keep the session timeline alongside the notes
-  try { writeFileSync(paths.timelineJson, JSON.stringify(timeline, null, 2)); } catch { /* optional */ }
+  try { writeFileSync(p.timelineJson, JSON.stringify(timeline, null, 2)); } catch { /* optional */ }
   rebuildIndex();
-  console.log(`[notes] ✓ final notes written: ${outPath} (course: ${paths.course.slug})`);
-  await notify(`📝 Class notes ready: **${paths.course.name}** → ${outPath}`);
+  console.log(`[notes] ✓ final notes written: ${outPath} (course: ${p.course.slug})`);
+  await notify(`📝 Class notes ready: **${p.course.name}** → ${outPath}`);
   return final;
 }

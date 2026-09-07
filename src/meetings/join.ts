@@ -10,6 +10,7 @@ import { writeFileSync } from "node:fs";
 import type { BrowserContext, Page } from "playwright";
 import { notify } from "../notify.ts";
 import type { Meeting } from "./parse.ts";
+import { outPath } from "../paths.ts";
 
 export const JOIN_SEL = {
   // pre-join screen
@@ -100,7 +101,56 @@ async function ensureMuted(page: Page): Promise<void> {
   throw new Error("could not confirm mic muted after joining");
 }
 
-/** Join `meeting`. Returns the page the call lives in (for recording) or null. */
+/** Shared tail of both join paths: settle the pre-join UI, hard-guarantee the
+ *  mic is muted, notify with a screenshot. */
+async function finishJoin(ctx: BrowserContext, target: Page, title: string): Promise<Page | null> {
+  // run the pre-join state machine on it
+  if (!(await settleJoin(target))) {
+    console.log("[join] ! never reached in-meeting state");
+    return null;
+  }
+  console.log(`[join] ✓ in meeting: ${title}`);
+
+  // HARD GUARANTEE: mic muted (verified, not assumed) — wait for toolbar first
+  await target.waitForTimeout(3_000); // call UI settle
+  try {
+    await ensureMuted(target);
+  } catch (e) {
+    console.error(`[join] !! ${e}`);
+    await notify(`⚠️ Joined **${title}** but could NOT confirm mic is muted — check immediately!`);
+  }
+
+  // success webhook WITH screenshot (raw buffer — no file round-trip)
+  try {
+    const shot = await target.screenshot({ type: "png" });
+    writeFileSync(outPath("joined.png"), shot); // local archive
+    console.log(`[join] screenshot: ${shot.length} bytes`);
+    await notify(`✅ In meeting: **${title}** — muted & recording phase can start`, shot);
+  } catch (e) {
+    await notify(`✅ In meeting: ${title} (screenshot failed: ${String(e).slice(0, 80)})`);
+  }
+  return target;
+}
+
+/** Join directly by the meeting URL (Graph-discovered events) — no calendar
+ *  DOM clicking needed. Same settle/mute/notify guarantees as joinMeeting. */
+export async function joinMeetingByUrl(
+  ctx: BrowserContext,
+  title: string,
+  joinUrl: string,
+): Promise<Page | null> {
+  console.log(`[join] joining by URL: ${title}`);
+  await notify(`🎬 auto-school is **joining**: ${title}`);
+  const page = await ctx.newPage();
+  await page.goto(joinUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await page.waitForTimeout(3_000);
+  // the meeting UI may end up on this page or spin up in another one
+  const onThis = await page.locator(JOIN_SEL.joinNow).first().isVisible({ timeout: 3_000 }).catch(() => false);
+  const target = onThis ? page : ctx.pages().find((p) => p.url().includes("/meet/")) ?? page;
+  return finishJoin(ctx, target, title);
+}
+
+/** Join `meeting` (calendar-scrape path). Returns the call page or null. */
 export async function joinMeeting(
   ctx: BrowserContext,
   meeting: Meeting,
@@ -152,30 +202,6 @@ export async function joinMeeting(
     return null;
   }
 
-  // 4. run the pre-join state machine on it
-  if (!(await settleJoin(target))) {
-    console.log("[join] ! never reached in-meeting state");
-    return null;
-  }
-  console.log(`[join] ✓ in meeting: ${meeting.title}`);
-
-  // 5. HARD GUARANTEE: mic muted (verified, not assumed) — wait for toolbar first
-  await target.waitForTimeout(3_000); // call UI settle
-  try {
-    await ensureMuted(target);
-  } catch (e) {
-    console.error(`[join] !! ${e}`);
-    await notify(`⚠️ Joined **${meeting.title}** but could NOT confirm mic is muted — check immediately!`);
-  }
-
-  // 6. success webhook WITH screenshot (raw buffer — no file round-trip)
-  try {
-    const shot = await target.screenshot({ type: "png" });
-    writeFileSync("out/joined.png", shot); // local archive
-    console.log(`[join] screenshot: ${shot.length} bytes`);
-    await notify(`✅ In meeting: **${meeting.title}** — muted & recording phase can start`, shot);
-  } catch (e) {
-    await notify(`✅ In meeting: ${meeting.title} (screenshot failed: ${String(e).slice(0, 80)})`);
-  }
-  return target;
+  // 4-6: shared settle/mute/notify tail
+  return finishJoin(ctx, target, meeting.title);
 }

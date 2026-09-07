@@ -8,11 +8,12 @@
     "login": "node src/index.ts login",
     "login:fresh": "node src/index.ts login --fresh",
     "meetings": "node src/index.ts meetings",
+    "daemon": "node src/index.ts daemon",
     "install-browser": "npx playwright install chromium"
   },
   "dependencies": {
-    "otpauth": "^9.5.1",
-    "playwright": "^1.56.0"
+    "otpauth": "^9.5.2",
+    "playwright": "^1.63.0"
   },
   "devDependencies": {
     "@types/bun": "latest"

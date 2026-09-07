@@ -1,0 +1,13 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/mapping/route": "app/api/mapping/route.js",
+  "/api/session/route": "app/api/session/route.js",
+  "/api/models/route": "app/api/models/route.js",
+  "/api/segments/route": "app/api/segments/route.js",
+  "/api/backend/route": "app/api/backend/route.js",
+  "/api/settings/route": "app/api/settings/route.js",
+  "/api/media/[...path]/route": "app/api/media/[...path]/route.js",
+  "/course/[slug]/page": "app/course/[slug]/page.js",
+  "/page": "app/page.js",
+  "/settings/page": "app/settings/page.js"
+}
