@@ -11,11 +11,12 @@ import { sessionPaths } from "./courses.ts";
 import { ffSerial } from "./fflock.ts";
 import { notify } from "../notify.ts";
 import { RECORDINGS_DIR, outPath } from "../paths.ts";
-import { pushEvent } from "../status.ts";
+import { pushEvent, getSettings } from "../status.ts";
 
 // encode thread cap: x264 defaults to every core (16-core box => ~35% total
 // system CPU). 2 threads keeps bursts modest; raise for faster consolidation.
-const ENC_THREADS = String(Number(process.env.ENC_THREADS) || 2);
+// Read at spawn time so the Settings page applies without a restart.
+const encThreads = (): string => String(getSettings().encThreads);
 
 function run(cmd: string, args: string[]): Promise<{ code: number; err: string }> {
   return new Promise((res) => {
@@ -99,7 +100,7 @@ export async function consolidateSession(
     ...(hasAudio ? ["-i", audioFile!] : []),
     ...(hasAudio ? ["-map", "0:v", "-map", "1:a", "-shortest"] : []),
     "-vf", "scale=1280:-2",
-    "-c:v", "libx264", "-preset", "superfast", "-crf", "27", "-threads", ENC_THREADS,
+    "-c:v", "libx264", "-preset", "superfast", "-crf", "27", "-threads", encThreads(),
     ...(hasAudio ? ["-c:a", "aac", "-b:a", "96k"] : ["-an"]),
     "-movflags", "+faststart",
     mp4,

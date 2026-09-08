@@ -14,6 +14,12 @@ const MIME: Record<string, string> = {
   ".m4a": "audio/mp4",
   ".wav": "audio/wav",
   ".txt": "text/plain; charset=utf-8",
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".csv": "text/csv",
+  ".zip": "application/zip",
   ".json": "application/json",
   ".md": "text/markdown; charset=utf-8",
 };

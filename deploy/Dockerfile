@@ -13,10 +13,13 @@ WORKDIR /app
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY package.json ./
 # deps layer (cached unless package.json changes); --with-deps pulls system libs.
-# Edge too: .env may set BROWSER_CHANNEL=msedge (Teams sometimes blocks
-# vanilla Chromium) — install both so the env choice works in-container.
+# Edge only: BROWSER_CHANNEL=msedge in .env (Teams sometimes blocks vanilla
+# Chromium). If you ever switch the channel to chromium, re-add its install
+# here — otherwise the launch will fail with "browser not found".
+# Then: purge packages --with-deps drags in via recommend-chains but nothing
+# uses at runtime (C compiler, theorem prover, TTS, icon themes…), and strip
+# Edge locale packs (keep en-*) — saves ~350MB uncompressed.
 RUN npm install --omit=dev \
- && npx playwright install --with-deps chromium \
  && npx playwright install --with-deps msedge \
  && rm -rf /var/lib/apt/lists/*
 

@@ -5,6 +5,13 @@
 #   captured track can come out silent in a container with no sound device.
 set -e
 
+# Stale locks from a hard kill (SIGKILL/OOM/`docker restart`) would abort
+# Xvfb/PulseAudio startup forever — clear them first.
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+pkill -x Xvfb 2>/dev/null || true
+pkill -x pulseaudio 2>/dev/null || true
+rm -rf /tmp/pulse-* /tmp/xdg/pulse 2>/dev/null || true
+
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 i=0
 while [ $i -lt 50 ] && [ ! -S /tmp/.X11-unix/X99 ]; do sleep 0.1; i=$((i+1)); done

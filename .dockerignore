@@ -9,3 +9,7 @@ notes
 *.md
 !README.md
 deploy/k8s
+frontend
+docs
+test-launch.cjs
+left-meetings.json

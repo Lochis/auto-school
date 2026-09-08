@@ -12,8 +12,8 @@
  *      when present) -> wait up to MFA_WAIT_MINUTES for you to approve
  *   4. success = we land back on teams.microsoft.com app shell
  */
-import { rmSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
 import { chromium, type Page, type BrowserContext } from "playwright";
 import { config } from "../config.ts";
 import { notify } from "../notify.ts";
@@ -160,7 +160,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
     // Edge/Linux tab-audio is sink-wide) into its OWN PulseAudio sink. Any
     // other browser/audio on the box uses the default sink and cannot bleed in.
     env: { ...process.env, PULSE_SINK: process.env.REC_SINK ?? "rec", PULSE_SOURCE: `${process.env.REC_SINK ?? "rec"}.monitor` },
-    timeout: 60_000, // Edge cold-start in a container can be slow; 30s timed out
+    timeout: 120_000, // Edge cold-start on a throttled pod can exceed 60s (observed in k8s)
     viewport: null, // let the window size rule (recording wants real 1080p, not a clipped viewport)
     args: [
       "--disable-blink-features=AutomationControlled",
@@ -211,6 +211,7 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
     let centennialDone = false;
     let mfaPinged = false;
     let tileClicks = 0; // consecutive account-picker clicks without advancing
+    let notifiedApproval = false; // have we pinged Discord about the MFA approval screen?
     let firstTeamsTs: number | undefined; // continuous-presence tracker for success fallback
     let sawLoginUrl = false; // proof of an actual login flow on this run
     const wasFresh = !!opts.fresh;
@@ -335,22 +336,70 @@ export async function loginTeams(opts: { fresh?: boolean; hold?: boolean; keepOp
           continue;
         }
 
+        // ── MFA approval push ("Approve sign in request") ───────────────────────
+        // This modal appears AFTER selecting an account tile when push MFA is
+        // configured.  The account tiles may still be visible underneath, which
+        // would make the picker branch below click forever.  Detect it first
+        // and just wait — you approve on your phone.
+        if (await page.getByText(/approve sign in request/i).first().isVisible({ timeout: 800 }).catch(() => false)) {
+          if (!notifiedApproval) {
+            console.log("[login] MFA approval screen detected — waiting for you to approve on your phone");
+            const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
+            await notify(
+              "⏳ **Teams login: approve the sign-in request on your Microsoft Authenticator app** — waiting up to 10 min.",
+              shot,
+            ).catch(() => {});
+            notifiedApproval = true;
+          }
+          if (Date.now() > mfaDeadline) throw new Error("login watchdog expired (MFA approval never received)");
+          await page.waitForTimeout(POLL_MS);
+          continue;
+        }
+        // ── MFA security setup wizard ("Let's keep your account secure") ───────
+        // Fresh profiles sometimes land on a multi-step security registration
+        // wizard instead of the approval push.  Click "Not now" to skip it —
+        // the "Stay signed in?" KMSI page follows immediately after.
+        if (await page.getByText(/keep.*account secure/i).first().isVisible({ timeout: 800 }).catch(() => false)) {
+          if (!notifiedApproval) {
+            console.log("[login] MFA security setup wizard detected — clicking Not now");
+            notifiedApproval = true;
+          }
+          const notNow = page.getByText(/not now/i).first();
+          if (await notNow.isVisible({ timeout: 1_000 }).catch(() => false)) {
+            await notNow.click({ timeout: 2_000 }).catch(() => {});
+            console.log("[login] clicked Not now");
+          }
+          if (Date.now() > mfaDeadline) throw new Error("login watchdog expired (MFA setup wizard never resolved)");
+          await page.waitForTimeout(POLL_MS);
+          continue;
+        }
+
         // account picker: click our tile if email is known
         // (guarded: never on a KMSI page — identity banner also shows the email)
         if (config.email && !(await visibleText(page, SEL.staySignedInText)) &&
             (await visible(page, [SEL.accountTile])) &&
             (await page.getByText(config.email).first().isVisible({ timeout: 1_000 }).catch(() => false)) &&
             !(await visible(page, [SEL.staySignedInNo]))) {
+          if (Date.now() > mfaDeadline)
+            throw new Error("login watchdog expired (account picker never resolved — tile clicks do nothing)");
           await page.getByText(config.email).first().click();
           tileClicks++;
           console.log(`[login] account tile clicked (#${tileClicks})`);
           if (tileClicks % 4 === 0) {
             // stuck: same picker after repeated clicks — dump evidence
+            mkdirSync(dirname(outPath("stuck-picker.png")), { recursive: true }); // fresh volume: out/ may not exist yet
             const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
             if (shot) writeFileSync(outPath("stuck-picker.png"), shot);
             const text = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
             if (text) writeFileSync(outPath("stuck-picker.txt"), text.slice(0, 4_000));
             console.log(`[login] ! stuck on account picker — dumped screenshot+text; url=${page.url().slice(0, 120)}`);
+            // one ping with evidence — repeated cycles stay quiet
+            if (tileClicks === 4 && shot)
+              await notify(
+                `🔐 **Teams login is stuck on the account picker** — tile clicks do nothing (fresh profile / MFA needed?). ` +
+                `Evidence: /data/out/stuck-picker.png. Watchdog will abort and retry.`,
+                shot,
+              );
           }
           await page.waitForTimeout(2_000);
           continue;

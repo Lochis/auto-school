@@ -1,4 +1,4 @@
-/** Proxy to the daemon's settings (transcription toggle). */
+/** Proxy to the daemon's settings (settings.json on the data volume). */
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +9,9 @@ export async function GET() {
     const res = await fetch(`${BASE}/settings`, { signal: AbortSignal.timeout(3000) });
     return NextResponse.json(await res.json());
   } catch {
-    return NextResponse.json({ transcribe: true, offline: true });
+    // full shape so the panel renders sensibly while offline
+    return NextResponse.json({ transcribe: true, recordRetentionDays: 30, batchSegments: 4,
+      transcribeBatch: 9, encThreads: 2, geminiModels: "", joinEarlyMinutes: 3, offline: true });
   }
 }
 

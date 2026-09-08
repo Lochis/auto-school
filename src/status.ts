@@ -2,13 +2,53 @@
  *  the frontend renders it. Every pipeline stage reports here so the UI can
  *  show what's happening now and what happens next. */
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { DATA_DIR, OUT_DIR } from "./paths.ts";
 import { listSessions } from "./pipeline/sessions.ts";
 
 export interface StatusEvent { ts: string; msg: string }
 
-export interface Settings { transcribe: boolean }
+export interface Settings {
+  transcribe: boolean;
+  /** delete recording videos older than this many days (0 = keep forever);
+   *  transcripts/notes are never deleted */
+  recordRetentionDays: number;
+  /** live pipeline: segments per Gemini request (1–6) */
+  batchSegments: number;
+  /** manual re-transcribe: audio chunks per request (1–9) */
+  transcribeBatch: number;
+  /** consolidation x264 encode threads (1–4) */
+  encThreads: number;
+  /** comma-separated quota-fallback chain */
+  geminiModels: string;
+  /** join this many minutes before class start */
+  joinEarlyMinutes: number;
+}
+
+/** clamped integer from env, or a default */
+function envNum(name: string, dflt: number, lo: number, hi: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : dflt;
+}
+
+export function defaultSettings(): Settings {
+  try { process.loadEnvFile(); } catch { /* env optional — .env seeds defaults only */ }
+  return {
+    transcribe: true,
+    recordRetentionDays: envNum("RECORD_RETENTION_DAYS", 30, 0, 3650),
+    batchSegments: envNum("BATCH_SEGMENTS", 4, 1, 6),
+    transcribeBatch: envNum("TRANSCRIBE_BATCH", 9, 1, 9),
+    encThreads: envNum("ENC_THREADS", 2, 1, 4),
+    geminiModels: (process.env.GEMINI_MODELS ?? "gemini-3.6-flash,gemini-3-flash-preview,gemini-2.5-flash")
+      .split(",").map((m) => m.trim()).filter(Boolean).join(","),
+    joinEarlyMinutes: envNum("JOIN_EARLY_MINUTES", 3, 0, 30),
+  };
+}
+
+/** The active Gemini fallback chain — settings first, .env as seed. */
+export function modelChain(): string[] {
+  return getSettings().geminiModels.split(",").map((m) => m.trim()).filter(Boolean);
+}
 
 export interface ModelQuota {
   model: string;
@@ -33,10 +73,7 @@ function blank(model: string): ModelQuota {
 
 /** Register models from GEMINI_MODELS env var (idempotent). */
 function initModelQuotas(): void {
-  try { process.loadEnvFile(); } catch {}
-  const models = (process.env.GEMINI_MODELS ?? "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash")
-    .split(",").map(m => m.trim()).filter(Boolean);
-  for (const m of models) modelQuotas.get(m) ?? modelQuotas.set(m, blank(m));
+  for (const m of modelChain()) modelQuotas.get(m) ?? modelQuotas.set(m, blank(m));
 }
 initModelQuotas();
 
@@ -136,14 +173,44 @@ export function noteModelUsed(model: string): void {
 }
 
 export function getSettings(): Settings {
-  try { return { transcribe: true, ...JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) }; }
-  catch { return { transcribe: true }; }
+  try { return { ...defaultSettings(), ...JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) }; }
+  catch { return defaultSettings(); }
 }
 
 export function setSettings(patch: Partial<Settings>): Settings {
   const next = { ...getSettings(), ...patch };
-  try { writeFileSync(SETTINGS_FILE, JSON.stringify(next, null, 2)); } catch { /* read-only fs: in-memory only */ }
+  // canonicalize the chain no matter who writes it
+  if (typeof next.geminiModels === "string")
+    next.geminiModels = next.geminiModels.split(",").map((m) => m.trim()).filter(Boolean).join(",");
+  try {
+    mkdirSync(dirname(SETTINGS_FILE), { recursive: true }); // fresh volume: /data may not exist yet
+    writeFileSync(SETTINGS_FILE, JSON.stringify(next, null, 2));
+  } catch { /* read-only fs: in-memory only */ }
   return next;
+}
+
+/** Validate + apply a settings PUT body. Unknown / invalid fields are
+ *  ignored; only sent fields change (a numbers-only save never flips
+ *  transcription off). Numbers are clamped to their sane range. */
+export function applySettingsPatch(body: Record<string, unknown>): { prev: Settings; next: Settings } {
+  const num = (v: unknown, lo: number, hi: number): number | undefined => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n))) : undefined;
+  };
+  const prev = getSettings();
+  const chain = typeof body.geminiModels === "string"
+    ? body.geminiModels.split(",").map((m) => m.trim()).filter(Boolean).join(",")
+    : "";
+  const next = setSettings({
+    ...("transcribe" in body ? { transcribe: !!body.transcribe } : {}),
+    ...(num(body.recordRetentionDays, 0, 3650) !== undefined ? { recordRetentionDays: num(body.recordRetentionDays, 0, 3650)! } : {}),
+    ...(num(body.batchSegments, 1, 6) !== undefined ? { batchSegments: num(body.batchSegments, 1, 6)! } : {}),
+    ...(num(body.transcribeBatch, 1, 9) !== undefined ? { transcribeBatch: num(body.transcribeBatch, 1, 9)! } : {}),
+    ...(num(body.encThreads, 1, 4) !== undefined ? { encThreads: num(body.encThreads, 1, 4)! } : {}),
+    ...(num(body.joinEarlyMinutes, 0, 30) !== undefined ? { joinEarlyMinutes: num(body.joinEarlyMinutes, 0, 30)! } : {}),
+    ...(chain ? { geminiModels: chain } : {}), // commas-only input can't wipe the chain
+  });
+  return { prev, next };
 }
 
 /** "Same day" scoping uses the school's timezone (Centennial = Toronto). */

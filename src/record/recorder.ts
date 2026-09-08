@@ -81,7 +81,8 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
   // or at stop. Token math (measured): 5-min segment ≈ 25k input tokens, peak
   // allowance 250k — so 4 segments/request uses <half the budget while cutting
   // request count 4x. Quota is per-DAY requests, not tokens.
-  const BATCH = Math.min(6, Math.max(1, Number(process.env.BATCH_SEGMENTS ?? 4) || 4));
+  // Re-read from settings at each close so the Settings page applies mid-class.
+  const batchSize = () => Math.min(6, Math.max(1, getSettings().batchSegments));
   const pending: { file: string; idx: number; audio?: { file: string; offsetSec: number } }[] = [];
 
   const flush = (): void => {
@@ -118,8 +119,8 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
     }
     pending.push({ file: `${RECORD_DIR}/${file}`, idx, audio: { file: audioFile, offsetSec: (idx * SEGMENT_MS) / 1000 } });
     setDetail({ batchQueued: pending.length, segments: state.segments.length });
-    pushEvent(`segment ${idx} closed → queued (${pending.length}/${BATCH} for next Gemini batch)`);
-    if (pending.length >= BATCH) flush();
+    pushEvent(`segment ${idx} closed → queued (${pending.length}/${batchSize()} for next Gemini batch)`);
+    if (pending.length >= batchSize()) flush();
   };
 
   await page.exposeFunction("__seg", (idx: number, b64: string, title: string) => {
@@ -238,7 +239,8 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
   }
   if (!started) { audioRec.kill("SIGKILL"); throw new Error("capture never started (getDisplayMedia denied?)"); }
 
-  const stop = async (): Promise<RecordingResult> => {
+  // ── Phase 1: quick stop — only needs the live page (~2s) ────────
+  const quickStop = async (): Promise<{ result: RecordingResult; postProcess: () => Promise<void> }> => {
     state.ms = Date.now() - t0;
     audioRec.kill("SIGTERM"); // flush the ogg
     await new Promise((res) => setTimeout(res, 500));
@@ -248,59 +250,75 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
       (window as any).__recStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
     }).catch(() => {});
     await new Promise((res) => setTimeout(res, 1_500));
-    console.log("[rec] rebuilding seek points (ffmpeg remux)...");
-    pushEvent("meeting ended — remuxing segments (seek index)");
-    updateSession(stemOf(meetingTitle), { stage: "remuxing", title: meetingTitle });
-    const lastIndex = state.segments.length - 1;
-    for (const seg of state.segments) {
-      if (!(await rebuildSeekPoints(seg))) console.warn(`[rec] ! remux failed: ${seg} (raw copy kept)`);
-    }
-    console.log("[rec] ✓ all segments finalized with seek index");
-    if (lastIndex >= 0) queueProcessing(state.segments[lastIndex], lastIndex); // tail segment
-    flush(); // send any partial batch immediately
-    // wait for in-flight Gemini jobs before final report
-    if (inFlight.size) {
-      console.log(`[pipe] waiting for ${inFlight.size} in-flight segment analysis...`);
-      pushEvent(`waiting for ${inFlight.size} in-flight Gemini batch(es)`);
-      await Promise.allSettled([...inFlight]);
-    }
-    if (timeline.length) {
-      const { writeFileSync } = await import("node:fs");
-      mkdirSync(outPath(), { recursive: true });
-      writeFileSync(outPath("timeline.json"), JSON.stringify(timeline.sort((a, b) => a.offsetSec - b.offsetSec), null, 2));
-      console.log(`[pipe] ✓ timeline complete: ${timeline.length} segment(s) → ${outPath("timeline.json")} + timeline.jsonl`);
-      // final polish pass on the notes
-      try {
-        await finalizeNotes(meetingTitle, timeline);
-        pushEvent("final notes written");
-      } catch (e) {
-        console.warn(`[notes] ! finalize failed: ${String(e).slice(0, 150)} — running summary remains at notes/**/...running.md`);
-        await notify(`⚠️ Notes finalize failed — raw running summary kept`);
+    // ── Phase 2: heavy post-processing — no page needed ─────────────
+    const postProcess = async (): Promise<void> => {
+      console.log("[rec] rebuilding seek points (ffmpeg remux)...");
+      pushEvent("meeting ended — remuxing segments (seek index)");
+      updateSession(stemOf(meetingTitle), { stage: "remuxing", title: meetingTitle });
+      const lastIndex = state.segments.length - 1;
+      for (const seg of state.segments) {
+        if (!(await rebuildSeekPoints(seg))) console.warn(`[rec] ! remux failed: ${seg} (raw copy kept)`);
       }
-    }
-    // ALWAYS consolidate (transcription may be off; the mp4 is the listenable
-    // archive) — muxes the pulse-monitor ogg in as the audio track
-    try {
-      updateSession(stemOf(meetingTitle), { stage: "consolidating", title: meetingTitle });
-      const done = await consolidateSession(meetingTitle, state.segments.map((s) => `${RECORD_DIR}/${s}`), state.ms / 1000, audioFile);
-      if (done) updateSession(stemOf(meetingTitle), { stage: "done", title: meetingTitle, mp4: done.mp4, sizeMB: Math.round(done.outBytes / 1e6) });
-      else updateSession(stemOf(meetingTitle), { stage: "failed", stageNote: "consolidation failed — raws kept", title: meetingTitle });
-    } catch (e) {
-      console.warn(`[consolidate] ! ${String(e).slice(0, 150)} — segments left in ${RECORD_DIR}/`);
-    }
-    return state;
+      console.log("[rec] ✓ all segments finalized with seek index");
+      if (lastIndex >= 0) queueProcessing(state.segments[lastIndex], lastIndex); // tail segment
+      flush(); // send any partial batch immediately
+      // wait for in-flight Gemini jobs before final report
+      if (inFlight.size) {
+        console.log(`[pipe] waiting for ${inFlight.size} in-flight segment analysis...`);
+        pushEvent(`waiting for ${inFlight.size} in-flight Gemini batch(es)`);
+        await Promise.allSettled([...inFlight]);
+      }
+      if (timeline.length) {
+        const { writeFileSync } = await import("node:fs");
+        mkdirSync(outPath(), { recursive: true });
+        writeFileSync(outPath("timeline.json"), JSON.stringify(timeline.sort((a, b) => a.offsetSec - b.offsetSec), null, 2));
+        console.log(`[pipe] ✓ timeline complete: ${timeline.length} segment(s) → ${outPath("timeline.json")} + timeline.jsonl`);
+        // final polish pass on the notes
+        try {
+          await finalizeNotes(meetingTitle, timeline);
+          pushEvent("final notes written");
+        } catch (e) {
+          console.warn(`[notes] ! finalize failed: ${String(e).slice(0, 150)} — running summary remains at notes/**/...running.md`);
+          await notify(`⚠️ Notes finalize failed — raw running summary kept`);
+        }
+      }
+      // ALWAYS consolidate (transcription may be off; the mp4 is the listenable
+      // archive) — muxes the pulse-monitor ogg in as the audio track
+      try {
+        updateSession(stemOf(meetingTitle), { stage: "consolidating", title: meetingTitle });
+        const done = await consolidateSession(meetingTitle, state.segments.map((s) => `${RECORD_DIR}/${s}`), state.ms / 1000, audioFile);
+        if (done) updateSession(stemOf(meetingTitle), { stage: "done", title: meetingTitle, mp4: done.mp4, sizeMB: Math.round(done.outBytes / 1e6) });
+        else updateSession(stemOf(meetingTitle), { stage: "failed", stageNote: "consolidation failed — raws kept", title: meetingTitle });
+      } catch (e) {
+        console.warn(`[consolidate] ! ${String(e).slice(0, 150)} — segments left in ${RECORD_DIR}/`);
+      }
+    };
+    return { result: state, postProcess };
   };
-  (page as any).__recStop = stop;
+  (page as any).__recStop = quickStop;
 
   await notify(`🔴 Recording (tab-only): **${meetingTitle}**`);
   return state;
 }
 
-export async function stopRecording(page: Page): Promise<RecordingResult | null> {
-  const stop = (page as any).__recStop as (() => Promise<RecordingResult>) | undefined;
-  if (!stop) return null;
+/** Quick stop only (~2s) — stops MediaRecorder + flushes audio, returns a
+ *  handle with a `.postProcess()` method for the heavy remux/consolidate work.
+ *  Use this when you want to leave the meeting immediately. */
+export async function quickStopRecording(page: Page): Promise<{ result: RecordingResult; postProcess: () => Promise<void> } | null> {
+  const fn = (page as any).__recStop as (() => Promise<{ result: RecordingResult; postProcess: () => Promise<void> }>) | undefined;
+  if (!fn) return null;
   (page as any).__recStop = undefined;
-  return stop();
+  return fn();
+}
+
+/** Legacy: stops recording AND runs all post-processing (blocking). */
+export async function stopRecording(page: Page): Promise<RecordingResult | null> {
+  const fn = (page as any).__recStop as (() => Promise<{ result: RecordingResult; postProcess: () => Promise<void> }>) | undefined;
+  if (!fn) return null;
+  (page as any).__recStop = undefined;
+  const { result, postProcess } = await fn();
+  await postProcess();
+  return result;
 }
 
 export async function stillInMeeting(page: Page): Promise<boolean> {

@@ -1,6 +1,51 @@
-# Kustomize-flavored base; apply with `kubectl apply -k deploy/k8s`.
-# Secrets are NOT in git — create once (see deploy/README.md):
-#   kubectl -n auto-school create secret generic auto-school-env --from-env-file=.env
+# auto-school — k3s / Traefik / Longhorn / lochis-tls
+# Single-file manifest in the firecrawl.yaml style (see ~/Projects/firecrawl-k8s).
+# One pod, two containers: the recording daemon (Xvfb+PulseAudio+Chromium+ffmpeg
+# in its image) and the Next.js frontend. Same pod because the Longhorn PVC is
+# RWO (one node) and the frontend talks to the daemon over localhost:7800.
+#
+# ── BEFORE APPLYING ─────────────────────────────────────────────────────────
+# 1) Build + push images to ghcr (already authenticated locally):
+#      docker build -t ghcr.io/lochis/auto-school:latest -f deploy/Dockerfile .
+#      docker build -t ghcr.io/lochis/auto-school-frontend:latest frontend/
+#      docker push ghcr.io/lochis/auto-school:latest ghcr.io/lochis/auto-school-frontend:latest
+# 2) Create the namespace + secret (secrets stay OUT of git):
+#      kubectl create namespace auto-school
+#      kubectl -n auto-school create secret generic auto-school-env --from-env-file=.env
+#    (.env carries GEMINI_API_KEY, Teams creds, TOTP_SECRET, GLM_API_KEY…
+#     include CHROMIUM_SANDBOX=0 if the node lacks unprivileged userns)
+# 3) Copy the ghcr pull secret into this namespace (packages are private):
+#      kubectl get secret reg-credentials-ghcr -n <src-ns> -o yaml \
+#        | sed 's/namespace: <src-ns>/namespace: auto-school/' | kubectl apply -f -
+# 4) Add `auto-school` to Reflector's namespace list so lochis-tls lands here:
+#      ~/Projects/firecrawl-k8s/update_reflector.sh auto-school
+#    (verify: kubectl -n auto-school get secret lochis-tls)
+# 5) Apply:
+#      kubectl apply -f deploy/k8s/auto-school.yaml
+#
+# ── VERIFY ──────────────────────────────────────────────────────────────────
+#   kubectl -n auto-school rollout status deploy/auto-school
+#   kubectl -n auto-school logs deploy/auto-school -c auto-school --tail 20
+#   curl https://school.vanderloch.com/api/backend
+# Controller debug (join/leave/scan without ingress):
+#   kubectl -n auto-school port-forward deploy/auto-school 7800:7800
+#
+# ⚠ NO AUTH on the frontend — the wildcard ingress exposes your class
+# recordings + Join/Leave controls publicly. Enable the basicAuth middleware
+# below before real use (htpasswd -nbB lochis '<pass>' → paste hash).
+#
+# ── NOTES ───────────────────────────────────────────────────────────────────
+# * strategy Recreate + replicas 1: the Chromium profile lock means never two
+#   backend pods on the PVC; terminationGracePeriod 5m lets the daemon stop the
+#   recorder and consolidate before the pod dies.
+# * No seed job here (unlike compose): the PVC starts empty — recordings and
+#   notes accumulate from the first class. Copy old data in once with a
+#   throwaway pod if you want it.
+# * /dev/shm is a 1Gi Memory emptyDir — Chromium recording tabs crash on the
+#   k8s default 64MB shm during long captures.
+# * configmap-free on purpose: all env is either here or in the secret; edits
+#   to the secret need `kubectl -n auto-school rollout restart deploy/auto-school`.
+
 ---
 apiVersion: v1
 kind: Namespace
@@ -17,72 +62,96 @@ spec:
   storageClassName: longhorn
   resources:
     requests:
-      storage: 5Gi
+      storage: 20Gi # ~100MB consolidated mp4 + notes per class hour
+---
+# apiVersion: traefik.io/v1alpha1
+# kind: Middleware
+# metadata:
+#   name: auto-school-basicauth
+#   namespace: auto-school
+# spec:
+#   basicAuth:
+#     users:
+#       - "lochis:$2y$05$REPLACE_WITH_HTPASSWD_HASH"
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: auto-school
   namespace: auto-school
-  labels: { app: auto-school }
+  labels:
+    app: auto-school
 spec:
   replicas: 1
-  strategy:
-    type: Recreate # RWO PVC — never two pods at once (profile lock)
+  strategy: { type: Recreate } # RWO PVC + profile lock — never two pods
   selector:
-    matchLabels: { app: auto-school }
+    matchLabels:
+      app: auto-school
   template:
     metadata:
-      labels: { app: auto-school }
+      labels:
+        app: auto-school
     spec:
-      terminationGracePeriodSeconds: 300 # daemon consolidates the recording before dying
+      terminationGracePeriodSeconds: 300 # stop recorder + consolidate on the way out
+      imagePullSecrets:
+        - name: reg-credentials-ghcr # copied into this namespace (header step 3)
       securityContext:
         runAsUser: 1000 # "node" user in the image
         runAsGroup: 1000
-        fsGroup: 1000 # PVC becomes writable by the app user
+        fsGroup: 1000 # PVC writable by the app user
         seccompProfile: { type: RuntimeDefault }
       containers:
+        # ── recording daemon: Teams bot + ffmpeg pipeline + controller :7800 ──
         - name: auto-school
-          # build & load to your cluster's nodes (or push to your registry):
-          #   docker build -t auto-school:local -f deploy/Dockerfile .
-          #   (then) k3s ctr images import auto-school.tar
-          image: auto-school:local
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/lochis/auto-school:latest
+          imagePullPolicy: Always # mutable tag — always re-check on pod start
+          env:
+            - { name: TZ, value: America/Toronto } # school-day logic is date-scoped
           envFrom:
             - secretRef: { name: auto-school-env }
+          ports:
+            - { containerPort: 7800, name: ctrl }
+          livenessProbe: # entrypoint clears stale Xvfb/Pulse locks, so a hung
+            httpGet: { path: /healthz, port: ctrl } # daemon is the only real failure
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /healthz, port: ctrl }
+            initialDelaySeconds: 10
+            periodSeconds: 10
           resources:
             requests: { cpu: 500m, memory: 1Gi }
-            limits: { cpu: "2", memory: 4Gi } # headroom for the ffmpeg burst
-          livenessProbe:
-            exec:
-              command: ["pgrep", "-f", "node src"]
-            periodSeconds: 60
-            failureThreshold: 3
+            limits: { cpu: "2", memory: 4Gi } # headroom for Chromium + ffmpeg bursts
           volumeMounts:
             - { name: data, mountPath: /data }
-        # ── frontend: reads the same PVC read-only ──────────────────────────
-        # Same pod (not its own Deployment) because Longhorn RWO can only be
-        # mounted on one node. Split later by switching the PVC to RWX.
+            - { name: shm, mountPath: /dev/shm }
+        # ── frontend: same pod, PVC read-only, talks to daemon on localhost ──
         - name: frontend
-          image: auto-school-frontend:local
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/lochis/auto-school-frontend:latest
+          imagePullPolicy: Always
           env:
             - { name: AUTO_SCHOOL_DATA, value: /data }
-          ports: [{ containerPort: 3000, name: http }]
-          resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits: { cpu: 500m, memory: 512Mi }
+            - { name: BACKEND_URL, value: "http://localhost:7800" } # same pod
+            - { name: TZ, value: America/Toronto }
+          ports:
+            - { containerPort: 3000, name: http }
           readinessProbe:
             httpGet: { path: /, port: http }
             periodSeconds: 15
           livenessProbe:
             httpGet: { path: /, port: http }
             periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
           volumeMounts:
             - { name: data, mountPath: /data, readOnly: true }
       volumes:
         - name: data
           persistentVolumeClaim: { claimName: auto-school-data }
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 1Gi }
 ---
 apiVersion: v1
 kind: Service
@@ -93,3 +162,36 @@ spec:
   selector: { app: auto-school }
   ports:
     - { name: http, port: 80, targetPort: http }
+---
+# cluster-internal debug surface for the controller (port-forward target)
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-school-ctrl
+  namespace: auto-school
+spec:
+  selector: { app: auto-school }
+  ports:
+    - { name: ctrl, port: 7800, targetPort: ctrl }
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: auto-school
+  namespace: auto-school
+  annotations:
+    kubernetes.io/ingress.class: traefik-external
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`school.vanderloch.com`)
+      # middlewares:
+      #   - name: auto-school-basicauth
+      services:
+        - name: auto-school
+          port: 80
+          scheme: http
+  tls:
+    secretName: lochis-tls

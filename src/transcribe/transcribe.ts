@@ -9,7 +9,7 @@ import { createReadStream, mkdirSync, writeFileSync, unlinkSync, statSync } from
 import { readFile } from "node:fs/promises";
 import { outPath } from "../paths.ts";
 import { geminiCall } from "../pipeline/llm.ts";
-import { pushEvent, setDetail } from "../status.ts";
+import { pushEvent, setDetail, getSettings } from "../status.ts";
 
 const CHUNK_SEC = 300; // 5min @16k mono wav ≈ 10MB — under 20MB inline limit
 
@@ -43,7 +43,8 @@ async function durationSec(file: string): Promise<number> {
 /** One request carries several opus chunks (multi-part) — a 5-min opus chunk
  *  is ~1.2MB base64 vs 12.8MB as WAV, so ~45 min of audio fits per request.
  *  That cuts RPD usage 5-10x vs one-request-per-chunk. */
-const CHUNKS_PER_REQ = Math.max(1, Number(process.env.TRANSCRIBE_BATCH ?? 9));
+// re-read at request time so the Settings page applies without a restart
+const chunksPerReq = () => Math.min(9, Math.max(1, getSettings().transcribeBatch));
 const REQ_BYTES_CAP = 14 * 1024 * 1024; // stay clear of the 20MB inline ceiling after base64
 
 const fmtMs = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
@@ -80,7 +81,7 @@ async function transcribeBatch(files: string[], offsets: number[]): Promise<Map<
 export async function transcribeFile(input: string): Promise<Transcript> {
   mkdirSync(outPath("transcribe"), { recursive: true });
   const total = await durationSec(input);
-  console.log(`[asr] ${input} — ${Math.round(total)}s audio, ${CHUNK_SEC}s opus chunks, ≤${CHUNKS_PER_REQ} per request`);
+  console.log(`[asr] ${input} — ${Math.round(total)}s audio, ${CHUNK_SEC}s opus chunks, ≤${chunksPerReq()} per request`);
 
   // 1) slice to 16k mono opus — ~10x smaller than WAV, speech quality unchanged
   const nChunks = Math.max(1, Math.ceil(total / CHUNK_SEC));
@@ -97,11 +98,11 @@ export async function transcribeFile(input: string): Promise<Transcript> {
   // 2) batch slices into as few requests as the size cap allows
   const chunks: TranscriptChunk[] = [];
   let batch = 0;
-  const nBatches = Math.ceil(nChunks / CHUNKS_PER_REQ);
-  for (let start = 0; start < files.length; start += CHUNKS_PER_REQ) {
+  const nBatches = Math.ceil(nChunks / chunksPerReq());
+  for (let start = 0; start < files.length; start += chunksPerReq()) {
     let end = start;
     let bytes = 0;
-    while (end < files.length && end - start < CHUNKS_PER_REQ) {
+    while (end < files.length && end - start < chunksPerReq()) {
       const sz = statSync(files[end]).size * 1.34; // base64 inflation
       if (end > start && bytes + sz > REQ_BYTES_CAP) break;
       bytes += sz;

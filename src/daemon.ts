@@ -12,6 +12,7 @@
  *                                use to re-attend a same-titled test meeting)
  */
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { loginTeams } from "./login/teams-login.ts";
@@ -20,20 +21,23 @@ import { joinMeeting, joinMeetingByUrl } from "./meetings/join.ts";
 import { listTodayMeetings } from "./graph/meetings.ts";
 import { getAccessToken } from "./graph/auth.ts";
 import { config } from "./config.ts";
-import { startRecording, stopRecording, stillInMeeting, rebuildSeekPoints, RECORD_DIR } from "./record/recorder.ts";
+import { startRecording, quickStopRecording, stopRecording, stillInMeeting, rebuildSeekPoints, RECORD_DIR } from "./record/recorder.ts";
 import { consolidateSession } from "./pipeline/consolidate.ts";
 import { notify } from "./notify.ts";
-import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday } from "./status.ts";
+import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, applySettingsPatch } from "./status.ts";
 import { lastDeviceCode } from "./graph/auth.ts";
-import { NOTES_DIR, RECORDINGS_DIR, outPath } from "./paths.ts";
+import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath } from "./paths.ts";
+import { listMaterials, addMaterial, removeMaterial, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
 import { updateSession } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
+import { runRetention } from "./pipeline/retention.ts";
 
 const POLL_MS = (Number(process.env.POLL_MINUTES ?? 2) || 2) * 60_000;
 const DISCOVERY_MS = (Number(process.env.DISCOVERY_SECONDS ?? 60) || 60) * 1_000; // Graph poll cadence
-const JOIN_EARLY_MS = (Number(process.env.JOIN_EARLY_MINUTES ?? 3) || 3) * 60_000; // join this long before start
+// join this long before start — re-read at use so Settings applies without restart
+const joinEarlyMs = () => Math.max(0, getSettings().joinEarlyMinutes) * 60_000;
 const PORT = Number(process.env.CONTROLLER_PORT ?? 7800) || 7800;
 
 /** Graph tokens live next to the browser profile — cheap HTTP polling is only
@@ -114,7 +118,8 @@ async function rescueOrphans(): Promise<void> {
 /** interruptible sleep — /scan wakes it immediately */
 const nap = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
+    // NaN/undefined guard: a bad computation upstream must not become a 1ms hot loop
+    const t = setTimeout(resolve, Number.isFinite(ms) && ms > 0 ? Math.min(ms, 24 * 3_600_000) : 60_000);
     waker = () => { clearTimeout(t); waker = null; resolve(); };
   }).then(() => { waker = null; });
 
@@ -193,7 +198,7 @@ async function buildSchedule(): Promise<Sched[]> {
 function nextActionable(): Sched | null {
   const now = Date.now();
   return schedule.find((e) =>
-    now >= e.start - JOIN_EARLY_MS && now < e.end && !handled.has(e.title) && !attendedToday().includes(e.title)) ?? null;
+    now >= e.start - joinEarlyMs() && now < e.end && !handled.has(e.title) && !attendedToday().includes(e.title)) ?? null;
 }
 
 /** Record + watch + stop for an already-joined meeting (both join paths). */
@@ -232,11 +237,22 @@ async function attendAndRecord(page: import("playwright").Page, title: string): 
       leaveRequested = false;
     }
     try {
-      const done = await stopRecording(page);
-      if (done) {
-        setActivity("post-processing (notes, consolidation)", { meeting: title });
-        console.log(`[daemon] recording done: ${done.segments.length} segment(s), ${(done.bytes / 1e6).toFixed(0)} MB, ${Math.round(done.ms / 60000)} min`);
-        await notify(`⏹️ Recording ended: **${title}** — ${done.segments.length} segment(s), ${Math.round(done.ms / 60000)} min`);
+      // quick stop (~2s): stops MediaRecorder + flushes audio, then LEAVE immediately
+      const handle = await quickStopRecording(page);
+      if (handle) {
+        // close the browser tab NOW — leave the meeting instantly
+        await page.close().catch(() => {});
+        console.log(`[daemon] left ${title}`);
+        // heavy post-processing runs in the background (no page needed)
+        const { result: done, postProcess } = handle;
+        void postProcess().then(() => {
+          setActivity("idle — post-processing complete", { meeting: title });
+          console.log(`[daemon] recording done: ${done.segments.length} segment(s), ${(done.bytes / 1e6).toFixed(0)} MB, ${Math.round(done.ms / 60000)} min`);
+          notify(`⏹️ Recording ended: **${title}** — ${done.segments.length} segment(s), ${Math.round(done.ms / 60000)} min`).catch(() => {});
+        }).catch((e) => {
+          console.error(`[rec] post-process failed: ${e}`);
+          notify(`⚠️ Post-processing failed for **${title}**: \`${String(e).slice(0, 120)}\``).catch(() => {});
+        });
       }
     } catch (e) {
       console.error(`[rec] stop failed: ${e}`);
@@ -264,7 +280,7 @@ async function graphJoinable(): Promise<{ title: string; joinUrl: string } | nul
       if (!e.isOnline || !e.joinUrl || handled.has(e.subject)) continue;
       const s = new Date(e.start).getTime();
       const en = new Date(e.end).getTime();
-      if (now >= s - JOIN_EARLY_MS && now < en) return { title: e.subject, joinUrl: e.joinUrl };
+      if (now >= s - joinEarlyMs() && now < en) return { title: e.subject, joinUrl: e.joinUrl };
     }
     return null;
   } catch (e) {
@@ -540,13 +556,136 @@ function startController(): void {
           req.on("data", (c) => (b += c));
           req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
         });
-        const s = setSettings({ transcribe: !!body.transcribe });
-        pushEvent(`settings: transcription ${s.transcribe ? "ON" : "OFF (quota guard)"}`);
+        const { prev, next: s } = applySettingsPatch(body);
+        // every changed knob lands in the activity feed
+        const changes: string[] = [];
+        if (prev.transcribe !== s.transcribe) changes.push(`transcription ${s.transcribe ? "ON" : "OFF (quota guard)"}`);
+        if (prev.recordRetentionDays !== s.recordRetentionDays) changes.push(`retention ${s.recordRetentionDays === 0 ? "forever" : `${s.recordRetentionDays}d`}`);
+        if (prev.batchSegments !== s.batchSegments) changes.push(`live batch ${s.batchSegments}/req`);
+        if (prev.transcribeBatch !== s.transcribeBatch) changes.push(`asr batch ${s.transcribeBatch}/req`);
+        if (prev.encThreads !== s.encThreads) changes.push(`encode threads ${s.encThreads}`);
+        if (prev.joinEarlyMinutes !== s.joinEarlyMinutes) changes.push(`join early ${s.joinEarlyMinutes}min`);
+        if (prev.geminiModels !== s.geminiModels) changes.push(`model chain → ${s.geminiModels}`);
+        if (changes.length) pushEvent(`settings: ${changes.join(" · ")}`);
         return send(200, s);
       }
     }
     if (url.pathname === "/models") {
       if (req.method === "GET") return send(200, getModelQuotas());
+    }
+    // ── ingest: bring-your-own Teams recording + optional transcript ────
+    // Form gives week# + course → we derive the standard stem so the UI
+    // (player, transcript, week grouping) picks it up like a native session.
+    if (url.pathname === "/ingest" && req.method === "POST") {
+      try {
+        const r = new Request(`http://localhost:${PORT}/ingest`, {
+          method: "POST", headers: req.headers,
+          body: Readable.toWeb(req) as unknown as ReadableStream, duplex: "half",
+        } as RequestInit);
+        const form = await r.formData();
+        const file = form.get("file") as File | null;
+        const tfile = form.get("transcript") as File | null;
+        const course = String(form.get("course") || "").replace(/[^\w -]/g, "").trim().replace(/\s+/g, "_");
+        if (!file?.name || !course) return send(400, { error: "file and course required" });
+        if (!/\.(mp4|webm|mov|m4v)$/i.test(file.name)) return send(400, { error: "video must be mp4/webm/mov/m4v" });
+
+        // date: explicit > week-derived (Monday of week N) > today
+        const cfg = getCourseConfig(course);
+        let date = String(form.get("date") || "");
+        const week = Number(form.get("week"));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          if (Number.isFinite(week) && week >= 1 && cfg && /^\d{4}-\d{2}-\d{2}$/.test(cfg.semesterStart)) {
+            const mon = new Date(`${weekMonday(cfg.semesterStart)}T00:00:00Z`);
+            mon.setUTCDate(mon.getUTCDate() + (Math.min(15, Math.floor(week)) - 1) * 7);
+            date = mon.toISOString().slice(0, 10);
+          } else date = new Date().toISOString().slice(0, 10);
+        }
+
+        const rdir = join(RECORDINGS_DIR, course);
+        mkdirSync(rdir, { recursive: true });
+        mkdirSync(join(NOTES_DIR, course), { recursive: true });
+        const stem = `${date}__${course}`;
+        // unique 6-digit time suffix — collisions bump to the next "second"
+        let seq = Number(new Date().toLocaleTimeString("en-CA", { hour12: false, timeZone: "America/Toronto" }).replace(/:/g, ""));
+        if (!Number.isFinite(seq)) seq = 0;
+        let mp4name = `${stem}__${String(seq).padStart(6, "0")}.mp4`;
+        while (existsSync(join(rdir, mp4name))) mp4name = `${stem}__${String(++seq).padStart(6, "0")}.mp4`;
+
+        const buf = Buffer.from(await file.arrayBuffer());
+        writeFileSync(join(rdir, mp4name), buf);
+        let wroteTranscript = false;
+        if (tfile?.name) {
+          const txt = Buffer.from(await tfile.arrayBuffer()).toString("utf8");
+          writeFileSync(join(NOTES_DIR, course, `${stem}__transcript.md`),
+            `# Transcript — ${course.replace(/_/g, " ")} (${date})\n\n${txt}`);
+          wroteTranscript = true;
+        }
+        pushEvent(`ingest: ${mp4name} (${(buf.length / 1e6).toFixed(0)} MB)${wroteTranscript ? " + uploaded transcript" : ""}`);
+        return send(200, { ok: true, mp4: mp4name, stem, date, course, transcript: wroteTranscript });
+      } catch (e) { return send(500, { error: `ingest failed: ${String(e).slice(0, 120)}` }); }
+    }
+    // ── course materials (upload / list / delete) + course config ─────
+    const MATERIALS_RE = /^\/courses\/([^/]+)\/materials$/;
+    const mm = url.pathname.match(MATERIALS_RE);
+    if (mm) {
+      const slug = decodeURIComponent(mm[1]);
+      if (req.method === "GET") return send(200, listMaterials(slug));
+      if (req.method === "POST") {
+        try {
+          // IncomingMessage isn't a fetch Request — wrap the stream so the
+          // native multipart parser (undici) can read formData()
+          const r = new Request(`http://localhost:${PORT}${url.pathname}`, {
+            method: "POST",
+            headers: req.headers,
+            body: Readable.toWeb(req) as unknown as ReadableStream,
+            duplex: "half",
+          } as RequestInit);
+          const form = await r.formData();
+          const file = form.get("file") as File | null;
+          const category = String(form.get("category") || "other");
+          const description = String(form.get("description") || "");
+          if (!file || !file.name) return send(400, { error: "file required" });
+          const safeName = file.name.replace(/[^a-zA-Z0-9._\-]/g, "_");
+          if (safeName === "materials.json") return send(400, { error: "reserved filename" });
+          // week: explicit from the form, else derived from semesterStart + today
+          const cfg = getCourseConfig(slug);
+          let week = Number(form.get("week"));
+          if (!Number.isFinite(week) || week < 1) week = cfg ? weekOf(new Date().toISOString().slice(0, 10), cfg.semesterStart) : 1;
+          week = Math.min(15, Math.floor(week));
+          const dir = join(MATERIALS_DIR(slug), weekFolder(week));
+          mkdirSync(dir, { recursive: true });
+          const buf = Buffer.from(await file.arrayBuffer());
+          writeFileSync(join(dir, safeName), buf);
+          addMaterial(slug, { filename: safeName, week, category, description, uploadedAt: new Date().toISOString(), size: buf.length });
+          pushEvent(`material uploaded: ${safeName} → ${slug} week ${week} (${category})`);
+          return send(200, { ok: true, filename: safeName, week });
+        } catch (e) { return send(500, { error: `upload failed: ${String(e).slice(0, 100)}` }); }
+      }
+      if (req.method === "DELETE") {
+        const filename = url.searchParams.get("file");
+        const week = Number(url.searchParams.get("week"));
+        if (!filename || !Number.isFinite(week)) return send(400, { error: "file and week params required" });
+        if (filename.includes("/") || filename.includes("..") || filename.includes("\\")) return send(400, { error: "invalid filename" });
+        const ok = removeMaterial(slug, filename, week);
+        if (ok) { pushEvent(`material deleted: ${filename} (week ${week}) from ${slug}`); return send(200, { ok: true }); }
+        return send(404, { error: "not found" });
+      }
+    }
+    const CONFIG_RE = /^\/courses\/([^/]+)\/config$/;
+    const cm = url.pathname.match(CONFIG_RE);
+    if (cm) {
+      const slug = decodeURIComponent(cm[1]);
+      if (req.method === "GET") return send(200, getCourseConfig(slug) ?? { semesterStart: "" });
+      if (req.method === "PUT") {
+        const body = await new Promise<Record<string, unknown>>((res) => {
+          let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
+        });
+        const s = String(body.semesterStart ?? "");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return send(400, { error: "semesterStart must be YYYY-MM-DD" });
+        const cfg = setCourseConfig(slug, { semesterStart: s });
+        pushEvent(`course config: ${slug} semester starts ${s}`);
+        return send(200, cfg);
+      }
     }
     send(404, { error: "not found" });
   });
@@ -555,14 +694,27 @@ function startController(): void {
 
 export async function daemon(): Promise<void> {
   startController();
+  // fresh volume guarantee: the whole dir skeleton exists before anything writes
+  // (k8s PVCs start empty — compose had these pre-created by the seed volume)
+  for (const d of [OUT_DIR, SEGMENTS_DIR, NOTES_DIR, RECORDINGS_DIR]) mkdirSync(d, { recursive: true });
+  // retention: first pass AFTER rescue (orphans older than the cutoff are
+  // past retention anyway), then every 6h. Videos only — transcripts stay.
+  const retentionPass = (): void => {
+    const r = runRetention();
+    if (r && r.removed > 0)
+      pushEvent(`retention: removed ${r.removed} video file(s), freed ${(r.freedBytes / 1e6).toFixed(0)} MB — transcripts & notes kept`);
+  };
+  setInterval(retentionPass, 6 * 3_600_000).unref();
   // background queue: rescue old segments WITHOUT blocking discovery —
   // consolidations are serial (2 encode threads) and can take minutes
-  void rescueOrphans().finally(() => setActivity("idle — finished orphan rescue", {}));
-  console.log(`[daemon] schedule-driven: morning pull, sleep until join windows (join ${JOIN_EARLY_MS / 60_000} min early, rebuild every ${REBUILD_MS / 60_000} min)`);
+  void rescueOrphans().finally(() => { retentionPass(); setActivity("idle — finished orphan rescue", {}); });
+  console.log(`[daemon] schedule-driven: morning pull, sleep until join windows (join ${joinEarlyMs() / 60_000} min early, rebuild every ${REBUILD_MS / 60_000} min)`);
   for (;;) {
     try {
-      const stale = Date.now() - scheduleBuiltAt > REBUILD_MS;
-      if (stale || !schedule.length) {
+      // stale check only — never force-rebuild just because schedule is empty,
+      // that creates a login loop on every 800ms tick
+      const backoffMs = schedule.length ? REBUILD_MS : 5 * 60_000;
+      if (Date.now() - scheduleBuiltAt > backoffMs) {
         setActivity(hasGraphToken() ? "building today's schedule (Graph)" : "building today's schedule (browser)", {});
         await buildSchedule();
         pushEvent(`schedule built: ${schedule.length} event(s)${hasGraphToken() ? " via Graph" : " via browser"}`);
@@ -582,8 +734,8 @@ export async function daemon(): Promise<void> {
       }
       // sleep until the NEXT join window (or next rebuild), interruptible by /scan
       const now = Date.now();
-      const upcoming = schedule.filter((e) => e.start - JOIN_EARLY_MS > now && !attendedToday().includes(e.title));
-      const nextAt = upcoming[0]?.start - JOIN_EARLY_MS;
+      const upcoming = schedule.filter((e) => e.start - joinEarlyMs() > now && !attendedToday().includes(e.title));
+      const nextAt = upcoming[0]?.start - joinEarlyMs();
       const wakeAt = Math.min(nextAt ?? Infinity, scheduleBuiltAt + REBUILD_MS);
       const sleepMs = Math.max(5_000, Math.min(wakeAt - now, 60 * 60_000));
       state = "idle";

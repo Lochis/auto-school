@@ -22,6 +22,11 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   // SPA hash navigation — works on both teams.microsoft.com and teams.cloud.microsoft
   const base = new URL(page.url()).origin;
   console.log(`[meetings] clicking Calendar rail button ...`);
+  // dump what the page actually looks like BEFORE trying to click —
+  // the selector fires first on a fresh Teams shell and we need evidence
+  await page.screenshot({ path: outPath("pre-calendar.png") }).catch(() => {});
+  const preShot = await page.screenshot({ type: "png" }).catch(() => undefined);
+  await notify("📸 pre-calendar click", preShot).catch(() => {});
   const cal = page.locator('[data-tid*="calendar"], [aria-label*="Calendar"], [title*="Calendar"]')
     .filter({ hasText: /^\s*Calendar\s*$/ }).first();
   if (!(await cal.isVisible({ timeout: 5_000 }).catch(() => false))) {
@@ -30,9 +35,18 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
     await cal.click();
   }
   console.log("[meetings] Calendar rail clicked");
-  await page.waitForTimeout(8_000); // let the calendar render
-
-  await page.screenshot({ path: outPath("calendar.png") });
+  await page.waitForTimeout(12_000); // let the calendar fully render
+  // switch to week view so we see upcoming classes, not just today
+  const weekBtn = page.getByText("Week", { exact: true }).first();
+  if (await weekBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    await weekBtn.click({ timeout: 3_000 }).catch(() => {});
+    console.log("[meetings] switched to Week view");
+    await page.waitForTimeout(10_000); // let the week fully render
+  } else {
+    console.log("[meetings] Week button not found — staying in current view");
+  }
+  const postShot = await page.screenshot({ type: "png" }).catch(() => undefined);
+  await notify("📸 after Calendar click (Week view)", postShot).catch(() => {});
 
   // calendar likely lives in an <iframe> — body.innerText doesn't cross frames.
   // Dump EVERY frame separately so nothing hides.

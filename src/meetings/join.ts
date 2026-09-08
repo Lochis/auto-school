@@ -187,16 +187,24 @@ export async function joinMeeting(
     return null;
   }
 
-  // 3. the meeting opens wherever it opens — find the join UI on ANY page
-  await ctx.pages()[0].waitForTimeout(3_000);
+  // 3. the Join button opens a Teams link in a NEW tab/popup — wait for it
+  //    instead of polling existing pages (which won't have it yet)
   let target: Page | null = null;
-  for (const p of ctx.pages()) {
-    if (await p.locator(JOIN_SEL.joinNow).first().isVisible({ timeout: 800 }).catch(() => false)) {
-      target = p;
-      break;
+  try {
+    target = await ctx.waitForEvent("page", { timeout: 10_000 });
+    await target.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => {});
+    console.log(`[join] new tab opened: ${target.url().slice(0, 80)}`);
+  } catch {
+    // popup didn't arrive — fall back to scanning existing pages
+    await ctx.pages()[0].waitForTimeout(5_000);
+    for (const p of ctx.pages()) {
+      if (await p.locator(JOIN_SEL.joinNow).first().isVisible({ timeout: 800 }).catch(() => false)) {
+        target = p;
+        break;
+      }
     }
+    target ??= ctx.pages().find((p) => p.url().includes("/meet/")) ?? null;
   }
-  target ??= ctx.pages().find((p) => p.url().includes("/meet/")) ?? null;
   if (!target) {
     console.log("[join] ! meeting page never appeared");
     return null;

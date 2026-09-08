@@ -10,13 +10,12 @@
  * quota for video), else Gemini chain.
  */
 
-import { isModelExhausted, isModelAvailable, recordQuota429, markModelUnavailable, noteModelUsed, getModelQuotas } from "../status.ts";
+import { isModelExhausted, isModelAvailable, recordQuota429, markModelUnavailable, noteModelUsed, getModelQuotas, modelChain } from "../status.ts";
 
 try { process.loadEnvFile(); } catch { /* .env optional if env vars come from elsewhere */ }
 
 function geminiModels(): string[] {
-  return (process.env.GEMINI_MODELS ?? "gemini-3.6-flash,gemini-3-flash-preview,gemini-2.5-flash")
-    .split(",").map((m) => m.trim()).filter(Boolean);
+  return modelChain(); // live: settings.json wins, .env is the seed
 }
 
 interface Part { text: string; }
