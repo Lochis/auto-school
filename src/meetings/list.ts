@@ -35,16 +35,20 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
     await cal.click();
   }
   console.log("[meetings] Calendar rail clicked");
-  await page.waitForTimeout(12_000); // let the calendar fully render
-  // switch to week view so we see upcoming classes, not just today
-  const weekBtn = page.getByText("Week", { exact: true }).first();
-  if (await weekBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-    await weekBtn.click({ timeout: 3_000 }).catch(() => {});
-    console.log("[meetings] switched to Week view");
-    await page.waitForTimeout(10_000); // let the week fully render
-  } else {
-    console.log("[meetings] Week button not found — staying in current view");
+  // wait for the OWA calendar frame to actually appear (Teams loads slowly
+  // on a throttled pod — the "Thanks for hanging in there!" screen can
+  // linger for 30+s before the calendar iframe renders)
+  const owaFrame = await page.waitForFunction(() =>
+    [...document.querySelectorAll('iframe')].some((f) => f.src?.includes('outlook.office.com')),
+    { timeout: 45_000 },
+  ).catch(() => null);
+  if (!owaFrame) {
+    console.log("[meetings] ! OWA calendar frame never appeared after 45s — dumping evidence");
+    const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
+    await notify("📸 calendar frame never appeared — full page", shot).catch(() => {});
+    return [];
   }
+  await page.waitForTimeout(10_000); // let the calendar events render inside the frame
   const postShot = await page.screenshot({ type: "png" }).catch(() => undefined);
   await notify("📸 after Calendar click (Week view)", postShot).catch(() => {});
 

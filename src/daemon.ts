@@ -328,7 +328,9 @@ async function attendViaScrape(): Promise<boolean> {
     state = `attending: ${m.title}`;
     setActivity("joining meeting", { meeting: m.title });
     console.log(`[daemon] live meeting found: ${m.title}`);
-    const page = await joinMeeting(r.ctx, m);
+    const page = m.joinUrl
+      ? await joinMeetingByUrl(r.ctx, m.title, m.joinUrl)
+      : await joinMeeting(r.ctx, m);
     if (!page) return false;
     await attendAndRecord(page, m.title);
     return true; // re-poll immediately — another class may be live too
@@ -768,7 +770,9 @@ async function joinScheduled(ev: Sched): Promise<boolean> {
       const meetings = await listMeetings(r.page!);
       const m = meetings.find((x) => x.title === ev.title && x.joinableNow);
       if (!m) { pushEvent(`"${ev.title}" not joinable at join time — skipping`); return false; }
-      page = await joinMeeting(r.ctx, m);
+      page = m.joinUrl
+        ? await joinMeetingByUrl(r.ctx, m.title, m.joinUrl)
+        : await joinMeeting(r.ctx, m);
     }
     if (!page) return false;
     await attendAndRecord(page, ev.title);

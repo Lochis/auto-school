@@ -4,6 +4,9 @@
  *   "Title, 12:30 PM to 2:30 PM, Tuesday, August 18, 2026, By X, Busy, Recurring event"
  * Online meetings say "Microsoft Teams Meeting" in the label; in-progress ones
  * additionally expose a live "Join" button (aria-label "Join Teams meeting").
+ *
+ * Each event element's subtree is also scanned for a href*="meetup-join" link
+ * so we can join via URL (reliable) instead of clicking through OWA popovers.
  */
 import type { Frame } from "playwright";
 
@@ -17,6 +20,8 @@ export interface Meeting {
   frame: Frame;
   /** element handle index for re-locating */
   selector: string;
+  /** direct Teams join URL scraped from the event card's subtree */
+  joinUrl?: string;
 }
 
 const ARIA_RE =
@@ -24,12 +29,25 @@ const ARIA_RE =
 
 export async function parseCalendar(frame: Frame): Promise<Meeting[]> {
   const raw = await frame.evaluate(() => {
-    const out: { aria: string; idx: number }[] = [];
+    const out: { aria: string; idx: number; joinUrl: string | null }[] = [];
     let idx = 0;
     for (const el of document.querySelectorAll("[aria-label]")) {
       const aria = el.getAttribute("aria-label") ?? "";
       if (/\d{1,2}:\d{2}\s?(AM|PM)\s+to\s+\d{1,2}:\d{2}\s?(AM|PM)/i.test(aria)) {
-        out.push({ aria, idx });
+        // look for a meetup-join link inside this event element or its closest container
+        let joinUrl: string | null = null;
+        const parent = el.closest("[data-testid], [role='button'], [role='gridcell']") ?? el;
+        const link = parent.querySelector('a[href*="meetup-join"]') as HTMLAnchorElement | null;
+        if (link) joinUrl = link.href;
+        // also check siblings (OWA sometimes puts the join link next to the card)
+        if (!joinUrl) {
+          const prev = el.previousElementSibling;
+          if (prev) {
+            const sibLink = prev.querySelector('a[href*="meetup-join"]') as HTMLAnchorElement | null;
+            if (sibLink) joinUrl = sibLink.href;
+          }
+        }
+        out.push({ aria, idx, joinUrl });
       }
       idx++;
     }
@@ -53,20 +71,29 @@ export async function parseCalendar(frame: Frame): Promise<Meeting[]> {
       joinableNow: false,
       frame,
       selector: `[aria-label="${r.aria.replace(/"/g, '\\"').slice(0, 200)}"]`,
+      joinUrl: r.joinUrl ?? undefined,
     });
   }
-  // dedupe by title+start (an event can appear twice: card + aria source)
-  const seen = new Set<string>();
-  return meetings.filter((mt) => {
-    const k = `${mt.title}|${mt.start.getTime()}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+  // dedupe by title+start (an event can have two aria-label elements — outer card + inner bubble)
+  const seen = new Map<string, Meeting>();
+  for (const mt of meetings) {
+    const key = `${mt.title}__${mt.start.getTime()}`;
+    const existing = seen.get(key);
+    if (existing) {
+      // prefer the one with a joinUrl
+      if (mt.joinUrl && !existing.joinUrl) seen.set(key, mt);
+    } else {
+      seen.set(key, mt);
+    }
+  }
+  return [...seen.values()];
 }
 
-/** Mark meetings currently in progress (start <= now <= end) as joinableNow. */
+/** Mark events whose start/end window contains now as joinable. */
 export function markInProgress(meetings: Meeting[]): Meeting[] {
   const now = Date.now();
-  return meetings.map((mt) => ({ ...mt, joinableNow: mt.start.getTime() <= now && now <= mt.end.getTime() }));
+  for (const m of meetings) {
+    m.joinableNow = now >= m.start.getTime() && now < m.end.getTime();
+  }
+  return meetings;
 }
