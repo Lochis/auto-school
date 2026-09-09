@@ -54,7 +54,7 @@ export async function rebuildSeekPoints(file: string): Promise<boolean> {
   return false;
 }
 
-export async function startRecording(page: Page, meetingTitle: string): Promise<RecordingResult> {
+export async function startRecording(page: Page, meetingTitle: string, joinUrl?: string): Promise<RecordingResult> {
   mkdirSync(RECORD_DIR, { recursive: true });
 
   const state: RecordingResult = { segments: [], bytes: 0, ms: 0 };
@@ -128,7 +128,7 @@ export async function startRecording(page: Page, meetingTitle: string): Promise<
       files[idx] = `${(title ?? meetingTitle).replace(/[^\w -]/g, "").slice(0, 40).trim().replace(/ /g, "_") || "meeting"}__${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}__${String(idx).padStart(3, "0")}.webm`;
       state.segments.push(files[idx]);
       if (!liveStem) liveStem = files[idx]?.replace(/__\d{3}\.webm$/, "") ?? null;
-      updateSession(stemOf(meetingTitle), { stage: "recording", segCount: state.segments.length, title: meetingTitle });
+      updateSession(stemOf(meetingTitle), { stage: "recording", segCount: state.segments.length, title: meetingTitle, ...(joinUrl ? { joinUrl } : {}) });
       console.log(`[rec] segment -> ${files[idx]}`);
       pushEvent(`segment ${idx} recording (${Math.round(SEGMENT_MS / 60_000)} min, ~${(state.bytes / 1e6).toFixed(0)} MB so far)`);
       if (files[idx - 1]) {

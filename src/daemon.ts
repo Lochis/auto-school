@@ -19,8 +19,10 @@ import { loginTeams } from "./login/teams-login.ts";
 import { listMeetings } from "./meetings/list.ts";
 import { joinMeeting, joinMeetingByUrl } from "./meetings/join.ts";
 import { listTodayMeetings } from "./graph/meetings.ts";
+import { startNetworkHarvest, harvestCalendarEvents } from "./graph/calendar.ts";
 import { getAccessToken } from "./graph/auth.ts";
 import { config } from "./config.ts";
+import { parseMultipart, placePart, discardPart } from "./http/multipart.ts";
 import { startRecording, quickStopRecording, stopRecording, stillInMeeting, rebuildSeekPoints, RECORD_DIR } from "./record/recorder.ts";
 import { consolidateSession } from "./pipeline/consolidate.ts";
 import { notify } from "./notify.ts";
@@ -177,15 +179,50 @@ async function buildSchedule(): Promise<Sched[]> {
     }
   }
   if (!evs.length && !hasGraphToken()) {
-    // one browser scrape per rebuild (morning / manual / join-window verify)
+    // one browser session per rebuild (morning / manual / join-window verify)
     const r = await loginTeams({ keepOpen: true });
     if (r.ok && r.ctx && r.page) {
       try {
         await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
+        // Start intercepting Bearer tokens from Teams' own Graph API calls.
+        // This MUST happen before listMeetings navigates to the calendar —
+        // Teams makes graph.microsoft.com requests during calendar load.
+        const drainNetwork = startNetworkHarvest(r.page);
         const ms = await listMeetings(r.page);
         lastScan = new Date().toISOString();
         lastSeen = ms.length;
-        for (const m of ms) evs.push({ title: m.title, start: m.start.getTime(), end: m.end.getTime() });
+        for (const m of ms) evs.push({ title: m.title, start: m.start.getTime(), end: m.end.getTime(), ...(m.joinUrl ? { joinUrl: m.joinUrl } : {}) });
+        // PREFERRED: call Outlook REST API from the OWA frame (cookie-based)
+        // or Graph API with a captured token — both give real join URLs.
+        try {
+          const apiEvts = await harvestCalendarEvents(r.page, drainNetwork);
+          if (apiEvts.length) {
+            // match by title + same calendar day (titles recur across days)
+            const sameDay = (a: number, b: number): boolean =>
+              new Date(a).toDateString() === new Date(b).toDateString();
+            const used = new Set<number>();
+            for (const ae of apiEvts) {
+              if (!ae.joinUrl) continue;
+              const idx = evs.findIndex((e) =>
+                !used.has(evs.indexOf(e)) &&
+                e.title.toLowerCase() === ae.title.toLowerCase() &&
+                sameDay(e.start, ae.start));
+              if (idx >= 0) { evs[idx].joinUrl = ae.joinUrl; used.add(idx); }
+              else evs.push({ title: ae.title, start: ae.start, end: ae.end, joinUrl: ae.joinUrl });
+            }
+            // recurring-series propagation: occurrences of the same course
+            // title share one join URL (Teams recurring meetings) — fill
+            // URL-less events from same-titled events that have one
+            for (const e of evs) {
+              if (e.joinUrl) continue;
+              const donor = evs.find((d) => d.joinUrl && d.title.toLowerCase() === e.title.toLowerCase());
+              if (donor) e.joinUrl = donor.joinUrl;
+            }
+            console.log(`[daemon] API enriched: ${apiEvts.filter((e) => e.joinUrl).length} event(s) with join URLs`);
+          }
+        } catch (e) {
+          console.warn(`[daemon] Calendar API pull failed: ${String(e).slice(0, 120)} — using OWA scrape data`);
+        }
       } finally { await r.ctx.close().catch(() => {}); }
     }
   }
@@ -202,7 +239,7 @@ function nextActionable(): Sched | null {
 }
 
 /** Record + watch + stop for an already-joined meeting (both join paths). */
-async function attendAndRecord(page: import("playwright").Page, title: string): Promise<void> {
+async function attendAndRecord(page: import("playwright").Page, title: string, joinUrl?: string): Promise<void> {
   active = { page, title };
   journalEntry(title, {}); // persistent attendance — survives restarts
   setActivity("in meeting — starting recorder", { meeting: title });
@@ -210,7 +247,7 @@ async function attendAndRecord(page: import("playwright").Page, title: string): 
 
   let rec: Awaited<ReturnType<typeof startRecording>> | null = null;
   try {
-    rec = await startRecording(page, title);
+    rec = await startRecording(page, title, joinUrl);
   } catch (e) {
     console.error(`[rec] ! ${e}`);
     // same evidence pattern as the join ping — screenshot shows the meeting state
@@ -302,7 +339,7 @@ async function attendViaGraph(): Promise<boolean | "error" | null> {
       setActivity("joining meeting", { meeting: g.title });
       const page = await joinMeetingByUrl(r.ctx, g.title, g.joinUrl);
       if (!page) return false;
-      await attendAndRecord(page, g.title);
+      await attendAndRecord(page, g.title, g.joinUrl);
       return true;
     } finally {
       state = "idle";
@@ -332,7 +369,7 @@ async function attendViaScrape(): Promise<boolean> {
       ? await joinMeetingByUrl(r.ctx, m.title, m.joinUrl)
       : await joinMeeting(r.ctx, m);
     if (!page) return false;
-    await attendAndRecord(page, m.title);
+    await attendAndRecord(page, m.title, m.joinUrl);
     return true; // re-poll immediately — another class may be live too
   } finally {
     state = "idle";
@@ -454,9 +491,11 @@ function startController(): void {
             lastSeen = meetings.length;
             const m = meetings.find((x) => x.title.toLowerCase().includes(want));
             if (!m) throw new Error(`"${body.title}" not on the calendar`);
-            const page = await joinMeeting(r.ctx, m);
+            const page = m.joinUrl
+              ? await joinMeetingByUrl(r.ctx, m.title, m.joinUrl)
+              : await joinMeeting(r.ctx, m);
             if (!page) throw new Error("join flow failed (not started yet?)");
-            await attendAndRecord(page, m.title);
+            await attendAndRecord(page, m.title, m.joinUrl);
           } finally {
             state = "idle";
             await r.ctx.close().catch(() => {});
@@ -580,21 +619,28 @@ function startController(): void {
     // (player, transcript, week grouping) picks it up like a native session.
     if (url.pathname === "/ingest" && req.method === "POST") {
       try {
-        const r = new Request(`http://localhost:${PORT}/ingest`, {
-          method: "POST", headers: req.headers,
-          body: Readable.toWeb(req) as unknown as ReadableStream, duplex: "half",
-        } as RequestInit);
-        const form = await r.formData();
-        const file = form.get("file") as File | null;
-        const tfile = form.get("transcript") as File | null;
-        const course = String(form.get("course") || "").replace(/[^\w -]/g, "").trim().replace(/\s+/g, "_");
-        if (!file?.name || !course) return send(400, { error: "file and course required" });
-        if (!/\.(mp4|webm|mov|m4v)$/i.test(file.name)) return send(400, { error: "video must be mp4/webm/mov/m4v" });
+        // streaming multipart: file parts land on disk, never in RAM
+        // (undici formData() buffers the whole video — OOM in 4Gi pod)
+        const TMP = join(config.userDataDir, "tmp-ingest");
+        const parts = await parseMultipart(req, TMP);
+        const fileP = parts.find((x) => x.name === "file" && x.path);
+        const tfileP = parts.find((x) => x.name === "transcript" && x.path);
+        const field = (n: string): string => parts.find((x) => x.name === n)?.text ?? "";
+        const file = { name: fileP?.filename };
+        const course = field("course").replace(/[^\w -]/g, "").trim().replace(/\s+/g, "_");
+        if (!file?.name || !course) {
+          for (const p of parts) if (p.path) discardPart(p.path);
+          return send(400, { error: "file and course required" });
+        }
+        if (!/\.(mp4|webm|mov|m4v)$/i.test(file.name)) {
+          for (const p of parts) if (p.path) discardPart(p.path);
+          return send(400, { error: "video must be mp4/webm/mov/m4v" });
+        }
 
         // date: explicit > week-derived (Monday of week N) > today
         const cfg = getCourseConfig(course);
-        let date = String(form.get("date") || "");
-        const week = Number(form.get("week"));
+        let date = field("date");
+        const week = Number(field("week"));
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
           if (Number.isFinite(week) && week >= 1 && cfg && /^\d{4}-\d{2}-\d{2}$/.test(cfg.semesterStart)) {
             const mon = new Date(`${weekMonday(cfg.semesterStart)}T00:00:00Z`);
@@ -613,16 +659,17 @@ function startController(): void {
         let mp4name = `${stem}__${String(seq).padStart(6, "0")}.mp4`;
         while (existsSync(join(rdir, mp4name))) mp4name = `${stem}__${String(++seq).padStart(6, "0")}.mp4`;
 
-        const buf = Buffer.from(await file.arrayBuffer());
-        writeFileSync(join(rdir, mp4name), buf);
+        // move the streamed temp files into place (no RAM copies)
+        placePart(fileP!.path!, join(rdir, mp4name));
         let wroteTranscript = false;
-        if (tfile?.name) {
-          const txt = Buffer.from(await tfile.arrayBuffer()).toString("utf8");
+        if (tfileP) {
+          const txt = (await import("node:fs/promises")).readFile(tfileP.path!, "utf8");
           writeFileSync(join(NOTES_DIR, course, `${stem}__transcript.md`),
-            `# Transcript — ${course.replace(/_/g, " ")} (${date})\n\n${txt}`);
+            `# Transcript — ${course.replace(/_/g, " ")} (${date})\n\n${await txt}`);
+          discardPart(tfileP.path!);
           wroteTranscript = true;
         }
-        pushEvent(`ingest: ${mp4name} (${(buf.length / 1e6).toFixed(0)} MB)${wroteTranscript ? " + uploaded transcript" : ""}`);
+        pushEvent(`ingest: ${mp4name} (${((fileP?.bytes ?? 0) / 1e6).toFixed(0)} MB)${wroteTranscript ? " + uploaded transcript" : ""}`);
         return send(200, { ok: true, mp4: mp4name, stem, date, course, transcript: wroteTranscript });
       } catch (e) { return send(500, { error: `ingest failed: ${String(e).slice(0, 120)}` }); }
     }
@@ -634,31 +681,31 @@ function startController(): void {
       if (req.method === "GET") return send(200, listMaterials(slug));
       if (req.method === "POST") {
         try {
-          // IncomingMessage isn't a fetch Request — wrap the stream so the
-          // native multipart parser (undici) can read formData()
-          const r = new Request(`http://localhost:${PORT}${url.pathname}`, {
-            method: "POST",
-            headers: req.headers,
-            body: Readable.toWeb(req) as unknown as ReadableStream,
-            duplex: "half",
-          } as RequestInit);
-          const form = await r.formData();
-          const file = form.get("file") as File | null;
-          const category = String(form.get("category") || "other");
-          const description = String(form.get("description") || "");
-          if (!file || !file.name) return send(400, { error: "file required" });
-          const safeName = file.name.replace(/[^a-zA-Z0-9._\-]/g, "_");
-          if (safeName === "materials.json") return send(400, { error: "reserved filename" });
+          // streaming multipart — same reason as /ingest (no RAM buffering)
+          const TMP = join(config.userDataDir, "tmp-materials");
+          const parts = await parseMultipart(req, TMP);
+          const fileP = parts.find((x) => x.name === "file" && x.path);
+          const field = (n: string): string => parts.find((x) => x.name === n)?.text ?? "";
+          const category = field("category") || "other";
+          const description = field("description");
+          if (!fileP?.filename) {
+            for (const p of parts) if (p.path) discardPart(p.path);
+            return send(400, { error: "file required" });
+          }
+          const safeName = fileP.filename.replace(/[^a-zA-Z0-9._\-]/g, "_");
+          if (safeName === "materials.json") {
+            discardPart(fileP.path!);
+            return send(400, { error: "reserved filename" });
+          }
           // week: explicit from the form, else derived from semesterStart + today
           const cfg = getCourseConfig(slug);
-          let week = Number(form.get("week"));
+          let week = Number(field("week"));
           if (!Number.isFinite(week) || week < 1) week = cfg ? weekOf(new Date().toISOString().slice(0, 10), cfg.semesterStart) : 1;
           week = Math.min(15, Math.floor(week));
           const dir = join(MATERIALS_DIR(slug), weekFolder(week));
           mkdirSync(dir, { recursive: true });
-          const buf = Buffer.from(await file.arrayBuffer());
-          writeFileSync(join(dir, safeName), buf);
-          addMaterial(slug, { filename: safeName, week, category, description, uploadedAt: new Date().toISOString(), size: buf.length });
+          placePart(fileP.path!, join(dir, safeName));
+          addMaterial(slug, { filename: safeName, week, category, description, uploadedAt: new Date().toISOString(), size: fileP.bytes });
           pushEvent(`material uploaded: ${safeName} → ${slug} week ${week} (${category})`);
           return send(200, { ok: true, filename: safeName, week });
         } catch (e) { return send(500, { error: `upload failed: ${String(e).slice(0, 100)}` }); }
@@ -687,6 +734,40 @@ function startController(): void {
         const cfg = setCourseConfig(slug, { semesterStart: s });
         pushEvent(`course config: ${slug} semester starts ${s}`);
         return send(200, cfg);
+      }
+    }
+    // ── delete a whole course folder ────────────────────────────────
+    // Allowed ONLY when the course has no sessions (no recordings, no
+    // transcripts/notes/timeline anywhere). Materials + config go too.
+    if (/^\/courses\/([^/]+)$/.test(url.pathname) && req.method === "DELETE") {
+      const course = decodeURIComponent(url.pathname.split("/")[2]!);
+      try {
+        const recDir = join(RECORDINGS_DIR, course);
+        const hasRecordings = existsSync(recDir) && readdirSync(recDir).length > 0;
+        const noteDir = join(NOTES_DIR, course);
+        const hasNotes = existsSync(noteDir) && readdirSync(noteDir).length > 0;
+        if (hasRecordings || hasNotes) {
+          return send(409, {
+            error: "course still has sessions — delete its recordings/notes first",
+            recordings: hasRecordings, notes: hasNotes,
+          });
+        }
+        let removed = 0;
+        for (const root of [recDir, noteDir, join(config.userDataDir, "courses", course)]) {
+          if (existsSync(root)) { rmSync(root, { recursive: true, force: true }); removed++; }
+        }
+        // strip mapping.json entries whose VALUE is this slug
+        try {
+          const MAP = join(dirname(config.userDataDir), "mapping.json");
+          const m = JSON.parse(readFileSync(MAP, "utf8")) as Record<string, string>;
+          let dropped = 0;
+          for (const k of Object.keys(m)) if (m[k] === course) { delete m[k]; dropped++; }
+          if (dropped) writeFileSync(MAP, JSON.stringify(m, null, 2));
+        } catch { /* no mapping file */ }
+        pushEvent(`course deleted: ${course} (had no sessions)`);
+        return send(200, { ok: true, course, removed });
+      } catch (e) {
+        return send(500, { error: `course delete failed: ${String(e).slice(0, 120)}` });
       }
     }
     send(404, { error: "not found" });
@@ -775,7 +856,7 @@ async function joinScheduled(ev: Sched): Promise<boolean> {
         : await joinMeeting(r.ctx, m);
     }
     if (!page) return false;
-    await attendAndRecord(page, ev.title);
+    await attendAndRecord(page, ev.title, ev.joinUrl);
     return true;
   } finally {
     await r.ctx.close().catch(() => {});

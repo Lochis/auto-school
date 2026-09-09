@@ -19,7 +19,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   try {
-    const res = await fetch(base(slug), { method: "POST", body: await req.formData(), signal: AbortSignal.timeout(60_000) });
+    // stream the multipart through untouched (no RAM buffering)
+    const res = await fetch(base(slug), {
+      method: "POST",
+      headers: { "Content-Type": req.headers.get("Content-Type") ?? "" },
+      body: req.body,
+      duplex: "half",
+      signal: AbortSignal.timeout(10 * 60_000),
+    } as RequestInit);
     return NextResponse.json(await res.json(), { status: res.status });
   } catch {
     return NextResponse.json({ error: "backend unreachable" }, { status: 502 });

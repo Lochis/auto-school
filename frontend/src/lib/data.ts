@@ -28,6 +28,21 @@ export interface Session {
   /** HH:MM — from the mp4's time suffix, else the notes file's first-write time */
   time?: string;
   hasTimeline: boolean;
+  /** Teams meeting join URL for this session (if known) */
+  joinUrl?: string;
+}
+
+/** joinUrls recorded by the live pipeline (out/sessions.json) — map from
+ *  the pipeline's session title to its meeting link. */
+function joinUrlIndex(): Map<string, string> {
+  const idx = new Map<string, string>();
+  try {
+    const list = JSON.parse(readFileSync(join(DATA_DIR, "out", "sessions.json"), "utf8")) as Array<{ title?: string; joinUrl?: string }>;
+    for (const s of list) {
+      if (s.joinUrl && s.title) idx.set(s.title, s.joinUrl);
+    }
+  } catch { /* no sessions.json yet */ }
+  return idx;
 }
 
 function dirs(base: string): string[] {
@@ -85,6 +100,18 @@ export function sessions(course: string): Session[] {
       }
     }
   } catch { /* none */ }
+  // attach joinUrls from the pipeline's session journal (fuzzy title match)
+  const jurls = joinUrlIndex();
+  if (jurls.size) {
+    const norm = (x: string): string => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (const s of byStem.values()) {
+      const frag = norm(s.stem.split("__")[1] ?? "");
+      if (!frag) continue;
+      for (const [title, url] of jurls) {
+        if (norm(title).includes(frag.slice(0, 20))) { s.joinUrl = url; break; }
+      }
+    }
+  }
   return [...byStem.values()].sort((a, b) => (b.date + (b.time ?? "")).localeCompare(a.date + (a.time ?? ""))); // newest first
 }
 

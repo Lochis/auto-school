@@ -53,6 +53,12 @@ export default function SessionCard({ session, course }: { session: Session; cou
           {(session.transcript || session.timeline) ? " · transcribed" : ""}
           {session.segmentCount ? ` · ${session.segmentCount} segment${session.segmentCount === 1 ? "" : "s"} merged` : ""}
         </span>
+        {session.joinUrl && (
+          <a href={session.joinUrl} target="_blank" rel="noreferrer"
+             title="Open this meeting in Teams" style={{ color: "#2563eb", fontSize: 13 }}>
+            🔗 meeting
+          </a>
+        )}
         <span style={{ flex: 1 }} />
         {session.audio && (
           <button onClick={transcribe} disabled={busy} title="Run the Gemini model chain over this recording — transcript + notes">

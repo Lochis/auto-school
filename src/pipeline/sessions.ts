@@ -20,6 +20,7 @@ export interface SessionState {
   mp4?: string; // recordings/<course>/<file>.mp4 once done
   durationSec?: number;
   sizeMB?: number;
+  joinUrl?: string; // Teams meeting link for this session (from Graph or calendar scrape)
 }
 
 const FILE = `${OUT_DIR}/sessions.json`;
