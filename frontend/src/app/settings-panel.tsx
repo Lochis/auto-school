@@ -11,7 +11,6 @@ interface AllSettings {
   recordRetentionDays: number;
   batchSegments: number;
   transcribeBatch: number;
-  encThreads: number;
   geminiModels: string;
   joinEarlyMinutes: number;
   offline?: boolean;
@@ -24,8 +23,6 @@ const FIELDS: { key: keyof AllSettings; label: string; min: number; max: number;
     hint: "segments per Gemini request during class (quota is per-DAY requests)" },
   { key: "transcribeBatch", label: "Manual batch size", min: 1, max: 9,
     hint: "audio chunks per request when re-transcribing from the course page" },
-  { key: "encThreads", label: "Encode threads", min: 1, max: 4,
-    hint: "x264 threads for mp4 consolidation — lower = less CPU, slower" },
   { key: "joinEarlyMinutes", label: "Join early", min: 0, max: 30,
     hint: "minutes before class start to join the meeting" },
 ];
@@ -41,7 +38,7 @@ export default function SettingsPanel() {
       .then((r) => r.json())
       .then((v: AllSettings) => setS(v))
       .catch(() => setS({ ...({} as AllSettings), offline: true, transcribe: true,
-        recordRetentionDays: 30, batchSegments: 4, transcribeBatch: 9, encThreads: 2,
+        recordRetentionDays: 30, batchSegments: 4, transcribeBatch: 9,
         geminiModels: "", joinEarlyMinutes: 3 }));
   }, []);
 
@@ -76,7 +73,6 @@ export default function SettingsPanel() {
       recordRetentionDays: s.recordRetentionDays,
       batchSegments: s.batchSegments,
       transcribeBatch: s.transcribeBatch,
-      encThreads: s.encThreads,
       joinEarlyMinutes: s.joinEarlyMinutes,
       ...(s.geminiModels.trim() ? { geminiModels: s.geminiModels } : {}),
     });

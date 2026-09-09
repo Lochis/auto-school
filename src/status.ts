@@ -17,8 +17,6 @@ export interface Settings {
   batchSegments: number;
   /** manual re-transcribe: audio chunks per request (1–9) */
   transcribeBatch: number;
-  /** consolidation x264 encode threads (1–4) */
-  encThreads: number;
   /** comma-separated quota-fallback chain */
   geminiModels: string;
   /** join this many minutes before class start */
@@ -38,7 +36,6 @@ export function defaultSettings(): Settings {
     recordRetentionDays: envNum("RECORD_RETENTION_DAYS", 30, 0, 3650),
     batchSegments: envNum("BATCH_SEGMENTS", 4, 1, 6),
     transcribeBatch: envNum("TRANSCRIBE_BATCH", 9, 1, 9),
-    encThreads: envNum("ENC_THREADS", 2, 1, 4),
     geminiModels: (process.env.GEMINI_MODELS ?? "gemini-3.6-flash,gemini-3-flash-preview,gemini-2.5-flash")
       .split(",").map((m) => m.trim()).filter(Boolean).join(","),
     joinEarlyMinutes: envNum("JOIN_EARLY_MINUTES", 3, 0, 30),
@@ -206,7 +203,6 @@ export function applySettingsPatch(body: Record<string, unknown>): { prev: Setti
     ...(num(body.recordRetentionDays, 0, 3650) !== undefined ? { recordRetentionDays: num(body.recordRetentionDays, 0, 3650)! } : {}),
     ...(num(body.batchSegments, 1, 6) !== undefined ? { batchSegments: num(body.batchSegments, 1, 6)! } : {}),
     ...(num(body.transcribeBatch, 1, 9) !== undefined ? { transcribeBatch: num(body.transcribeBatch, 1, 9)! } : {}),
-    ...(num(body.encThreads, 1, 4) !== undefined ? { encThreads: num(body.encThreads, 1, 4)! } : {}),
     ...(num(body.joinEarlyMinutes, 0, 30) !== undefined ? { joinEarlyMinutes: num(body.joinEarlyMinutes, 0, 30)! } : {}),
     ...(chain ? { geminiModels: chain } : {}), // commas-only input can't wipe the chain
   });

@@ -11,7 +11,7 @@ export async function GET() {
   } catch {
     // full shape so the panel renders sensibly while offline
     return NextResponse.json({ transcribe: true, recordRetentionDays: 30, batchSegments: 4,
-      transcribeBatch: 9, encThreads: 2, geminiModels: "", joinEarlyMinutes: 3, offline: true });
+      transcribeBatch: 9, geminiModels: "", joinEarlyMinutes: 3, offline: true });
   }
 }
 

@@ -613,7 +613,6 @@ function startController(): void {
         if (prev.recordRetentionDays !== s.recordRetentionDays) changes.push(`retention ${s.recordRetentionDays === 0 ? "forever" : `${s.recordRetentionDays}d`}`);
         if (prev.batchSegments !== s.batchSegments) changes.push(`live batch ${s.batchSegments}/req`);
         if (prev.transcribeBatch !== s.transcribeBatch) changes.push(`asr batch ${s.transcribeBatch}/req`);
-        if (prev.encThreads !== s.encThreads) changes.push(`encode threads ${s.encThreads}`);
         if (prev.joinEarlyMinutes !== s.joinEarlyMinutes) changes.push(`join early ${s.joinEarlyMinutes}min`);
         if (prev.geminiModels !== s.geminiModels) changes.push(`model chain → ${s.geminiModels}`);
         if (changes.length) pushEvent(`settings: ${changes.join(" · ")}`);
