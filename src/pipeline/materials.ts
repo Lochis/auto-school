@@ -69,7 +69,7 @@ export function setCourseConfig(course: string, patch: Partial<CourseConfig>): C
 
 // ── materials tree ──────────────────────────────────────────────────────────
 
-const MATERIALS_DIR = (course: string): string => join(COURSES_ROOT(course), "materials");
+export const MATERIALS_DIR = (course: string): string => join(COURSES_ROOT(course), "materials");
 
 /** Week number from a relative path's FOLDER segments only (fool-proof:
  *  "Week 1/…" → 1; "Lab week 3 stuff/x.pdf" → 3 via last match). Null if none. */
@@ -205,5 +205,3 @@ export function renameMaterial(course: string, from: string, to: string): boolea
   rebuildTree(course);
   return true;
 }
-
-export { MATERIALS_DIR };

@@ -22,6 +22,11 @@ const MIME: Record<string, string> = {
   ".zip": "application/zip",
   ".json": "application/json",
   ".md": "text/markdown; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
 };
 
 export async function GET(

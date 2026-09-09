@@ -30,10 +30,12 @@ import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, 
 import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath } from "./paths.ts";
 import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
-import { glmChat } from "./pipeline/llm.ts";
+import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
+import { TOOL_DEFS, runTool } from "./pipeline/tools.ts";
+import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
-import { updateSession, listSessions } from "./pipeline/sessions.ts";
+import { updateSession } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention } from "./pipeline/retention.ts";
 
@@ -482,7 +484,7 @@ function startController(): void {
       // manual join by title (UI "Join" button) — bypasses joinableNow/handled
       if (state.startsWith("attending")) return send(409, { ok: false, note: `busy attending: ${state}` });
       let body: Record<string, unknown> = {};
-      try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => res(JSON.parse(b))); }); } catch { /* empty */ }
+      try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
       const want = String(body.title ?? "").toLowerCase().trim();
       if (!want) return send(400, { error: "title required" });
       handled.delete(body.title as string); // re-join allowed
@@ -732,7 +734,7 @@ function startController(): void {
         // rename/move a file or folder: { from, to } relative paths
         try {
           let body: Record<string, unknown> = {};
-          try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => res(JSON.parse(b))); }); } catch { /* empty */ }
+          try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
           const from = sanitizeRelPath(String(body.from ?? ""));
           const to = sanitizeRelPath(String(body.to ?? ""));
           if (!from || !to) return send(400, { error: "from/to required" });
@@ -765,6 +767,21 @@ function startController(): void {
         return send(200, cfg);
       }
     }
+    // ── document preview text (chat linkifier modal) ──────────────
+    const docM = url.pathname.match(/^\/courses\/([^/]+)\/doc$/);
+    if (docM && req.method === "GET") {
+      const slug = decodeURIComponent(docM[1]!);
+      const rel = url.searchParams.get("path") ?? "";
+      const page = Number(url.searchParams.get("page") ?? "") || undefined;
+      void (async () => {
+        try {
+          const r = await readDoc(slug, rel, page);
+          return send(200, "error" in r ? { error: r.error } : r);
+        } catch (e) { return send(500, { error: String(e).slice(0, 120) }); }
+      })();
+      return;
+    }
+
     // ── course chat (GLM) ─────────────────────────────────────────────
     const CHAT_RE = /^\/courses\/([^/]+)\/chat$/;
     const chatM = url.pathname.match(CHAT_RE);
@@ -783,39 +800,37 @@ function startController(): void {
         (async () => {
           try {
             let body: Record<string, unknown> = {};
-            try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => res(JSON.parse(b))); }); } catch { /* empty */ }
+            try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
             const message = String(body.message ?? "").trim();
             if (!message) return send(400, { error: "message required" });
             const history = loadChat();
             history.push({ role: "user", content: message, at: new Date().toISOString() });
 
-            // ── build course context for the model ──
-            const mats = listMaterials(slug);
-            const matTree = mats.length
-              ? mats.map((m) => `- ${m.path}${m.week ? `  [week ${m.week}]` : ""}${m.description ? ` — ${m.description}` : ""}`).join("\n")
-              : "(no materials uploaded yet)";
-            // sessions: recorded classes (stem carries date + course)
-            const sess = listSessions().filter((s) => s.stem.includes(slug));
-            const sessLines = sess.map((s) => `- ${s.stem} (${s.stage})`).join("\n") || "(no recorded sessions yet)";
-            // transcripts: include text when small enough (cap ~12k chars total)
-            let transcriptCtx = "";
+            // ── tool-calling loop: the model explores the course itself ──
             const cfg = getCourseConfig(slug);
-            if (cfg?.semesterStart) transcriptCtx += `Semester starts ${cfg.semesterStart}.\n`;
-            let budget = 12_000;
-            for (const s of sess) {
-              const tPath = join(NOTES_DIR, slug, `${s.stem}__transcript.md`);
-              try {
-                let txt = readFileSync(tPath, "utf8");
-                if (txt.length > budget) txt = txt.slice(0, budget) + "…";
-                budget -= txt.length;
-                transcriptCtx += `\nTranscript of ${s.stem}:\n${txt}\n`;
-                if (budget <= 0) break;
-              } catch { /* no transcript for this session */ }
+            const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
+Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.`;
+
+            const convo: ChatMsg[] = [
+              { role: "system", content: systemPrompt },
+              ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
+            ];
+            let reply = "";
+            for (let step = 0; step < 6; step++) {
+              const msg = await glmChatRaw(convo, TOOL_DEFS);
+              if (msg.tool_calls?.length) {
+                convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
+                for (const tc of msg.tool_calls) {
+                  const result = await runTool(tc, slug);
+                  pushEvent(`chat tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
+                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
+                }
+                continue;
+              }
+              reply = msg.content;
+              break;
             }
-
-            const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}". The student asks questions about course materials, lectures, and assignments. Answer using the course context below; be concrete and reference file names or lecture dates when relevant. If something isn't in the context, say so honestly.\n\nCOURSE MATERIALS (folder tree):\n${matTree}\n\nRECORDED SESSIONS:\n${sessLines}\n${transcriptCtx}`;
-
-            const reply = await glmChat(systemPrompt, history.slice(-16));
+            if (!reply) reply = "(no answer — model hit the tool-step limit; try a more specific question)";
             history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
             saveChat(history);
             return send(200, { reply });

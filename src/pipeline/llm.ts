@@ -78,6 +78,71 @@ export async function geminiCall(
 const glmEndpoint = (): string =>
   `${process.env.GLM_BASE ?? "https://open.bigmodel.cn/api/coding/paas/v4"}/chat/completions`;
 
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+export interface ChatMsg {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+/** One raw round-trip with optional OpenAI-style tools — returns the assistant
+ *  message (content and/or tool_calls) so the caller drives the tool loop. */
+export async function glmChatRaw(
+  messages: ChatMsg[],
+  tools?: unknown[],
+): Promise<{ content: string; tool_calls?: ToolCall[] }> {
+  const key = process.env.GLM_API_KEY;
+  if (!key) throw new Error("GLM_API_KEY not set");
+  const model = process.env.GLM_MODEL ?? "glm-5.3";
+  const res = await fetch(glmEndpoint(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model, messages, ...(tools?.length ? { tools, tool_choice: "auto" } : {}), temperature: 0.4 }),
+  });
+  if (!res.ok) throw new Error(`GLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const json = (await res.json()) as any;
+  const m = json?.choices?.[0]?.message ?? {};
+  return { content: (m.content ?? "").trim(), ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}) };
+}
+
+/** Vision describe via the VLM provider (default: opencode-go mimo-v2.5).
+ *  opencode gateways REQUIRE x-opencode-session for routing — always send one. */
+export async function vlmDescribe(prompt: string, imageBase64: string, mime = "image/png"): Promise<string> {
+  const key = process.env.VLM_API_KEY;
+  if (!key) throw new Error("VLM_API_KEY not set");
+  const base = process.env.VLM_BASE ?? "https://opencode.ai/zen/go/v1";
+  const model = process.env.VLM_MODEL ?? "mimo-v2.5";
+  const session = process.env.VLM_SESSION ?? "auto-school";
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+      "x-opencode-session": session,
+    },
+    // reasoning models spend tokens thinking before answering — budget for it
+    body: JSON.stringify({
+      model,
+      max_tokens: 4096,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          { type: "image_url", image_url: { url: `data:${mime};base64,${imageBase64}` } },
+        ],
+      }],
+    }),
+  });
+  if (!res.ok) throw new Error(`VLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const json = (await res.json()) as any;
+  return (json?.choices?.[0]?.message?.content ?? "").trim();
+}
+
 /** Text completion via GLM (Zhipu, OpenAI-compatible). Throws if no key. */
 export async function glmCall(prompt: string): Promise<string> {
   const key = process.env.GLM_API_KEY;

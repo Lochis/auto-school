@@ -3,7 +3,7 @@
 FROM node:24-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      xvfb ffmpeg pulseaudio pulseaudio-utils \
+      xvfb ffmpeg pulseaudio pulseaudio-utils poppler-utils \
       fonts-liberation fonts-noto-color-emoji \
       tini procps ca-certificates \
     && rm -rf /var/lib/apt/lists/*
