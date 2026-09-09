@@ -66,7 +66,7 @@ export default function ChatTab({ slug }: { slug: string }) {
             marginBottom: 8,
             marginLeft: m.role === "user" ? "18%" : 0,
             marginRight: m.role === "assistant" ? "12%" : 0,
-            background: m.role === "user" ? "#eff6ff" : undefined,
+            background: m.role === "user" ? "#223049" : undefined,
           }}>
             <strong style={{ fontSize: 12, color: m.role === "user" ? "#2563eb" : "#059669" }}>
               {m.role === "user" ? "you" : "assistant"}

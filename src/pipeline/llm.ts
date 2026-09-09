@@ -72,12 +72,18 @@ export async function geminiCall(
   throw new Error(`all Gemini models failed — last: ${lastErr}`);
 }
 
+/** GLM endpoint — Coding Plan keys only authorize /api/coding/paas/v4 (the
+ *  standard /api/paas/v4 returns 1113 "insufficient balance" for them).
+ *  Overridable via GLM_BASE. */
+const glmEndpoint = (): string =>
+  `${process.env.GLM_BASE ?? "https://open.bigmodel.cn/api/coding/paas/v4"}/chat/completions`;
+
 /** Text completion via GLM (Zhipu, OpenAI-compatible). Throws if no key. */
 export async function glmCall(prompt: string): Promise<string> {
   const key = process.env.GLM_API_KEY;
   if (!key) throw new Error("GLM_API_KEY not set");
-  const model = process.env.GLM_MODEL ?? "glm-5.2";
-  const res = await fetch("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
+  const model = process.env.GLM_MODEL ?? "glm-5.3";
+  const res = await fetch(glmEndpoint(), {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0.3 }),
@@ -94,8 +100,8 @@ export async function glmChat(
 ): Promise<string> {
   const key = process.env.GLM_API_KEY;
   if (!key) throw new Error("GLM_API_KEY not set");
-  const model = process.env.GLM_MODEL ?? "glm-5.2";
-  const res = await fetch("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
+  const model = process.env.GLM_MODEL ?? "glm-5.3";
+  const res = await fetch(glmEndpoint(), {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({
