@@ -6,3 +6,6 @@ segments/
 *.log
 notes/
 recordings/
+frontend/.next/
+frontend/node_modules/
+node_modules/
