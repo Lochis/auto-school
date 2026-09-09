@@ -6,9 +6,11 @@
  * uploads stay instant and untouched docs never burn CPU/vision quota.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { MATERIALS_DIR } from "./materials.ts";
+import { listSessions } from "./sessions.ts";
+import { config } from "../config.ts";
 
 const run = (cmd: string, args: string[]): Promise<{ code: number; out: string; err: string }> =>
   new Promise((res) => {
@@ -32,30 +34,87 @@ export const supportsIndex = (rel: string): boolean => {
   return e === ".pdf" || e === ".docx" || TEXTUAL.has(e);
 };
 
+/** PDF → page texts + page PNGs in the bundle dir (shared by real PDFs and
+ *  rendered DOCXs). Returns page count. */
+async function indexPdf(src: string, dir: string): Promise<number> {
+  const t = await run("pdftotext", ["-enc", "UTF-8", src, "-"]);
+  const parts = t.out.split("\f");
+  parts.forEach((txt, i) => writeFileSync(join(dir, `page-${i + 1}.txt`), txt.trim()));
+  await run("pdftoppm", ["-png", "-r", "110", src, join(dir, "page")]); // page-1.png … (padding varies)
+  return Math.max(parts.length, 1);
+}
+
+/** DOCX → HTML (images inline as data-URIs) → headless print-to-PDF → normal
+ *  PDF pipeline. Reuses the same browser/channel the recorder uses — no extra
+ *  image weight. Never runs while a recording session is live (second browser
+ *  launch during capture is the one real risk). */
+async function docxToPdf(src: string, dir: string): Promise<string | null> {
+  try {
+    const mammoth = await import("mammoth");
+    const { value: html } = await mammoth.convertToHtml({ path: src });
+    const { chromium } = await import("playwright");
+    const browser = await chromium.launch({
+      headless: true,
+      channel: config.browserChannel,
+      chromiumSandbox: config.chromiumSandbox,
+      timeout: 60_000,
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setContent(
+        `<!doctype html><html><head><meta charset="utf-8"><style>
+          body{font-family:'Liberation Sans',sans-serif;font-size:12pt;margin:1.5cm;}
+          img{max-width:100%;height:auto;}
+          table{border-collapse:collapse;}td,th{border:1px solid #999;padding:4px 8px;}
+          h1,h2,h3{page-break-after:avoid;}
+        </style></head><body>${html}</body></html>`,
+        { waitUntil: "load", timeout: 60_000 },
+      );
+      const pdf = join(dir, "source.pdf");
+      await page.pdf({ path: pdf, format: "A4", printBackground: true, timeout: 60_000 });
+      return pdf;
+    } finally {
+      await browser.close().catch(() => {});
+    }
+  } catch (e) {
+    console.warn(`[docindex] docx→pdf failed for ${src.split("/").pop()}: ${String(e).slice(0, 120)} — falling back to text-only`);
+    return null;
+  }
+}
+
 /** Build the bundle if missing. Returns page count, or 0 when unsupported. */
 export async function ensureIndex(course: string, rel: string): Promise<number> {
   if (!supportsIndex(rel)) return 0;
   const dir = indexDir(course, rel);
   const src = join(MATERIALS_DIR(course), rel);
   if (!existsSync(src)) return 0;
+  const deferred = existsSync(join(dir, ".textonly")); // text-only fallback — upgrade when possible
   const existing = pagesOnDisk(dir);
-  if (existing > 0) return existing;
+  if (existing > 0 && !deferred) return existing;
   mkdirSync(dir, { recursive: true });
   const ext = extname(rel).toLowerCase();
 
   if (ext === ".pdf") {
-    // full-text pass with \f page breaks, then rasterize pages for the VLM
-    const t = await run("pdftotext", ["-enc", "UTF-8", src, "-"]);
-    const parts = t.out.split("\f");
-    parts.forEach((txt, i) => writeFileSync(join(dir, `page-${i + 1}.txt`), txt.trim()));
-    const n = parts.length;
-    await run("pdftoppm", ["-png", "-r", "110", src, join(dir, "page")]); // page-1.png … (padding varies)
-    return Math.max(n, 1);
+    return indexPdf(src, dir);
   }
   if (ext === ".docx") {
+    // during a live recording, never launch a second browser — text-only now,
+    // full conversion on the next read after class ends
+    const recordingLive = listSessions().some((s) => s.stage === "recording");
+    if (!recordingLive) {
+      const pdf = await docxToPdf(src, dir);
+      if (pdf) {
+        // rendered pdf replaces the text-only fallback (if any)
+        for (const f of readdirSync(dir)) if (/^page-\d+\.txt$/.test(f)) unlinkSync(join(dir, f));
+        try { unlinkSync(join(dir, ".textonly")); } catch { /* gone */ }
+        return indexPdf(pdf, dir);
+      }
+    }
+    // text-only fallback (also the mid-class path) — marker ensures a later
+    // read retries the full conversion
+    writeFileSync(join(dir, ".textonly"), "deferred docx→pdf conversion");
     const mammoth = await import("mammoth");
-    const { value: md } = await mammoth.convertToHtml({ path: src }); // h1/h2/p tables — images dropped v1
-    // html → markdown-lite: keep headings/lists/paragraphs readable
+    const { value: md } = await mammoth.convertToHtml({ path: src });
     const text = md
       .replace(/<h1[^>]*>/g, "\n# ").replace(/<h2[^>]*>/g, "\n## ").replace(/<h3[^>]*>/g, "\n### ")
       .replace(/<li[^>]*>/g, "\n- ").replace(/<\/(p|li|tr|h1|h2|h3|table)>/g, "\n")
@@ -92,7 +151,8 @@ export async function readDoc(course: string, rel: string, page?: number, cap = 
 
 /** Path of a rasterized page for the VLM (PDFs only). */
 export async function pageImage(course: string, rel: string, page: number): Promise<string | null> {
-  if (extname(rel).toLowerCase() !== ".pdf") return null;
+  const ext = extname(rel).toLowerCase();
+  if (ext !== ".pdf" && ext !== ".docx") return null;
   await ensureIndex(course, rel);
   const dir = indexDir(course, rel);
   // pdftoppm names vary (page-1.png / page-001.png) — match by number

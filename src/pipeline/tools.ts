@@ -40,7 +40,7 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "view_page",
-      description: "Look at a PDF page image with a vision model — use when read_document returns little/no text (slides, diagrams, charts) or when the student asks about a figure.",
+      description: "Look at a page image with a vision model — use when read_document returns little/no text (slides, diagrams, charts) or when the student asks about a figure/screenshot. Works for PDF and DOCX pages.",
       parameters: {
         type: "object",
         properties: { path: { type: "string" }, page: { type: "number" } },
@@ -120,7 +120,7 @@ async function execTool(name: string, args: Record<string, unknown>, slug: strin
       const rel = String(args.path ?? "");
       const page = Number(args.page ?? 1);
       const img = await pageImage(slug, rel, page);
-      if (!img) return `no page image for ${rel} p${page} (PDFs only)`;
+      if (!img) return `no page image for ${rel} p${page} (PDFs/DOCXs only)`;
       const b64 = readFileSync(img).toString("base64");
       return await vlmDescribe(
         "Describe this page of a course document precisely and completely: text content, diagrams, charts (read values), tables, and any formulas. Structure the answer as markdown.",
