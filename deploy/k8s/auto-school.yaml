@@ -64,15 +64,7 @@ spec:
     requests:
       storage: 20Gi # ~100MB consolidated mp4 + notes per class hour
 ---
-# apiVersion: traefik.io/v1alpha1
-# kind: Middleware
-# metadata:
-#   name: auto-school-basicauth
-#   namespace: auto-school
-# spec:
-#   basicAuth:
-#     users:
-#       - "lochis:$2y$05$REPLACE_WITH_HTPASSWD_HASH"
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -173,25 +165,5 @@ spec:
   selector: { app: auto-school }
   ports:
     - { name: ctrl, port: 7800, targetPort: ctrl }
----
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: auto-school
-  namespace: auto-school
-  annotations:
-    kubernetes.io/ingress.class: traefik-external
-spec:
-  entryPoints:
-    - websecure
-  routes:
-    - kind: Rule
-      match: Host(`school.vanderloch.com`)
-      # middlewares:
-      #   - name: auto-school-basicauth
-      services:
-        - name: auto-school
-          port: 80
-          scheme: http
-  tls:
-    secretName: lochis-tls
+# IngressRoute + basicAuth Middleware are now in auto-school-ingress.yaml
+# Apply separately: kubectl apply -f deploy/k8s/auto-school-ingress.yaml

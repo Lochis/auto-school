@@ -1,8 +1,8 @@
 /**
  * Session consolidation: after notes finalize, merge the 5-min webm segments
- * into ONE per-session mp4 (720p H.264 CRF 27 ≈ 10x smaller), filed under the
- * course tree. Raw segments are deleted ONLY after the mp4 exists and its
- * duration matches the sum of the sources (±3s).
+ * into ONE per-session webm (VP9 stream-copy — no re-encode, runs in minutes,
+ * not hours), filed under the course tree. Raw segments are deleted ONLY after
+ * the output exists and its duration matches the wall-clock length (±5s).
  */
 import { spawn } from "node:child_process";
 import { writeFileSync, unlinkSync, existsSync, statSync, mkdirSync, renameSync } from "node:fs";
@@ -11,12 +11,7 @@ import { sessionPaths } from "./courses.ts";
 import { ffSerial } from "./fflock.ts";
 import { notify } from "../notify.ts";
 import { RECORDINGS_DIR, outPath } from "../paths.ts";
-import { pushEvent, getSettings } from "../status.ts";
-
-// encode thread cap: x264 defaults to every core (16-core box => ~35% total
-// system CPU). 2 threads keeps bursts modest; raise for faster consolidation.
-// Read at spawn time so the Settings page applies without a restart.
-const encThreads = (): string => String(getSettings().encThreads);
+import { pushEvent } from "../status.ts";
 
 function run(cmd: string, args: string[]): Promise<{ code: number; err: string }> {
   return new Promise((res) => {
@@ -61,21 +56,20 @@ export async function consolidateSession(
   // same course + same day (e.g. two rescued sessions) would collide — derive a
   // deterministic suffix from the first segment's ISO timestamp when taken
   let stem = paths.stem;
-  const mp4For = (s: string) => `${dir}/${s}.mp4`;
-  if (existsSync(mp4For(stem))) {
+  const outFor = (s: string) => `${dir}/${s}.webm`;
+  if (existsSync(outFor(stem))) {
     const m = real[0]?.match(/__(\d{4}-\d{2}-\d{2}T[\d-]+)?/);
     const tag = m?.[1]?.slice(11).replace(/-/g, "") ?? String(Date.now());
     stem = `${paths.stem}__${tag}`;
   }
-  // still colliding = a previous encode of THESE segments died mid-write (killed
-  // container leaves a truncated moov-less mp4 that ffmpeg can't faststart over).
+  // still colliding = a previous copy of THESE segments died mid-write.
   // Quarantine the stale file instead of crashing the rescue.
-  if (existsSync(mp4For(stem))) {
-    const stale = mp4For(`${stem}.stale-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`);
-    renameSync(mp4For(stem), stale);
-    pushEvent(`quarantined stale/partial mp4 → ${stale.split("/").pop()} (from an interrupted encode)`);
+  if (existsSync(outFor(stem))) {
+    const stale = outFor(`${stem}.stale-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`);
+    renameSync(outFor(stem), stale);
+    pushEvent(`quarantined stale/partial webm → ${stale.split("/").pop()} (from an interrupted copy)`);
   }
-  const mp4 = mp4For(stem);
+  const out = outFor(stem);
   const cleanupConcat = () => { try { unlinkSync(concatFile); } catch { /* gone */ } };
 
   // concat list (absolute paths, in order)
@@ -85,30 +79,26 @@ export async function consolidateSession(
   writeFileSync(concatFile, list);
 
   const rawBytes = real.reduce((a, f) => a + statSync(f).size, 0);
-  console.log(`[consolidate] ${real.length} segment(s), ${human(rawBytes)} -> merging into 720p mp4 ...`);
-  pushEvent(`consolidating: ${real.length} segment(s), ${human(rawBytes)} → 720p mp4`);
+  console.log(`[consolidate] ${real.length} segment(s), ${human(rawBytes)} -> stream-copying into webm ...`);
+  pushEvent(`consolidating: ${real.length} segment(s), ${human(rawBytes)} → webm (stream copy)`);
 
-  // re-encode during concat: fixes timestamp seams and shrinks archives.
-  // nice-19 + superfast: lowest priority (never fights Chromium/recording) and
-  // ~40% fewer CPU-seconds than veryfast, at a slightly larger file.
-  // If a pulse-monitor ogg exists, mux it in as the audio track (webm segments
-  // are video-only by design — Edge's getDisplayMedia audio is a fake tone).
+  // VP9 segments are already webm — concat with -c copy: minutes instead of the
+  // multi-hour x264 re-encode, identical quality, ~1:1 size (VP9 is already
+  // compact). If a pulse-monitor ogg exists, mux it in as the audio track (webm
+  // segments are video-only by design — Edge's getDisplayMedia audio is a fake
+  // tone). Vorbis copies straight into the webm container.
   const hasAudio = !!audioFile && existsSync(audioFile);
   const ffArgs = [
     "-y", "-loglevel", "error",
     "-f", "concat", "-safe", "0", "-i", concatFile,
-    ...(hasAudio ? ["-i", audioFile!] : []),
-    ...(hasAudio ? ["-map", "0:v", "-map", "1:a", "-shortest"] : []),
-    "-vf", "scale=1280:-2",
-    "-c:v", "libx264", "-preset", "superfast", "-crf", "27", "-threads", encThreads(),
-    ...(hasAudio ? ["-c:a", "aac", "-b:a", "96k"] : ["-an"]),
-    "-movflags", "+faststart",
-    mp4,
+    ...(hasAudio ? ["-i", audioFile!, "-map", "0:v", "-map", "1:a", "-shortest"] : ["-an"]),
+    "-c", "copy",
+    out,
   ];
   const enc = await ffSerial(() => run("nice", ["-n", "19", "ffmpeg", ...ffArgs]));
-  if (enc.code !== 0 || !existsSync(mp4)) {
+  if (enc.code !== 0 || !existsSync(out)) {
     cleanupConcat();
-    console.warn(`[consolidate] ! encode failed: ${enc.err}`);
+    console.warn(`[consolidate] ! copy failed: ${enc.err}`);
     pushEvent(`consolidation ✗ (${String(enc.err).slice(-140)}) — raw segments kept`);
     await notify(`⚠️ Consolidation failed for **${paths.course.name}** — raw segments kept`);
     return null;
@@ -116,26 +106,28 @@ export async function consolidateSession(
   cleanupConcat();
 
   // verify duration before deleting anything — only against wall-clock if given
-  // (webm sources report bad durations; mp4 re-encode is the accurate one)
-  const got = await durationSec(mp4);
+  // (individual webm segments report bogus durations, but the concatenated
+  // container carries an accurate one)
+  const got = await durationSec(out);
   if (expectedSec && Math.abs(got - expectedSec) > 5) {
-    console.warn(`[consolidate] ! duration mismatch (wall-clock ${expectedSec.toFixed(0)}s vs mp4 ${got.toFixed(0)}s) — raw segments kept`);
+    console.warn(`[consolidate] ! duration mismatch (wall-clock ${expectedSec.toFixed(0)}s vs webm ${got.toFixed(0)}s) — raw segments kept`);
     await notify(`⚠️ Consolidation duration mismatch for **${paths.course.name}** — raw segments kept`);
     return null;
   }
   if (got < 10) {
-    console.warn(`[consolidate] ! mp4 suspiciously short (${got.toFixed(0)}s) — raw segments kept`);
+    console.warn(`[consolidate] ! webm suspiciously short (${got.toFixed(0)}s) — raw segments kept`);
     return null;
   }
 
-  const outBytes = statSync(mp4).size;
+  const outBytes = statSync(out).size;
   for (const f of existing) {
     try { unlinkSync(f); } catch { /* leave it */ }
   }
   if (hasAudio) { try { unlinkSync(audioFile!); } catch { /* leave it */ } }
   const ratio = rawBytes > 0 ? (rawBytes / outBytes).toFixed(1) : "?";
-  console.log(`[consolidate] ✓ ${mp4} — ${human(rawBytes)} → ${human(outBytes)} (${ratio}x smaller), raw segments removed`);
-  pushEvent(`consolidated ✓ ${human(rawBytes)} of segments → ${human(outBytes)} mp4 (${ratio}× smaller)`);
-  await notify(`📦 **${paths.course.name}** consolidated: ${human(rawBytes)} of segments → ${human(outBytes)} mp4 (${ratio}× smaller) — \`${mp4}\``);
-  return { mp4, rawBytes, outBytes };
+  console.log(`[consolidate] ✓ ${out} — ${human(rawBytes)} → ${human(outBytes)} (${ratio}x), raw segments removed`);
+  pushEvent(`consolidated ✓ ${human(rawBytes)} of segments → ${human(outBytes)} webm (stream copy)`);
+  await notify(`📦 **${paths.course.name}** consolidated: ${human(rawBytes)} of segments → ${human(outBytes)} webm — \`${out}\``);
+  // NB: field kept as "mp4" in sessions.json/UI for compatibility
+  return { mp4: out, rawBytes, outBytes };
 }

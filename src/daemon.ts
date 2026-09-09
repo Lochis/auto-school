@@ -90,13 +90,18 @@ process.on("SIGINT", () => void shutdown("SIGINT"));
  *  (mp4 keeps them listenable in the UI; no Gemini spend by default). */
 async function rescueOrphans(): Promise<void> {
   let files: string[];
-  try { files = readdirSync(RECORD_DIR).filter((f) => f.endsWith(".webm")); } catch { return; }
+  try { files = readdirSync(RECORD_DIR).filter((f) => f.endsWith(".webm") && !f.endsWith(".cued.webm")); } catch { return; }
   const groups = new Map<string, string[]>();
   for (const f of files) {
-    const stem = f.replace(/__\d{3}\.webm$/, "");
-    groups.set(stem, [...(groups.get(stem) ?? []), f]);
+    // segment files: <titleSlug>__<seg-start-ISO>__<NNN>.webm — each 5-min
+    // segment carries its OWN start timestamp, so group by title slug alone
+    // (stripping only __NNN left one "session" per segment)
+    const slug = f.replace(/__\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}__\d{3}\.webm$/, "");
+    groups.set(slug, [...(groups.get(slug) ?? []), f]);
   }
   for (const [stem, parts] of groups) {
+    // explicit order by segment index (__NNN), then map to full paths
+    parts.sort((a, b) => Number(a.match(/__(\d{3})\.webm$/)?.[1] ?? 0) - Number(b.match(/__(\d{3})\.webm$/)?.[1] ?? 0));
     const paths = parts.map((p) => join(RECORD_DIR, p));
     const newest = Math.max(...paths.map((p) => statSync(p).mtimeMs));
     if (Date.now() - newest < 10 * 60_000) continue; // possibly still live
@@ -104,12 +109,14 @@ async function rescueOrphans(): Promise<void> {
     console.log(`[daemon] orphan rescue: ${parts.length} segment(s) from ${stem}`);
     updateSession(stem, { stage: "consolidating", stageNote: "orphan rescue", segCount: parts.length });
     for (const p of paths) await rebuildSeekPoints(p.split(/[\\/]/).pop()!);
-    const ogg = join(RECORD_DIR, `${stem}.audio.ogg`);
+    // audio ogg is named with the SESSION-start timestamp: <slug>__<ISO>.audio.ogg
+    const oggName = readdirSync(RECORD_DIR).find((f) => f.startsWith(`${stem}__`) && f.endsWith(".audio.ogg"));
+    const ogg = oggName ? join(RECORD_DIR, oggName) : undefined;
     try {
       // title slug lives before the "__<ISO timestamp>" suffix — keeps
       // rescued sessions filed under the same course folder as live ones
       const title = stem.replace(/__\d{4}-\d{2}-\d{2}.*$/, "").replace(/_/g, " ") || stem;
-      const r = await consolidateSession(title, paths, undefined, existsSync(ogg) ? ogg : undefined);
+      const r = await consolidateSession(title, paths, undefined, ogg && existsSync(ogg) ? ogg : undefined);
       pushEvent(r ? `orphan rescued ✓ ${r.mp4}` : `orphan rescue failed for ${stem} (segments kept)`);
       updateSession(stem, r ? { stage: "done", mp4: r.mp4, sizeMB: Math.round(r.outBytes / 1e6) } : { stage: "failed", stageNote: "rescue failed — segments kept" });
     } catch (e) {
@@ -433,7 +440,7 @@ function startController(): void {
       // so prefix matching here would wipe every other recording of that day.
       const rdir = join(RECORDINGS_DIR, course);
       const esc = stem.replace(/[.\\^$*+?()[\]{}|]/g, "\\$&"); // stem may contain dots (.stale)
-      const mine = new RegExp(`^${esc}(__T?\\d{6}|\\.stale-\\d{6})?\\.mp4$`);
+      const mine = new RegExp(`^${esc}(__T?\\d{6}|\\.stale-\\d{6})?\\.(mp4|webm)$`);
       try {
         for (const f of readdirSync(rdir)) {
           if (mine.test(f)) rm(join(rdir, f));
@@ -444,7 +451,7 @@ function startController(): void {
       const base = stem.replace(/(__T?\d{6}|\.stale-\d{6})$/, "");
       let sameDayLeft = false;
       try {
-        sameDayLeft = readdirSync(rdir).some((f) => f.endsWith(".mp4") && f.replace(/\.mp4$/, "").replace(/(__T?\d{6}|\.stale-\d{6})$/, "") === base);
+        sameDayLeft = readdirSync(rdir).some((f) => (f.endsWith(".mp4") || f.endsWith(".webm")) && f.replace(/\.(mp4|webm)$/, "").replace(/(__T?\d{6}|\.stale-\d{6})$/, "") === base);
       } catch { /* dir gone */ }
       if (!sameDayLeft) {
         const ndir = join(NOTES_DIR, course);
@@ -523,7 +530,7 @@ function startController(): void {
       try {
         const dir = join(RECORDINGS_DIR, course);
         for (const f of readdirSync(dir)) {
-          if (f === `${stem}.mp4` || (f.startsWith(`${stem}__T`) && f.endsWith(".mp4"))) { mp4 = join(dir, f); break; }
+          if (f === `${stem}.mp4` || f === `${stem}.webm` || (f.startsWith(`${stem}__T`) && (f.endsWith(".mp4") || f.endsWith(".webm")))) { mp4 = join(dir, f); break; }
         }
       } catch { /* no course dir */ }
       if (!mp4) return send(404, { error: "no recording (mp4) for this session — consolidate first" });
@@ -532,7 +539,8 @@ function startController(): void {
       void (async () => {
         try {
           const t = await transcribeFile(mp4);
-          const realStem = mp4.split(/[\\/]/).pop()!.replace(/\.mp4$/, "");
+          const realFile = mp4.split(/[\\/]/).pop()!;
+          const realStem = realFile.replace(/\.(mp4|webm)$/, "");
           const title = realStem.replace(/^\d{4}-\d{2}-\d{2}__/, "").replace(/__T?\d{6}$/, "").replace(/_/g, " ");
           // file under the course the USER clicked — never re-parse the title
           // (a filename-derived title files under a bogus slug like
@@ -547,7 +555,7 @@ function startController(): void {
           pushEvent(`transcribe ✓ ${course}/${stem} — ${t.chunks.length} chunk(s) → transcript.md`);
           if (!existsSync(paths.notesMd)) {
             setActivity("transcribing (manual) — generating notes", { meeting: title });
-            const entries = t.chunks.map((c) => ({ meeting: title, offsetSec: c.offsetSec, file: `${realStem}.mp4`, transcript: c.text, visualNotes: [] as { t: string; note: string }[] }));
+            const entries = t.chunks.map((c) => ({ meeting: title, offsetSec: c.offsetSec, file: realFile, transcript: c.text, visualNotes: [] as { t: string; note: string }[] }));
             await finalizeNotes(title, entries, paths);
           } else rebuildIndex();
         } catch (e) {
@@ -679,7 +687,7 @@ function startController(): void {
     const mm = url.pathname.match(MATERIALS_RE);
     if (mm) {
       const slug = decodeURIComponent(mm[1]);
-      if (req.method === "GET") return send(200, listMaterials(slug));
+      if (req.method === "GET") return send(200, { materials: listMaterials(slug) });
       if (req.method === "POST") {
         try {
           // streaming multipart — multi-file with optional subpaths

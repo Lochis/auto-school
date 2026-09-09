@@ -1,0 +1,23 @@
+{
+  "name": "auto-school",
+  "private": true,
+  "version": "0.1.0",
+  "module": true,
+  "type": "module",
+  "scripts": {
+    "login": "node src/index.ts login",
+    "login:fresh": "node src/index.ts login --fresh",
+    "meetings": "node src/index.ts meetings",
+    "daemon": "node src/index.ts daemon",
+    "cd": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest && echo '✓ both images pushed — now run: kubectl -n auto-school rollout restart deploy/auto-school'",
+    "cd:push": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest",
+    "install-browser": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "otpauth": "^9.5.2",
+    "playwright": "^1.63.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

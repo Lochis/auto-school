@@ -80,6 +80,9 @@ export function sessions(course: string): Session[] {
       if (f.endsWith(".mp4")) {
         const stem = f.replace(/\.mp4$/, "");
         add(stem, { audio: `recordings/${course}/${f}`, time: timeFromStem(stem) });
+      } else if (f.endsWith(".webm")) {
+        const stem = f.replace(/\.webm$/, "");
+        add(stem, { audio: `recordings/${course}/${f}`, time: timeFromStem(stem) });
       }
     }
   } catch { /* none */ }

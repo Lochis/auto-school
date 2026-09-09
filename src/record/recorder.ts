@@ -282,7 +282,7 @@ export async function startRecording(page: Page, meetingTitle: string, joinUrl?:
           await notify(`⚠️ Notes finalize failed — raw running summary kept`);
         }
       }
-      // ALWAYS consolidate (transcription may be off; the mp4 is the listenable
+      // ALWAYS consolidate (transcription may be off; the webm is the listenable
       // archive) — muxes the pulse-monitor ogg in as the audio track
       try {
         updateSession(stemOf(meetingTitle), { stage: "consolidating", title: meetingTitle });
