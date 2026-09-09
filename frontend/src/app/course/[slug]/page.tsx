@@ -1,15 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { courses, readText, sessions, timelineToMd, DATA_DIR } from "@/lib/data";
 import SessionCard from "./session-card";
 import SessionNotes from "./session-notes";
 import MaterialsTab from "./materials-tab";
 import IngestForm from "./ingest-form";
+import ChatTab from "./chat-tab";
 export const dynamic = "force-dynamic";
 
-/** week math mirroring the backend (see src/pipeline/materials.ts) */
 function weekMonday(dstr: string): string {
   const d = new Date(`${dstr}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + (d.getUTCDay() === 0 ? -6 : 1 - d.getUTCDay()));
@@ -32,8 +32,8 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
   if (!courses().includes(slug)) notFound();
   const list = sessions(slug);
   const showMaterials = tab === "materials";
+  const showAsk = tab === "ask";
 
-  // group sessions by semester week (only when a semester start is configured)
   const start = semesterStart(slug);
   const groups = new Map<number, typeof list>();
   for (const s of list) {
@@ -44,21 +44,29 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
   }
   const weeks = [...groups.keys()].sort((a, b) => b - a);
 
+  const tabBtn = (href: string, label: string, active: boolean) => (
+    <Link
+      href={href}
+      style={{ padding: "6px 14px", borderRadius: 6, fontWeight: 600, textDecoration: "none", color: active ? "#fff" : "#374151", background: active ? "#2563eb" : "#e5e7eb", fontSize: 13 }}
+    >{label}</Link>
+  );
+
   return (
     <main>
       <p><Link href="/">← All courses</Link></p>
       <h1>{slug.replace(/_/g, " ")}</h1>
+
       {/* tab bar */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <Link href={`/course/${slug}`} style={{ padding: "6px 14px", borderRadius: 6, fontWeight: 600, textDecoration: "none", color: !showMaterials ? "#fff" : "#374151", background: !showMaterials ? "#2563eb" : "#e5e7eb" }}>
-          Sessions ({list.length})
-        </Link>
-        <Link href={`/course/${slug}?tab=materials`} style={{ padding: "6px 14px", borderRadius: 6, fontWeight: 600, textDecoration: "none", color: showMaterials ? "#fff" : "#374151", background: showMaterials ? "#2563eb" : "#e5e7eb" }}>
-          Materials
-        </Link>
+        {tabBtn(`/course/${slug}`, `Sessions (${list.length})`, !showMaterials && !showAsk)}
+        {tabBtn(`/course/${slug}?tab=materials`, "Materials", showMaterials)}
+        {tabBtn(`/course/${slug}?tab=ask`, "Ask", showAsk)}
       </div>
+
       {showMaterials ? (
         <MaterialsTab slug={slug} />
+      ) : showAsk ? (
+        <ChatTab slug={slug} />
       ) : (
         <>
           {!start && <p className="muted">Tip: set a semester start on the Materials tab to group sessions by week.</p>}
@@ -67,11 +75,7 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
             <div key={w} style={{ marginBottom: 20 }}>
               {start && <h2 style={{ fontSize: 17, margin: "0 0 8px" }}>Week {w}</h2>}
               {(groups.get(w) ?? []).map((s) => {
-                // manual job writes transcript.md; the live pipeline keeps transcripts
-                // in timeline.json — either way they render in the collapsible below
-                const transcriptMd = s.transcript
-                  ? readText(s.transcript)
-                  : timelineToMd(s.timeline);
+                const transcriptMd = s.transcript ? readText(s.transcript) : timelineToMd(s.timeline);
                 return (
                   <div className="card" key={s.stem}>
                     <SessionCard session={{ ...s, transcript: transcriptMd ? (s.transcript ?? "timeline") : undefined }} course={slug} />

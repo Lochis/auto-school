@@ -87,6 +87,28 @@ export async function glmCall(prompt: string): Promise<string> {
   return (json?.choices?.[0]?.message?.content ?? "").trim();
 }
 
+/** Multi-turn chat via GLM (Zhipu) — system prompt + message history. */
+export async function glmChat(
+  system: string,
+  messages: { role: "user" | "assistant"; content: string }[],
+): Promise<string> {
+  const key = process.env.GLM_API_KEY;
+  if (!key) throw new Error("GLM_API_KEY not set");
+  const model = process.env.GLM_MODEL ?? "glm-5.2";
+  const res = await fetch("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "system", content: system }, ...messages],
+      temperature: 0.4,
+    }),
+  });
+  if (!res.ok) throw new Error(`GLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const json = (await res.json()) as any;
+  return (json?.choices?.[0]?.message?.content ?? "").trim();
+}
+
 /** Text work: GLM if configured, else the Gemini chain. */
 export async function textCall(prompt: string): Promise<string> {
   if (process.env.GLM_API_KEY) {

@@ -1,178 +1,280 @@
 "use client";
+/**
+ * Materials explorer: real folder tree, folder-aware drag-drop upload
+ * (webkitRelativePath preserved → backend keeps subpaths; "Week N" folders
+ * auto-tag weeks), inline rename, delete files OR folders.
+ */
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-
-const CATEGORIES = ["syllabus", "assignment", "lecture-notes", "reference", "rubric", "other"] as const;
-type Cat = typeof CATEGORIES[number];
-const CAT_COLORS: Record<Cat, string> = {
-  syllabus: "#3b82f6", assignment: "#f59e0b", "lecture-notes": "#10b981",
-  reference: "#8b5cf6", rubric: "#ec4899", other: "#6b7280",
-};
-
-interface Material { filename: string; week: number; category: Cat; description: string; uploadedAt: string; size: number; }
-
-const fmt = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1_048_576 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;
-const api = (slug: string) => `/api/courses/${encodeURIComponent(slug)}/materials`;
-const cfgApi = (slug: string) => `/api/courses/${encodeURIComponent(slug)}/config`;
-const fileUrl = (slug: string, m: Material) =>
-  `/api/media/courses/${encodeURIComponent(slug)}/materials/week-${String(m.week).padStart(2, "0")}/${encodeURIComponent(m.filename)}`;
-
-/** Monday of the week containing a YYYY-MM-DD. */
-function weekMonday(dstr: string): string {
-  const d = new Date(`${dstr}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + (d.getUTCDay() === 0 ? -6 : 1 - d.getUTCDay()));
-  return d.toISOString().slice(0, 10);
+interface Entry {
+  path: string;
+  filename: string;
+  week: number | null;
+  category: string;
+  description: string;
+  uploadedAt: string;
+  size: number;
 }
-function weekOf(dstr: string, start: string): number {
-  const a = Date.parse(`${weekMonday(dstr)}T00:00:00Z`), b = Date.parse(`${weekMonday(start)}T00:00:00Z`);
-  return Math.max(1, Math.floor((a - b) / 604_800_000) + 1);
+
+/** Build a nested tree from flat entries. */
+interface TNode {
+  name: string;
+  path: string;
+  children: Map<string, TNode>;
+  file?: Entry;
 }
+function buildTree(entries: Entry[]): TNode {
+  const root: TNode = { name: "", path: "", children: new Map() };
+  for (const e of entries) {
+    let cur = root;
+    const segs = e.path.split("/");
+    segs.forEach((seg, i) => {
+      const p = segs.slice(0, i + 1).join("/");
+      if (!cur.children.has(seg)) cur.children.set(seg, { name: seg, path: p, children: new Map() });
+      cur = cur.children.get(seg)!;
+      if (i === segs.length - 1) cur.file = e; // leaf
+    });
+  }
+  return root;
+}
+
+const fmtSize = (b: number): string => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
 
 export default function MaterialsTab({ slug }: { slug: string }) {
-  const [materials, setMaterials] = useState<Material[]>([]);
-  const [semesterStart, setSemesterStart] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
-  const [category, setCategory] = useState<Cat>("other");
-  const [week, setWeek] = useState<number | null>(null); // null until derived from config
-  const [description, setDescription] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [loadErr, setLoadErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [week, setWeek] = useState<number | "">("");
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameTo, setRenameTo] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [m, c] = await Promise.all([
-        fetch(api(slug)).then((r) => r.json()),
-        fetch(cfgApi(slug)).then((r) => r.json()),
-      ]);
-      setMaterials(Array.isArray(m) ? m : []);
-      const ss: string = c?.semesterStart ?? "";
-      setSemesterStart(ss);
-      // default week = auto-derived from semesterStart + today
-      setWeek(/^\d{4}-\d{2}-\d{2}$/.test(ss) ? weekOf(new Date().toISOString().slice(0, 10), ss) : 1);
-    } catch { setMaterials([]); }
-    setLoading(false);
+  useEffect(() => {
+    fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
+      .then((r) => r.json())
+      .then((j: { materials?: Entry[]; error?: string }) => {
+        if (j.materials) setEntries(j.materials);
+        else setLoadErr(j.error ?? "failed to load");
+      })
+      .catch(() => setLoadErr("backend unreachable"));
   }, [slug]);
-  useEffect(() => { load(); }, [load]);
 
-  const saveStart = async (val: string) => {
-    setSemesterStart(val);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(val)) return;
+  const upload = async (files: FileList, subpaths?: string[]): Promise<void> => {
+    if (!files.length) return;
+    setBusy(true);
+    setLoadErr("");
     try {
-      await fetch(cfgApi(slug), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ semesterStart: val }) });
-      setWeek(weekOf(new Date().toISOString().slice(0, 10), val));
-      setMsg(`semester starts ${val} — weeks derived`);
-    } catch { setMsg("couldn't save semester start"); }
-  };
-
-  const upload = async (files: FileList | null) => {
-    if (!files?.length || !week) return;
-    setUploading(true); setMsg(null);
-    for (const file of Array.from(files)) {
       const fd = new FormData();
-      fd.append("file", file);
-      fd.append("category", category);
-      fd.append("description", description);
-      fd.append("week", String(week));
-      try {
-        const res = await fetch(api(slug), { method: "POST", body: fd });
-        const j = await res.json();
-        if (j.ok) setMsg(`uploaded ${j.filename} → week ${j.week}`); else setMsg(`error: ${j.error}`);
-      } catch { setMsg("upload failed — backend unreachable"); }
+      for (const f of Array.from(files)) fd.append("file", f);
+      // per-file subpaths (folder drop → webkitRelativePath), else bare names
+      const paths = subpaths ?? Array.from(files).map((f) => f.name);
+      paths.forEach((p, i) => fd.append(`path${i}`, p));
+      if (week !== "") fd.append("week", String(week));
+      const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials`, { method: "POST", body: fd });
+      const j = (await r.json().catch(() => ({}))) as { error?: string };
+      if (!r.ok) setLoadErr(j.error ?? `HTTP ${r.status}`);
+      else router.refresh();
+    } catch {
+      setLoadErr("upload failed");
+    } finally {
+      setBusy(false);
     }
-    setDescription("");
-    setUploading(false);
-    load();
   };
 
-  const del = async (m: Material) => {
-    if (!confirm(`Delete ${m.filename} (week ${m.week})?`)) return;
-    await fetch(`${api(slug)}?file=${encodeURIComponent(m.filename)}&week=${m.week}`, { method: "DELETE" });
-    load();
+  const onDrop = async (e: React.DragEvent): Promise<void> => {
+    e.preventDefault();
+    const items = Array.from(e.dataTransfer.items).filter((i) => i.webkitGetAsEntry?.());
+    const files: File[] = [];
+    const paths: string[] = [];
+    // resolve directory entries recursively (folder drop)
+    const walk = (entry: FileSystemEntry, prefix: string, done: () => void): void => {
+      if (entry.isFile) {
+        (entry as FileSystemFileEntry).file((f) => {
+          files.push(f);
+          paths.push(prefix + f.name);
+          done();
+        });
+      } else if (entry.isDirectory) {
+        const reader = (entry as FileSystemDirectoryEntry).createReader();
+        const readBatch = (): void => {
+          reader.readEntries(async (batch) => {
+            if (!batch.length) { done(); return; }
+            let pending = batch.length;
+            const childDone = (): void => { if (--pending === 0) readBatch(); };
+            for (const child of batch) walk(child, `${prefix}${entry.name}/`, childDone);
+          });
+        };
+        readBatch();
+      } else done();
+    };
+    const entriesList = items.map((i) => i.webkitGetAsEntry!()).filter(Boolean) as FileSystemEntry[];
+    let pending = entriesList.length;
+    await new Promise<void>((resolve) => {
+      if (!pending) return resolve();
+      for (const en of entriesList) {
+        walk(en, "", () => { if (--pending === 0) resolve(); });
+      }
+    });
+    if (files.length) {
+      // wrap in a FileList-ish and upload with paths
+      const fd = new FormData();
+      for (const f of files) fd.append("file", f);
+      paths.forEach((p, i) => fd.append(`path${i}`, p));
+      if (week !== "") fd.append("week", String(week));
+      setBusy(true);
+      try {
+        const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials`, { method: "POST", body: fd });
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        if (!r.ok) setLoadErr(j.error ?? `HTTP ${r.status}`);
+        else router.refresh();
+      } catch { setLoadErr("upload failed"); }
+      finally { setBusy(false); }
+    }
   };
 
-  const drop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); upload(e.dataTransfer.files); };
+  const rename = async (from: string): Promise<void> => {
+    const to = renameTo.trim();
+    setRenaming(null);
+    if (!to || to === from) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { error?: string };
+      if (!r.ok) setLoadErr(j.error ?? `HTTP ${r.status}`);
+      else router.refresh();
+    } catch { setLoadErr("rename failed"); }
+    finally { setBusy(false); }
+  };
 
-  // group by week (descending = newest first)
-  const byWeek = new Map<number, Material[]>();
-  for (const m of materials) {
-    const arr = byWeek.get(m.week) ?? [];
-    arr.push(m);
-    byWeek.set(m.week, arr);
-  }
-  const weeks = [...byWeek.keys()].sort((a, b) => b - a);
+  const del = async (path: string): Promise<void> => {
+    if (!confirm(`Delete "${path}"?${entries.some((e) => e.path.startsWith(path + "/")) ? "\n\nThis is a FOLDER — everything inside goes too." : ""}`)) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials?path=${encodeURIComponent(path)}`, { method: "DELETE" });
+      if (r.ok) router.refresh();
+      else setLoadErr(`HTTP ${r.status}`);
+    } catch { setLoadErr("delete failed"); }
+    finally { setBusy(false); }
+  };
+
+  // semester start editor (kept from the old tab)
+  const [semStart, setSemStart] = useState<string | null>(null);
+  useEffect(() => {
+    fetch(`/api/courses/${encodeURIComponent(slug)}/config`)
+      .then((r) => r.json())
+      .then((j: { semesterStart?: string }) => setSemStart(j.semesterStart ?? ""))
+      .catch(() => setSemStart(""));
+  }, [slug]);
+  const saveStart = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await fetch(`/api/courses/${encodeURIComponent(slug)}/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ semesterStart: semStart }),
+      });
+      router.refresh();
+    } finally { setBusy(false); }
+  };
+
+  const tree = buildTree(entries);
+
+  const renderNode = (n: TNode, depth: number): React.ReactNode => {
+    const isFolder = n.children.size > 0 || !n.file;
+    if (isFolder && n.name) {
+      return (
+        <details key={n.path} open={depth < 2} style={{ marginLeft: depth * 16 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600, padding: "3px 0" }}>
+            📁 {n.name}
+            <button onClick={(e) => { e.preventDefault(); setRenaming(n.path); setRenameTo(n.path); }} title="Rename folder" style={{ marginLeft: 8, fontSize: 11 }}>✎</button>
+            <button onClick={(e) => { e.preventDefault(); del(n.path); }} title="Delete folder" style={{ marginLeft: 4, fontSize: 11 }}>🗑</button>
+          </summary>
+          {renaming === n.path && (
+            <div style={{ margin: "4px 0" }}>
+              <input value={renameTo} onChange={(e) => setRenameTo(e.target.value)} style={{ width: 320 }} placeholder="new path (folders with /)" />
+              <button onClick={() => rename(n.path)} disabled={busy}>Save</button>
+              <button onClick={() => setRenaming(null)}>Cancel</button>
+            </div>
+          )}
+          {[...n.children.values()].sort((a, b) => (a.children.size === b.children.size ? a.name.localeCompare(b.name) : b.children.size - a.children.size)).map((c) => renderNode(c, depth + 1))}
+        </details>
+      );
+    }
+    if (n.file) {
+      const f = n.file;
+      return (
+        <div key={f.path} style={{ marginLeft: depth * 16, display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}>
+          <span>📄 {f.filename}</span>
+          {f.week !== null && <span className="muted" style={{ fontSize: 12 }}>· week {f.week}</span>}
+          <span className="muted" style={{ fontSize: 12 }}>{fmtSize(f.size)}</span>
+          <button onClick={() => { setRenaming(f.path); setRenameTo(f.path); }} title="Rename/move" style={{ fontSize: 11 }}>✎</button>
+          <button onClick={() => del(f.path)} title="Delete" style={{ fontSize: 11 }}>🗑</button>
+          {renaming === f.path && (
+            <span>
+              <input value={renameTo} onChange={(e) => setRenameTo(e.target.value)} style={{ width: 320 }} placeholder="new path" />
+              <button onClick={() => rename(f.path)} disabled={busy}>Save</button>
+              <button onClick={() => setRenaming(null)}>Cancel</button>
+            </span>
+          )}
+        </div>
+      );
+    }
+    return null;
+  };
 
   return (
-    <div className="card">
-      <h2 style={{ margin: "0 0 12px" }}>Course Materials</h2>
-
-      {/* semester anchor — drives week derivation for materials AND sessions */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
-        <label htmlFor="semstart" style={{ fontWeight: 600 }}>Semester starts</label>
-        <input id="semstart" type="date" value={semesterStart} onChange={(e) => saveStart(e.target.value)} style={{ padding: "4px 8px" }} />
-        <span className="muted">Week 1 = the week containing this date (drives week grouping)</span>
+    <div>
+      {/* upload controls */}
+      <div className="card" style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}
+           onDragOver={(e) => e.preventDefault()} onDrop={(e) => { void onDrop(e); }}
+           title="Drop files or whole folders here">
+        <strong style={{ minWidth: 80 }}>Materials</strong>
+        <span className="muted" style={{ fontSize: 13 }}>drop files / folders here →</span>
+        <label className="muted" style={{ fontSize: 13 }}>
+          week (for loose files):
+          <select value={week} onChange={(e) => setWeek(e.target.value === "" ? "" : Number(e.target.value))} style={{ marginLeft: 6 }}>
+            <option value="">folder name decides</option>
+            {Array.from({ length: 15 }, (_, i) => i + 1).map((w) => <option key={w} value={w}>week {w}</option>)}
+          </select>
+        </label>
+        <input ref={fileRef} type="file" multiple hidden onChange={(e) => e.target.files && upload(e.target.files)} />
+        <input ref={folderRef} type="file" multiple hidden // @ts-expect-error non-standard
+               webkitdirectory="" directory="" onChange={(e) => {
+                 const fl = e.target.files;
+                 if (!fl) return;
+                 const paths = Array.from(fl).map((f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name);
+                 upload(fl, paths);
+               }} />
+        <button onClick={() => fileRef.current?.click()} disabled={busy}>+ Files</button>
+        <button onClick={() => folderRef.current?.click()} disabled={busy}>+ Folder</button>
+        {busy && <span className="muted">working…</span>}
       </div>
 
-      {/* upload zone */}
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={drop}
-        onClick={() => inputRef.current?.click()}
-        style={{
-          border: `2px dashed ${dragOver ? "#3b82f6" : "#d1d5db"}`,
-          borderRadius: 8, padding: 20, textAlign: "center", cursor: "pointer",
-          background: dragOver ? "#eff6ff" : "transparent", marginBottom: 16,
-        }}
-      >
-        <input ref={inputRef} type="file" multiple hidden onChange={(e) => upload(e.target.files)} />
-        {uploading ? <span className="muted">uploading…</span> : <span>Drop files here or click to browse → week {week ?? "?"}</span>}
+      {/* semester start */}
+      <div className="card" style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
+        <span className="muted" style={{ fontSize: 13 }}>Semester starts:</span>
+        <input type="date" value={semStart ?? ""} onChange={(e) => setSemStart(e.target.value)} style={{ width: 160 }} />
+        <button onClick={saveStart} disabled={busy || !semStart}>Save</button>
+        <span className="muted" style={{ fontSize: 12 }}>— used to group sessions + weeks on this page</span>
       </div>
 
-      {/* week + category + description */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
-        <label htmlFor="wk" style={{ fontWeight: 600 }}>Week</label>
-        <select id="wk" value={week ?? 1} onChange={(e) => setWeek(Number(e.target.value))} style={{ padding: "4px 8px" }}>
-          {Array.from({ length: 15 }, (_, i) => i + 1).map((w) => <option key={w} value={w}>week {w}</option>)}
-        </select>
-        <select value={category} onChange={(e) => setCategory(e.target.value as Cat)} style={{ padding: "4px 8px" }}>
-          {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <input
-          type="text" placeholder="optional description…" value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          style={{ flex: "1 1 200px", padding: "4px 8px" }}
-        />
-        {msg && <span className="muted">{msg}</span>}
-      </div>
+      {loadErr && <p style={{ color: "#b91c1c" }}>{loadErr}</p>}
 
-      {/* file list grouped by week */}
-      {loading ? <p className="muted">loading…</p> : weeks.length === 0
-        ? <p className="muted">no materials yet — drop a syllabus, assignments, or lecture notes above.</p>
-        : weeks.map((w) => (
-          <div key={w} style={{ marginBottom: 14 }}>
-            <h3 style={{ margin: "0 0 6px", fontSize: 15 }}>Week {w}</h3>
-            <div style={{ display: "grid", gap: 6 }}>
-              {(byWeek.get(w) ?? []).map((m) => (
-                <div key={`${m.week}/${m.filename}`} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 10px", border: "1px solid #e5e7eb", borderRadius: 6 }}>
-                  <span style={{
-                    fontSize: 11, fontWeight: 600, color: "#fff", background: CAT_COLORS[m.category],
-                    padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap",
-                  }}>{m.category}</span>
-                  <a href={fileUrl(slug, m)} target="_blank" rel="noreferrer" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#2563eb" }}>
-                    {m.filename}
-                  </a>
-                  {m.description && <span className="muted" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>— {m.description}</span>}
-                  <span className="muted" style={{ whiteSpace: "nowrap" }}>{fmt(m.size)}</span>
-                  <button onClick={() => del(m)} style={{ fontSize: 12, padding: "2px 6px" }}>×</button>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))
-      }
+      {/* tree */}
+      <div className="card" style={{ marginTop: 10, maxHeight: "60vh", overflow: "auto" }}>
+        {entries.length === 0 ? (
+          <p className="muted">No materials yet — drop files or a whole course folder above. Folders named “Week 1”, “week-3” etc. tag their contents automatically.</p>
+        ) : (
+          [...tree.children.values()].sort((a, b) => (a.children.size === b.children.size ? a.name.localeCompare(b.name) : b.children.size - a.children.size)).map((c) => renderNode(c, 0))
+        )}
+      </div>
     </div>
   );
 }

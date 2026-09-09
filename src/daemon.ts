@@ -29,10 +29,11 @@ import { notify } from "./notify.ts";
 import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, applySettingsPatch } from "./status.ts";
 import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath } from "./paths.ts";
-import { listMaterials, addMaterial, removeMaterial, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
+import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
+import { glmChat } from "./pipeline/llm.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
-import { updateSession } from "./pipeline/sessions.ts";
+import { updateSession, listSessions } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention } from "./pipeline/retention.ts";
 
@@ -681,42 +682,63 @@ function startController(): void {
       if (req.method === "GET") return send(200, listMaterials(slug));
       if (req.method === "POST") {
         try {
-          // streaming multipart — same reason as /ingest (no RAM buffering)
+          // streaming multipart — multi-file with optional subpaths
           const TMP = join(config.userDataDir, "tmp-materials");
           const parts = await parseMultipart(req, TMP);
-          const fileP = parts.find((x) => x.name === "file" && x.path);
           const field = (n: string): string => parts.find((x) => x.name === n)?.text ?? "";
-          const category = field("category") || "other";
+          const explicitWeek = Number(field("week"));
           const description = field("description");
-          if (!fileP?.filename) {
+          const files = parts.filter((x) => x.name === "file" && x.path);
+          if (files.length === 0) {
             for (const p of parts) if (p.path) discardPart(p.path);
             return send(400, { error: "file required" });
           }
-          const safeName = fileP.filename.replace(/[^a-zA-Z0-9._\-]/g, "_");
-          if (safeName === "materials.json") {
-            discardPart(fileP.path!);
-            return send(400, { error: "reserved filename" });
+          const saved: { path: string; week: number | null }[] = [];
+          for (let fi = 0; fi < files.length; fi++) {
+            const f = files[fi]!;
+            // subpath: per-file "pathN" field (webkitRelativePath), else filename
+            const rawSub = field(`path${fi}`) || f.filename!;
+            const rel = sanitizeRelPath(rawSub);
+            const leaf = rel?.split("/").pop();
+            if (!rel || !leaf || leaf === "materials.json") {
+              discardPart(f.path!);
+              continue;
+            }
+            const dest = join(MATERIALS_DIR(slug), rel);
+            if (!dest.startsWith(MATERIALS_DIR(slug))) { discardPart(f.path!); continue; }
+            mkdirSync(dirname(dest), { recursive: true });
+            placePart(f.path!, dest);
+            // week: FOLDER NAME first (fool-proof), else the form's explicit week
+            const week = weekFromPath(rel) ?? (Number.isFinite(explicitWeek) && explicitWeek >= 1 ? Math.min(15, Math.floor(explicitWeek)) : null);
+            registerMaterial(slug, {
+              path: rel, filename: leaf, week,
+              category: "other", description, uploadedAt: new Date().toISOString(), size: f.bytes,
+            });
+            saved.push({ path: rel, week });
           }
-          // week: explicit from the form, else derived from semesterStart + today
-          const cfg = getCourseConfig(slug);
-          let week = Number(field("week"));
-          if (!Number.isFinite(week) || week < 1) week = cfg ? weekOf(new Date().toISOString().slice(0, 10), cfg.semesterStart) : 1;
-          week = Math.min(15, Math.floor(week));
-          const dir = join(MATERIALS_DIR(slug), weekFolder(week));
-          mkdirSync(dir, { recursive: true });
-          placePart(fileP.path!, join(dir, safeName));
-          addMaterial(slug, { filename: safeName, week, category, description, uploadedAt: new Date().toISOString(), size: fileP.bytes });
-          pushEvent(`material uploaded: ${safeName} → ${slug} week ${week} (${category})`);
-          return send(200, { ok: true, filename: safeName, week });
+          if (saved.length === 0) return send(400, { error: "no usable files" });
+          pushEvent(`material upload: ${saved.length} file(s) → ${slug}${saved[0]?.week ? ` (week ${saved[0].week})` : ""}`);
+          return send(200, { ok: true, saved });
         } catch (e) { return send(500, { error: `upload failed: ${String(e).slice(0, 100)}` }); }
       }
+      if (req.method === "PATCH") {
+        // rename/move a file or folder: { from, to } relative paths
+        try {
+          let body: Record<string, unknown> = {};
+          try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => res(JSON.parse(b))); }); } catch { /* empty */ }
+          const from = sanitizeRelPath(String(body.from ?? ""));
+          const to = sanitizeRelPath(String(body.to ?? ""));
+          if (!from || !to) return send(400, { error: "from/to required" });
+          const ok = renameMaterial(slug, from, to);
+          if (ok) { pushEvent(`material renamed: ${from} → ${to} (${slug})`); return send(200, { ok: true }); }
+          return send(404, { error: "not found" });
+        } catch (e) { return send(500, { error: `rename failed: ${String(e).slice(0, 100)}` }); }
+      }
       if (req.method === "DELETE") {
-        const filename = url.searchParams.get("file");
-        const week = Number(url.searchParams.get("week"));
-        if (!filename || !Number.isFinite(week)) return send(400, { error: "file and week params required" });
-        if (filename.includes("/") || filename.includes("..") || filename.includes("\\")) return send(400, { error: "invalid filename" });
-        const ok = removeMaterial(slug, filename, week);
-        if (ok) { pushEvent(`material deleted: ${filename} (week ${week}) from ${slug}`); return send(200, { ok: true }); }
+        const rel = sanitizeRelPath(url.searchParams.get("path") ?? "");
+        if (!rel) return send(400, { error: "path param required" });
+        const ok = deleteMaterial(slug, rel);
+        if (ok) { pushEvent(`material deleted: ${rel} from ${slug}`); return send(200, { ok: true }); }
         return send(404, { error: "not found" });
       }
     }
@@ -736,6 +758,72 @@ function startController(): void {
         return send(200, cfg);
       }
     }
+    // ── course chat (GLM) ─────────────────────────────────────────────
+    const CHAT_RE = /^\/courses\/([^/]+)\/chat$/;
+    const chatM = url.pathname.match(CHAT_RE);
+    if (chatM) {
+      const slug = decodeURIComponent(chatM[1]!);
+      const CHAT_FILE = () => join(config.userDataDir, "courses", slug, "chat.json");
+      const loadChat = (): { role: "user" | "assistant"; content: string; at: string }[] => {
+        try { return JSON.parse(readFileSync(CHAT_FILE(), "utf8")); } catch { return []; }
+      };
+      const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): void => {
+        mkdirSync(join(config.userDataDir, "courses", slug), { recursive: true });
+        writeFileSync(CHAT_FILE(), JSON.stringify(msgs.slice(-100), null, 2)); // cap history
+      };
+      if (req.method === "GET") return send(200, { messages: loadChat() });
+      if (req.method === "POST") {
+        (async () => {
+          try {
+            let body: Record<string, unknown> = {};
+            try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => res(JSON.parse(b))); }); } catch { /* empty */ }
+            const message = String(body.message ?? "").trim();
+            if (!message) return send(400, { error: "message required" });
+            const history = loadChat();
+            history.push({ role: "user", content: message, at: new Date().toISOString() });
+
+            // ── build course context for the model ──
+            const mats = listMaterials(slug);
+            const matTree = mats.length
+              ? mats.map((m) => `- ${m.path}${m.week ? `  [week ${m.week}]` : ""}${m.description ? ` — ${m.description}` : ""}`).join("\n")
+              : "(no materials uploaded yet)";
+            // sessions: recorded classes (stem carries date + course)
+            const sess = listSessions().filter((s) => s.stem.includes(slug));
+            const sessLines = sess.map((s) => `- ${s.stem} (${s.stage})`).join("\n") || "(no recorded sessions yet)";
+            // transcripts: include text when small enough (cap ~12k chars total)
+            let transcriptCtx = "";
+            const cfg = getCourseConfig(slug);
+            if (cfg?.semesterStart) transcriptCtx += `Semester starts ${cfg.semesterStart}.\n`;
+            let budget = 12_000;
+            for (const s of sess) {
+              const tPath = join(NOTES_DIR, slug, `${s.stem}__transcript.md`);
+              try {
+                let txt = readFileSync(tPath, "utf8");
+                if (txt.length > budget) txt = txt.slice(0, budget) + "…";
+                budget -= txt.length;
+                transcriptCtx += `\nTranscript of ${s.stem}:\n${txt}\n`;
+                if (budget <= 0) break;
+              } catch { /* no transcript for this session */ }
+            }
+
+            const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}". The student asks questions about course materials, lectures, and assignments. Answer using the course context below; be concrete and reference file names or lecture dates when relevant. If something isn't in the context, say so honestly.\n\nCOURSE MATERIALS (folder tree):\n${matTree}\n\nRECORDED SESSIONS:\n${sessLines}\n${transcriptCtx}`;
+
+            const reply = await glmChat(systemPrompt, history.slice(-16));
+            history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
+            saveChat(history);
+            return send(200, { reply });
+          } catch (e) {
+            return send(500, { error: `chat failed: ${String(e).slice(0, 150)}` });
+          }
+        })();
+        return; // async handler sends the response
+      }
+      if (req.method === "DELETE") {
+        try { rmSync(CHAT_FILE(), { force: true }); } catch { /* gone */ }
+        return send(200, { ok: true });
+      }
+    }
+    // ── delete a whole course folder ────────────────────────────────
     // ── delete a whole course folder ────────────────────────────────
     // Allowed ONLY when the course has no sessions (no recordings, no
     // transcripts/notes/timeline anywhere). Materials + config go too.

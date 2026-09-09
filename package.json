@@ -9,7 +9,7 @@
     "login:fresh": "node src/index.ts login --fresh",
     "meetings": "node src/index.ts meetings",
     "daemon": "node src/index.ts daemon",
-    "cd": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest && kubectl -n auto-school rollout restart deploy/auto-school && kubectl -n auto-school rollout status deploy/auto-school",
+    "cd": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest && echo '✓ both images pushed — now run: kubectl -n auto-school rollout restart deploy/auto-school'",
     "cd:push": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest",
     "install-browser": "npx playwright install chromium"
   },
