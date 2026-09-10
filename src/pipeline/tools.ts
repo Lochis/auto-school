@@ -7,18 +7,63 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { NOTES_DIR, RECORDINGS_DIR } from "../paths.ts";
-import { listMaterials } from "./materials.ts";
+import { NOTES_DIR, RECORDINGS_DIR, DATA_DIR } from "../paths.ts";
+import { config } from "../config.ts";
+import { listMaterials, getCourseConfig } from "./materials.ts";
 import { ensureIndex, indexedPages, pageImage, readDoc, supportsIndex } from "./docindex.ts";
 import { vlmDescribe } from "./llm.ts";
+
+/** Every known course (union of recordings/, notes/ and materials roots). */
+export function allCourses(): string[] {
+  const out = new Set<string>();
+  for (const base of [RECORDINGS_DIR, NOTES_DIR, join(DATA_DIR, "courses")]) {
+    try {
+      for (const d of readdirSync(base, { withFileTypes: true })) if (d.isDirectory()) out.add(d.name);
+    } catch { /* none */ }
+  }
+  return [...out].sort();
+}
+
+const COURSE_PARAM = {
+  type: "string",
+  description: "course slug — required in the all-courses chat, optional per-course",
+};
 
 export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "list_courses",
+      description: "List every course with its semester start, session count and material count. Use this first in the all-courses chat to plan which courses to inspect.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "week_overview",
+      description: "One call for the whole week ACROSS ALL courses: per course, which sessions fall in that week (with artifacts) and which materials are tagged that week. Requires each course to have a semester start. Best first move for 'what do I have to do in week N'.",
+      parameters: {
+        type: "object",
+        properties: { week: { type: "number", description: "1-based week of the semester" } },
+        required: ["week"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_deadlines",
+      description: "The student's AI-built deadline calendar (due dates + spread-out items across all courses). Read this before answering 'when is X due' / 'what should I do next'. Rebuilt from course files via the Courses page.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_materials",
       description: "List the course material files (folder tree with week tags). Paths are relative to the materials root. Some entries show an available page count.",
-      parameters: { type: "object", properties: {}, required: [] },
+      parameters: { type: "object", properties: { course: COURSE_PARAM }, required: [] },
     },
   },
   {
@@ -29,6 +74,7 @@ export const TOOL_DEFS = [
       parameters: {
         type: "object",
         properties: {
+          course: COURSE_PARAM,
           path: { type: "string", description: "material path from list_materials" },
           page: { type: "number", description: "1-based page number (PDFs)" },
         },
@@ -43,7 +89,7 @@ export const TOOL_DEFS = [
       description: "Look at a page image with a vision model — use when read_document returns little/no text (slides, diagrams, charts) or when the student asks about a figure/screenshot. Works for PDF and DOCX pages.",
       parameters: {
         type: "object",
-        properties: { path: { type: "string" }, page: { type: "number" } },
+        properties: { course: COURSE_PARAM, path: { type: "string" }, page: { type: "number" } },
         required: ["path", "page"],
       },
     },
@@ -53,7 +99,7 @@ export const TOOL_DEFS = [
     function: {
       name: "list_sessions",
       description: "List recorded class sessions for the course (date, which artifacts exist: recording/transcript/notes/timeline).",
-      parameters: { type: "object", properties: {}, required: [] },
+      parameters: { type: "object", properties: { course: COURSE_PARAM }, required: [] },
     },
   },
   {
@@ -63,7 +109,7 @@ export const TOOL_DEFS = [
       description: "Read session notes / running notes / transcript for a session date. Omit date for the most recent session.",
       parameters: {
         type: "object",
-        properties: { date: { type: "string", description: "YYYY-MM-DD from list_sessions" }, kind: { type: "string", description: "notes | running | transcript (default notes)" } },
+        properties: { course: COURSE_PARAM, date: { type: "string", description: "YYYY-MM-DD from list_sessions" }, kind: { type: "string", description: "notes | running | transcript (default notes)" } },
         required: [],
       },
     },
@@ -73,7 +119,7 @@ export const TOOL_DEFS = [
     function: {
       name: "search_transcripts",
       description: "Keyword-search session transcripts and timelines; returns matching snippets with dates.",
-      parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+      parameters: { type: "object", properties: { course: COURSE_PARAM, query: { type: "string" } }, required: ["query"] },
     },
   },
 ];
@@ -100,8 +146,73 @@ export function scanCourseSessions(slug: string): { stem: string; recording?: st
   return [...out.values()].sort((a, b) => b.stem.localeCompare(a.stem));
 }
 
-async function execTool(name: string, args: Record<string, unknown>, slug: string): Promise<string> {
+async function execTool(name: string, args: Record<string, unknown>, fallbackSlug?: string): Promise<string> {
+  // course scoping: explicit tool arg wins, else the chat's own course
+  // (all-courses chat passes none — the model must name the course)
+  const slug = typeof args.course === "string" && args.course.trim() ? args.course.trim() : fallbackSlug;
   switch (name) {
+    case "list_courses": {
+      return allCourses().map((c) => {
+        const cfg = getCourseConfig(c);
+        const n = scanCourseSessions(c).length;
+        const m = listMaterials(c).length;
+        return `- ${c}${cfg?.semesterStart ? ` — semester starts ${cfg.semesterStart}` : ""} [${n} session${n === 1 ? "" : "s"}, ${m} material${m === 1 ? "" : "s"}]`;
+      }).join("\n") || "no courses exist yet";
+    }
+    case "week_overview": {
+      const week = Math.max(1, Math.round(Number(args.week ?? 1)));
+      const blocks: string[] = [];
+      for (const c of allCourses()) {
+        const cfg = getCourseConfig(c);
+        const start = cfg?.semesterStart;
+        if (!start) {
+          blocks.push(`### ${c}\n(no semester start set — weeks unknown; use list_sessions for dates)`);
+          continue;
+        }
+        // week N = Monday of semester start + (N-1)*7 … +6d
+        const mon = new Date(`${start}T00:00:00Z`);
+        mon.setUTCDate(mon.getUTCDate() + (mon.getUTCDay() === 0 ? -6 : 1 - mon.getUTCDay()) + (week - 1) * 7);
+        const from = mon.toISOString().slice(0, 10);
+        const to = new Date(mon); to.setUTCDate(to.getUTCDate() + 6);
+        const toStr = to.toISOString().slice(0, 10);
+        const sess = scanCourseSessions(c).filter((s) => s.stem.slice(0, 10) >= from && s.stem.slice(0, 10) <= toStr);
+        const mats = listMaterials(c).filter((m) => m.week === week);
+        const lines = [`### ${c} (${from} … ${toStr})`];
+        lines.push(sess.length
+          ? sess.map((s) => {
+              const what = [s.recording && "recording", s.transcript && "transcript", s.notes && "notes", s.timeline && "timeline"].filter(Boolean).join(", ");
+              return `- session ${s.stem} (${what})`;
+            }).join("\n")
+          : "- no recorded session in this week");
+        lines.push(mats.length
+          ? mats.map((m) => `- material: ${m.path}${supportsIndex(m.path) ? " (readable via read_document)" : ""}`).join("\n")
+          : "- no materials tagged for this week");
+        blocks.push(lines.join("\n"));
+      }
+      return `Week ${week} across all courses:\n\n${blocks.join("\n\n")}`;
+    }
+    default:
+      // ── course-scoped tools ──
+      if (!slug) return "no course given — pass the 'course' argument (see list_courses for exact slugs)";
+      if (!allCourses().includes(slug)) return `unknown course "${slug}" — valid: ${allCourses().join(", ")}`;
+      return courseTool(name, args, slug);
+  }
+}
+
+/** Course-scoped tools — execTool validated the slug. */
+async function courseTool(name: string, args: Record<string, unknown>, slug: string): Promise<string> {
+  switch (name) {
+    case "list_deadlines": {
+      try {
+        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string }[];
+        if (!Array.isArray(dl) || !dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
+        const rows = dl
+          .slice()
+          .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
+          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — [${d.course}] ${d.title} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
+        return `Deadline calendar:\n${rows.join("\n")}`;
+      } catch { return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)"; }
+    }
     case "list_materials": {
       const mats = listMaterials(slug);
       if (!mats.length) return "no materials uploaded";
@@ -167,9 +278,10 @@ async function execTool(name: string, args: Record<string, unknown>, slug: strin
   }
 }
 
-export async function runTool(call: { id: string; function: { name: string; arguments: string } }, slug: string): Promise<string> {
+export async function runTool(call: { id: string; function: { name: string; arguments: string } }, slug?: string): Promise<string> {
   let args: Record<string, unknown> = {};
   try { args = JSON.parse(call.function.arguments || "{}"); } catch { /* model sent bad json */ }
+  // strip the course arg — execTool consumes it via args
   try {
     return await execTool(call.function.name, args, slug);
   } catch (e) {

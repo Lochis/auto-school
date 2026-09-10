@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { courses, sessions, semesterStartOf, weekOf } from "@/lib/data";
 import { candidateTitles, folders, readMapping } from "@/lib/mapping";
+import { readDeadlines } from "@/lib/deadlines";
 import MappingManager from "../mapping-manager";
+import DeadlinesPanel from "../deadlines-panel";
 import CourseRename from "../course-rename";
 import CourseNew from "../course-new";
 import CourseLink from "../course-link";
@@ -19,8 +21,15 @@ export default function CoursesPage() {
 
   return (
     <main>
-      <h1>Courses</h1>
+      <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        Courses
+        <Link href="/courses/ask" style={{
+          padding: "6px 14px", borderRadius: 6, fontWeight: 600, textDecoration: "none",
+          color: "#fff", background: "#2563eb", fontSize: 13,
+        }}>💬 Ask for all courses</Link>
+      </h1>
       <p className="muted">Meeting → folder mappings, and every course with its sessions.</p>
+      <DeadlinesPanel initial={readDeadlines()} />
       <MappingManager initial={mappingSnap} />
       <CourseNew />
 

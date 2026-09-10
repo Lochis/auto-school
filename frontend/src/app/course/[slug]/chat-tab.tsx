@@ -9,6 +9,9 @@ import remarkGfm from "remark-gfm";
 
 interface Msg { role: "user" | "assistant"; content: string; at: string }
 interface Material { path: string; filename: string }
+interface LexHit { course: string; path: string }
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** overlay: fixed, click-outside to close */
 function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClose: () => void }) {
@@ -52,44 +55,97 @@ function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClo
   );
 }
 
-export default function ChatTab({ slug }: { slug: string }) {
+export default function ChatTab({ slug }: { slug?: string }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
+  const [lexicon, setLexicon] = useState<Record<string, LexHit[]>>({});
+  const [hints, setHints] = useState<Record<string, string[]>>({});
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [preview, setPreview] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ course: string; path: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch(`/api/courses/${encodeURIComponent(slug)}/chat`)
+    const chatUrl = slug ? `/api/courses/${encodeURIComponent(slug)}/chat` : "/api/chat";
+    fetch(chatUrl)
       .then((r) => r.json())
       .then((j: { messages?: Msg[] }) => setMessages(j.messages ?? []))
       .catch(() => setErr("backend unreachable"));
-    fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
-      .then((r) => r.json())
-      .then((j: { materials?: Material[] }) => setMaterials(j.materials ?? []))
-      .catch(() => { /* linkify just won't activate */ });
+    if (slug) {
+      fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
+        .then((r) => r.json())
+        .then((j: { materials?: Material[] }) => setMaterials(j.materials ?? []))
+        .catch(() => { /* linkify just won't activate */ });
+    } else {
+      // all-courses chat: leaf filename → candidate courses for the linkifier
+      fetch("/api/chat/lexicon")
+        .then((r) => r.json())
+        .then((j: { lexicon?: Record<string, LexHit[]>; hints?: Record<string, string[]> }) => {
+          setLexicon(j.lexicon ?? {});
+          setHints(j.hints ?? {});
+        })
+        .catch(() => { /* linkify just won't activate */ });
+    }
   }, [slug]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy]);
 
-  /** leaf filename → materials path (first hit wins) */
+  /** leaf filename → candidate {course, path} hits */
   const byLeaf = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const mat of materials) if (!m.has(mat.filename)) m.set(mat.filename, mat.path);
-    return m;
-  }, [materials]);
-
-  /** wrap known file names in markdown links pointing at the previewer */
-  const linkify = (md: string): string => {
-    let out = md;
-    for (const [leaf, path] of byLeaf) {
-      if (out.includes(leaf)) out = out.replaceAll(leaf, `[${leaf}](#doc:${encodeURIComponent(path)})`);
+    const m = new Map<string, LexHit[]>();
+    if (slug) {
+      for (const mat of materials) if (!m.has(mat.filename)) m.set(mat.filename, [{ course: slug, path: mat.path }]);
+    } else {
+      for (const [leaf, hits] of Object.entries(lexicon)) m.set(leaf, hits);
     }
-    return out;
+    return m;
+  }, [slug, materials, lexicon]);
+
+  /** pick the right course when a filename exists in several: score hint
+   *  tokens (from the course slug + its meeting titles) found in the text
+   *  just before the citation — longer hits count more */
+  const resolveHit = (cands: LexHit[], context: string): LexHit => {
+    if (cands.length === 1) return cands[0]!;
+    const ctx = context.toLowerCase().slice(-300);
+    let best = cands[0]!;
+    let bestScore = -1;
+    for (const c of cands) {
+      const score = (hints[c.course] ?? []).reduce((s, tok) => s + (ctx.includes(tok) ? tok.length : 0), 0);
+      if (score > bestScore) { best = c; bestScore = score; }
+    }
+    return best;
+  };
+
+  const linkFor = (leaf: string, hit: LexHit): string =>
+    `[${leaf}](#doc:${encodeURIComponent(hit.course + "/" + hit.path)})`;
+
+  /** wrap known file names in markdown links pointing at the previewer.
+   *  Code spans are protected (markdown inside them renders literally) — but
+   *  a code span containing EXACTLY a known filename is the model citing it,
+   *  so it becomes a link too. */
+  const linkify = (md: string): string => {
+    const linkifySegment = (seg: string): string => {
+      let out = seg;
+      for (const [leaf, cands] of byLeaf) {
+        if (!out.includes(leaf)) continue;
+        out = out.replace(new RegExp(escapeRe(leaf), "g"), (match, offset: number, whole: string) =>
+          linkFor(match, resolveHit(cands, whole.slice(0, Math.max(0, offset)))),
+        );
+      }
+      return out;
+    };
+    return md
+      .split(/(`+[^`\n]+`+)/g)
+      .map((seg, i) => {
+        if (i % 2 === 0) return linkifySegment(seg);
+        const inner = seg.replace(/^`+|`+$/g, "");
+        const cands = byLeaf.get(inner);
+        return cands ? linkFor(inner, resolveHit(cands, seg)) : seg;
+      })
+      .join("");
   };
 
   const send = async (): Promise<void> => {
@@ -100,7 +156,7 @@ export default function ChatTab({ slug }: { slug: string }) {
     setBusy(true);
     setMessages((m) => [...m, { role: "user", content: message, at: new Date().toISOString() }]);
     try {
-      const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/chat`, {
+      const r = await fetch(slug ? `/api/courses/${encodeURIComponent(slug)}/chat` : "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
@@ -115,21 +171,34 @@ export default function ChatTab({ slug }: { slug: string }) {
   };
 
   const clear = async (): Promise<void> => {
-    if (!confirm("Clear this course's chat history?")) return;
-    await fetch(`/api/courses/${encodeURIComponent(slug)}/chat`, { method: "DELETE" }).catch(() => {});
+    if (!confirm("Clear this chat history?")) return;
+    await fetch(slug ? `/api/courses/${encodeURIComponent(slug)}/chat` : "/api/chat", { method: "DELETE" }).catch(() => {});
     setMessages([]);
+  };
+
+  const openPreview = (hash: string): void => {
+    const raw = decodeURIComponent(hash.slice(5));
+    const sep = raw.indexOf("/");
+    if (sep < 0) return;
+    setPreview({ course: raw.slice(0, sep), path: raw.slice(sep + 1) });
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "70vh" }}>
-      {preview && <DocPreview slug={slug} path={preview} onClose={() => setPreview(null)} />}
+      {preview && <DocPreview slug={preview.course} path={preview.path} onClose={() => setPreview(null)} />}
       <div style={{ flex: 1, overflowY: "auto", padding: "8px 4px" }}>
         {messages.length === 0 && (
           <div className="card" style={{ marginBottom: 8 }}>
             <p className="muted" style={{ margin: 0 }}>
-              Ask anything about this course — “what do I need to do for week 1?”, “summarize the last lecture”,
+              {slug ? (
+                <>Ask anything about this course — “what do I need to do for week 1?”, “summarize the last lecture”,
               “explain the diagram in 1.1 Dimensional Modeling”. The assistant reads the actual documents
-              (including figures, via a vision model) and recorded sessions.
+              (including figures, via a vision model) and recorded sessions.</>
+              ) : (
+                <>Ask across ALL courses — “it's week 1, what do I have to do and what should I study?”,
+              “when is my next thing due?”, “which lectures covered dimensional modeling?”. The assistant
+              sweeps every course's materials, sessions and documents (figures included, via a vision model).</>
+              )}
             </p>
           </div>
         )}
@@ -149,7 +218,7 @@ export default function ChatTab({ slug }: { slug: string }) {
                   remarkPlugins={[remarkGfm]}
                   components={{
                     a: ({ href, children }) => href?.startsWith("#doc:") ? (
-                      <a href="#" onClick={(e) => { e.preventDefault(); setPreview(decodeURIComponent(href.slice(5))); }}
+                      <a href="#" onClick={(e) => { e.preventDefault(); openPreview(href); }}
                          style={{ color: "#7dc4ff", textDecoration: "underline dotted" }}>{children} 👁</a>
                     ) : (
                       <a href={href} target="_blank" rel="noreferrer">{children}</a>
@@ -171,7 +240,7 @@ export default function ChatTab({ slug }: { slug: string }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-          placeholder="ask about this course…"
+          placeholder={slug ? "ask about this course…" : "ask across all courses…"}
           style={{ flex: 1 }}
           disabled={busy}
         />

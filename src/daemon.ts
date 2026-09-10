@@ -31,7 +31,7 @@ import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
 import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
 import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
-import { TOOL_DEFS, runTool } from "./pipeline/tools.ts";
+import { TOOL_DEFS, runTool, allCourses } from "./pipeline/tools.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
@@ -824,6 +824,167 @@ function startController(): void {
         return send(500, { error: `create failed: ${String(e).slice(0, 120)}` });
       }
     }
+    // ── deadlines (AI-built calendar of due dates + spread-out items) ──
+    if (url.pathname === "/deadlines") {
+      const DEADLINES = join(config.userDataDir, "deadlines.json");
+      const readDl = (): unknown[] => {
+        try { const j = JSON.parse(readFileSync(DEADLINES, "utf8")); return Array.isArray(j) ? j : []; } catch { return []; }
+      };
+      if (req.method === "GET") return send(200, { deadlines: readDl() });
+      if (req.method === "DELETE") {
+        try { rmSync(DEADLINES, { force: true }); } catch { /* gone */ }
+        return send(200, { ok: true });
+      }
+      if (req.method === "POST") { // rebuild: LLM sweeps all courses → JSON
+        (async () => {
+          try {
+            let body: Record<string, unknown> = {};
+            try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
+            const userPrompt = String(body.prompt ?? "").trim();
+            const systemPrompt = `You build the student's DEADLINE CALENDAR across ALL courses from the real files — never invent dates.
+Explore with tools first: list_courses, then week_overview / list_materials / read_document on anything likely to carry due dates (syllabi, intro/summary sheets, exercise and lab docs, course configs). Read enough to pin dates down; skim, don't quote.${userPrompt ? `\nStudent focus: ${userPrompt}` : ""}
+Then reply with ONLY a JSON array (no prose, no markdown fences), one object per task:
+{"course": exact slug from list_courses, "title": short task name, "due": "YYYY-MM-DD" or null, "kind": "assignment"|"lab"|"reading"|"install"|"signup"|"post"|"exam"|"other", "spread": true if worth spreading out / starting early (installs, long projects, readings) else false, "startBy": "YYYY-MM-DD" or null, "note": "≤120 chars, key detail", "source": "exact file name or session stem", "confidence": "high"|"medium"|"low"}
+Include hard deadlines AND soft/spread-out items. If a date is uncertain use confidence "low". Today is ${new Date().toISOString().slice(0, 10)}.`;
+            const convo: ChatMsg[] = [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Build the deadline calendar now. Explore the courses with tools, then output ONLY the JSON array.${userPrompt ? ` Focus: ${userPrompt}` : ""}` },
+            ];
+            let raw = "";
+            for (let step = 0; step < 14; step++) {
+              const msg = await glmChatRaw(convo, TOOL_DEFS);
+              if (msg.tool_calls?.length) {
+                convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
+                for (const tc of msg.tool_calls) {
+                  const result = await runTool(tc);
+                  pushEvent(`deadline tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
+                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
+                }
+                continue;
+              }
+              raw = msg.content;
+              break;
+            }
+            // tolerate fences / stray prose around the array
+            const m = raw.match(/\[[\s\S]*\]/);
+            if (!m) return send(500, { error: `model produced no JSON array: ${raw.slice(0, 120)}` });
+            let items: unknown[];
+            try { items = JSON.parse(m[0]); } catch (e) {
+              return send(500, { error: `JSON parse failed: ${String(e).slice(0, 120)}` });
+            }
+            if (!Array.isArray(items) || !items.length) return send(500, { error: "empty deadline list" });
+            // normalize: real course slugs, valid-ish dates
+            const slugs = allCourses();
+            const norm = items
+              .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
+              .map((it) => ({
+                course: slugs.includes(String(it.course)) ? String(it.course) : String(it.course ?? ""),
+                title: String(it.title ?? "(untitled)").slice(0, 140),
+                due: /^\d{4}-\d{2}-\d{2}$/.test(String(it.due ?? "")) ? String(it.due) : null,
+                kind: ["assignment", "lab", "reading", "install", "signup", "post", "exam", "other"].includes(String(it.kind)) ? String(it.kind) : "other",
+                spread: Boolean(it.spread),
+                startBy: /^\d{4}-\d{2}-\d{2}$/.test(String(it.startBy ?? "")) ? String(it.startBy) : null,
+                note: String(it.note ?? "").slice(0, 160),
+                source: String(it.source ?? "").slice(0, 160),
+                confidence: ["high", "medium", "low"].includes(String(it.confidence)) ? String(it.confidence) : "medium",
+              }))
+              .filter((it) => slugs.includes(it.course));
+            mkdirSync(config.userDataDir, { recursive: true });
+            writeFileSync(DEADLINES, JSON.stringify(norm, null, 2));
+            pushEvent(`deadlines rebuilt: ${norm.length} item(s)`);
+            return send(200, { ok: true, count: norm.length });
+          } catch (e) {
+            return send(500, { error: `deadline rebuild failed: ${String(e).slice(0, 150)}` });
+          }
+        })();
+        return; // async handler sends the response
+      }
+    }
+    // ── ALL-COURSES chat (/chat) ─────────────────────────────────
+    // Same tool loop, no fixed course: the model must pass course= per
+    // tool call (list_courses / week_overview help it navigate).
+    if (url.pathname === "/chat" || url.pathname === "/chat/lexicon") {
+      const GLOBAL_CHAT = join(config.userDataDir, "chat.json");
+      if (url.pathname === "/chat/lexicon" && req.method === "GET") {
+        // leaf filename → ALL courses having it (ambiguous ones resolved by
+        // the UI via context scoring) + per-course hint tokens for that scoring
+        const lex: Record<string, { course: string; path: string }[]> = {};
+        const hints: Record<string, string[]> = {};
+        const m = allCourses();
+        for (const c of m) {
+          const toks = new Set<string>();
+          for (const t of c.toLowerCase().replace(/[_\-.]+/g, " ").split(/\s+/)) if (t.length >= 4) toks.add(t);
+          for (const mat of listMaterials(c)) {
+            (lex[mat.filename] ??= []).push({ course: c, path: mat.path });
+          }
+          hints[c] = [...toks];
+        }
+        // mapped meeting titles are richer course names ("Data Warehs & …")
+        try {
+          const MAPF = join(dirname(config.userDataDir), "mapping.json");
+          for (const [title, folder] of Object.entries(JSON.parse(readFileSync(MAPF, "utf8")) as Record<string, string>)) {
+            if (!hints[folder]) continue;
+            for (const t of title.toLowerCase().split(/[^a-z0-9]+/)) if (t.length >= 5 && !hints[folder]!.includes(t)) hints[folder]!.push(t);
+          }
+        } catch { /* no mapping file */ }
+        return send(200, { lexicon: lex, hints });
+      }
+      const loadChat = (): { role: "user" | "assistant"; content: string; at: string }[] => {
+        try { return JSON.parse(readFileSync(GLOBAL_CHAT, "utf8")); } catch { return []; }
+      };
+      const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): void => {
+        mkdirSync(config.userDataDir, { recursive: true });
+        writeFileSync(GLOBAL_CHAT, JSON.stringify(msgs.slice(-100), null, 2));
+      };
+      if (req.method === "GET") return send(200, { messages: loadChat() });
+      if (req.method === "DELETE") {
+        try { rmSync(GLOBAL_CHAT, { force: true }); } catch { /* gone */ }
+        return send(200, { ok: true });
+      }
+      if (req.method === "POST") {
+        (async () => {
+          try {
+            let body: Record<string, unknown> = {};
+            try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
+            const message = String(body.message ?? "").trim();
+            if (!message) return send(400, { error: "message required" });
+            const history = loadChat();
+            history.push({ role: "user", content: message, at: new Date().toISOString() });
+
+            const systemPrompt = `You are a study assistant for ALL of the student's courses (semester dates come from list_courses / week_overview).
+Start broad: week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
+Read enough of the actual materials to answer concretely — never guess what a file contains. Cite EXACT file names so they can be previewed. If nothing exists for a week/course, say so honestly.
+FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
+            const convo: ChatMsg[] = [
+              { role: "system", content: systemPrompt },
+              ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
+            ];
+            let reply = "";
+            for (let step = 0; step < 12; step++) {
+              const msg = await glmChatRaw(convo, TOOL_DEFS);
+              if (msg.tool_calls?.length) {
+                convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
+                for (const tc of msg.tool_calls) {
+                  const result = await runTool(tc);
+                  pushEvent(`global chat tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
+                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
+                }
+                continue;
+              }
+              reply = msg.content;
+              break;
+            }
+            if (!reply) reply = "(no answer — model hit the tool-step limit; try a more specific question)";
+            history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
+            saveChat(history);
+            return send(200, { reply });
+          } catch (e) {
+            return send(500, { error: `chat failed: ${String(e).slice(0, 150)}` });
+          }
+        })();
+        return; // async handler sends the response
+      }
+    }
     // ── document preview text (chat linkifier modal) ──────────────
     const docM = url.pathname.match(/^\/courses\/([^/]+)\/doc$/);
     if (docM && req.method === "GET") {
@@ -866,14 +1027,15 @@ function startController(): void {
             // ── tool-calling loop: the model explores the course itself ──
             const cfg = getCourseConfig(slug);
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
-Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.`;
+Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.
+FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 
             const convo: ChatMsg[] = [
               { role: "system", content: systemPrompt },
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
             let reply = "";
-            for (let step = 0; step < 6; step++) {
+            for (let step = 0; step < 8; step++) {
               const msg = await glmChatRaw(convo, TOOL_DEFS);
               if (msg.tool_calls?.length) {
                 convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
