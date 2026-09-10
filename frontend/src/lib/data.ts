@@ -60,6 +60,23 @@ export function courses(): string[] {
   return [...new Set([...dirs("recordings"), ...dirs("notes")])].sort();
 }
 
+export function semesterStartOf(slug: string): string | null {
+  try {
+    const cfg = JSON.parse(readFileSync(join(DATA_DIR, "courses", slug, "course.json"), "utf8"));
+    return typeof cfg.semesterStart === "string" ? cfg.semesterStart : null;
+  } catch { return null; }
+}
+
+function weekMonday(dstr: string): string {
+  const d = new Date(`${dstr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + (d.getUTCDay() === 0 ? -6 : 1 - d.getUTCDay()));
+  return d.toISOString().slice(0, 10);
+}
+export function weekOf(dstr: string, start: string): number {
+  const a = Date.parse(`${weekMonday(dstr)}T00:00:00Z`), b = Date.parse(`${weekMonday(start)}T00:00:00Z`);
+  return Math.max(1, Math.floor((a - b) / 604_800_000) + 1);
+}
+
 export function sessions(course: string): Session[] {
   const byStem = new Map<string, Session>();
   const add = (stem: string, patch: Partial<Session>) => {

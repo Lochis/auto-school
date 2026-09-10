@@ -13,7 +13,7 @@
  */
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
-import { readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { loginTeams } from "./login/teams-login.ts";
 import { listMeetings } from "./meetings/list.ts";
@@ -28,7 +28,7 @@ import { consolidateSession } from "./pipeline/consolidate.ts";
 import { notify } from "./notify.ts";
 import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, applySettingsPatch } from "./status.ts";
 import { lastDeviceCode } from "./graph/auth.ts";
-import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath } from "./paths.ts";
+import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
 import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
 import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
 import { TOOL_DEFS, runTool } from "./pipeline/tools.ts";
@@ -767,6 +767,63 @@ function startController(): void {
         return send(200, cfg);
       }
     }
+    // ── rename a course (folders + mapping follow) ───────────────────
+    const REN_RE = /^\/courses\/([^/]+)\/rename$/;
+    if (REN_RE.test(url.pathname) && req.method === "POST") {
+      const from = decodeURIComponent(url.pathname.split("/")[2]!);
+      const body = await new Promise<Record<string, unknown>>((res) => {
+        let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
+      });
+      const to = String(body.to ?? "").trim().replace(/\s+/g, "_");
+      if (!to || to === "." || to.includes("/") || to.includes("..")) return send(400, { error: "invalid new name" });
+      if (to === from) return send(200, { ok: true, slug: to });
+      const targets = [join(RECORDINGS_DIR, from), join(NOTES_DIR, from), join(DATA_DIR, "courses", from), join(config.userDataDir, "courses", from)];
+      if (!targets.some((t) => existsSync(t))) return send(404, { error: `no course folder named ${from}` });
+      for (const base of [RECORDINGS_DIR, NOTES_DIR, join(DATA_DIR, "courses"), join(config.userDataDir, "courses")]) {
+        if (existsSync(join(base, to))) return send(409, { error: `"${to}" already exists` });
+      }
+      try {
+        let moved = 0;
+        for (const t of targets) if (existsSync(t)) { renameSync(t, join(dirname(t), to)); moved++; }
+        // meeting→folder mappings follow the rename
+        const MAP = join(dirname(config.userDataDir), "mapping.json");
+        try {
+          const m = JSON.parse(readFileSync(MAP, "utf8")) as Record<string, string>;
+          let remapped = 0;
+          for (const k of Object.keys(m)) if (m[k] === from) { m[k] = to; remapped++; }
+          if (remapped) writeFileSync(MAP, JSON.stringify(m, null, 2));
+        } catch { /* no mapping file */ }
+        pushEvent(`course renamed: ${from} → ${to}`);
+        return send(200, { ok: true, slug: to, moved });
+      } catch (e) {
+        return send(500, { error: `rename failed: ${String(e).slice(0, 120)}` });
+      }
+    }
+    // ── create a course shell (manual-only courses: upload materials +
+    //    ingest recordings/transcripts by hand until the bot can join) ──
+    if (url.pathname === "/courses/create" && req.method === "POST") {
+      const body = await new Promise<Record<string, unknown>>((res) => {
+        let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
+      });
+      const slug = String(body.slug ?? "").trim().replace(/\s+/g, "_");
+      if (!slug || slug === "." || slug.includes("/") || slug.includes("..")) return send(400, { error: "invalid name" });
+      if (existsSync(join(RECORDINGS_DIR, slug)) || existsSync(join(NOTES_DIR, slug)) || existsSync(join(config.userDataDir, "courses", slug)))
+        return send(409, { error: `"${slug}" already exists` });
+      const s = String(body.semesterStart ?? "");
+      if (s && !/^\d{4}-\d{2}-\d{2}$/.test(s)) return send(400, { error: "semesterStart must be YYYY-MM-DD" });
+      try {
+        // empty recordings/notes dirs make the course visible in the UI without
+        // counting as "has sessions" (delete guard checks dir contents)
+        mkdirSync(join(RECORDINGS_DIR, slug), { recursive: true });
+        mkdirSync(join(NOTES_DIR, slug), { recursive: true });
+        mkdirSync(MATERIALS_DIR(slug), { recursive: true });
+        if (s) setCourseConfig(slug, { semesterStart: s });
+        pushEvent(`course created: ${slug}${s ? ` (semester starts ${s})` : ""}`);
+        return send(200, { ok: true, slug });
+      } catch (e) {
+        return send(500, { error: `create failed: ${String(e).slice(0, 120)}` });
+      }
+    }
     // ── document preview text (chat linkifier modal) ──────────────
     const docM = url.pathname.match(/^\/courses\/([^/]+)\/doc$/);
     if (docM && req.method === "GET") {
@@ -863,7 +920,7 @@ Use the tools to inspect materials, documents and recorded sessions before answe
           });
         }
         let removed = 0;
-        for (const root of [recDir, noteDir, join(config.userDataDir, "courses", course)]) {
+        for (const root of [recDir, noteDir, join(DATA_DIR, "courses", course), join(config.userDataDir, "courses", course)]) {
           if (existsSync(root)) { rmSync(root, { recursive: true, force: true }); removed++; }
         }
         // strip mapping.json entries whose VALUE is this slug

@@ -52,15 +52,16 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  const reload = (): void => {
     fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
       .then((r) => r.json())
       .then((j: { materials?: Entry[]; error?: string }) => {
-        if (j.materials) setEntries(j.materials);
+        if (j.materials) { setEntries(j.materials); setLoadErr(""); }
         else setLoadErr(j.error ?? "failed to load");
       })
       .catch(() => setLoadErr("backend unreachable"));
-  }, [slug]);
+  };
+  useEffect(reload, [slug]);
 
   const upload = async (files: FileList, subpaths?: string[]): Promise<void> => {
     if (!files.length) return;
@@ -76,7 +77,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
       const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials`, { method: "POST", body: fd });
       const j = (await r.json().catch(() => ({}))) as { error?: string };
       if (!r.ok) setLoadErr(j.error ?? `HTTP ${r.status}`);
-      else router.refresh();
+      else { reload(); router.refresh(); }
     } catch {
       setLoadErr("upload failed");
     } finally {
@@ -129,7 +130,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
         const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials`, { method: "POST", body: fd });
         const j = (await r.json().catch(() => ({}))) as { error?: string };
         if (!r.ok) setLoadErr(j.error ?? `HTTP ${r.status}`);
-        else router.refresh();
+        else { reload(); router.refresh(); }
       } catch { setLoadErr("upload failed"); }
       finally { setBusy(false); }
     }
@@ -148,7 +149,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
       });
       const j = (await r.json().catch(() => ({}))) as { error?: string };
       if (!r.ok) setLoadErr(j.error ?? `HTTP ${r.status}`);
-      else router.refresh();
+      else { reload(); router.refresh(); }
     } catch { setLoadErr("rename failed"); }
     finally { setBusy(false); }
   };
@@ -158,7 +159,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
     setBusy(true);
     try {
       const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials?path=${encodeURIComponent(path)}`, { method: "DELETE" });
-      if (r.ok) router.refresh();
+      if (r.ok) { reload(); router.refresh(); }
       else setLoadErr(`HTTP ${r.status}`);
     } catch { setLoadErr("delete failed"); }
     finally { setBusy(false); }

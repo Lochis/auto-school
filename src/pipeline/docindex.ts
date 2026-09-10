@@ -12,7 +12,7 @@ import { MATERIALS_DIR } from "./materials.ts";
 import { listSessions } from "./sessions.ts";
 import { config } from "../config.ts";
 
-const run = (cmd: string, args: string[]): Promise<{ code: number; out: string; err: string }> =>
+const run = (cmd: string, args: string[]): Promise<{ code: number | null; out: string; err: string }> =>
   new Promise((res) => {
     const p = spawn(cmd, args);
     let out = "", err = "";
@@ -71,7 +71,7 @@ async function docxToPdf(src: string, dir: string): Promise<string | null> {
         { waitUntil: "load", timeout: 60_000 },
       );
       const pdf = join(dir, "source.pdf");
-      await page.pdf({ path: pdf, format: "A4", printBackground: true, timeout: 60_000 });
+      await page.pdf({ path: pdf, format: "A4", printBackground: true });
       return pdf;
     } finally {
       await browser.close().catch(() => {});

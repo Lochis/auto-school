@@ -8,6 +8,7 @@ import SessionNotes from "./session-notes";
 import MaterialsTab from "./materials-tab";
 import IngestForm from "./ingest-form";
 import ChatTab from "./chat-tab";
+import CourseRename from "../../course-rename";
 export const dynamic = "force-dynamic";
 
 function weekMonday(dstr: string): string {
@@ -53,8 +54,11 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
 
   return (
     <main>
-      <p><Link href="/">← All courses</Link></p>
-      <h1>{slug.replace(/_/g, " ")}</h1>
+      <p><Link href="/courses">← All courses</Link></p>
+      <h1 style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {slug.replace(/_/g, " ")}
+        <CourseRename course={slug} />
+      </h1>
 
       {/* tab bar */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
