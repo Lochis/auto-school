@@ -4,6 +4,7 @@ import { candidateTitles, folders, readMapping } from "@/lib/mapping";
 import MappingManager from "../mapping-manager";
 import CourseRename from "../course-rename";
 import CourseNew from "../course-new";
+import CourseLink from "../course-link";
 import CourseDelete from "../course-delete";
 
 export const dynamic = "force-dynamic"; // data changes as the backend records
@@ -29,9 +30,7 @@ export default function CoursesPage() {
       {list.map(({ course, ss, start }) => (
         <details className="card" key={course} style={{ marginTop: 10 }} open={ss.length <= 3}>
           <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <Link href={`/course/${encodeURIComponent(course)}`} onClick={(e) => e.stopPropagation()}>
-              <strong>{course.replace(/_/g, " ")}</strong>
-            </Link>
+            <CourseLink href={`/course/${encodeURIComponent(course)}`} label={course.replace(/_/g, " ")} />
             <CourseRename course={course} />
             <span className="muted">— {ss.length} session{ss.length === 1 ? "" : "s"}</span>
             {ss.length === 0 && <CourseDelete course={course} />}
