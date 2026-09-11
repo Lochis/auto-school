@@ -17,18 +17,44 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 /** overlay: fixed, click-outside to close */
 function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClose: () => void }) {
   const [text, setText] = useState<string | null>(null);
+  const [twin, setTwin] = useState<string | null>(null); // docx→pdf twin, if converted
   const ext = path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
   const media = `/api/media/courses/${encodeURIComponent(slug)}/materials/${path.split("/").map(encodeURIComponent).join("/")}`;
+  // bundle twin: .index/<rel-minus-ext>/source.pdf (proactive docx→pdf pass)
+  const twinUrl = ext === "docx"
+    ? `/api/media/courses/${encodeURIComponent(slug)}/materials/.index/${path.replace(/\.docx$/i, "").split("/").map(encodeURIComponent).join("/")}/source.pdf`
+    : null;
 
   useEffect(() => {
-    if (ext === "pdf" || ["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return; // rendered natively
     let alive = true;
+    if (ext === "pdf" || ["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return; // rendered natively
+    if (ext === "docx" && twinUrl) {
+      // prefer the PDF twin for viewing; fall back to text if not converted yet
+      fetch(twinUrl, { method: "HEAD" })
+        .then((r) => {
+          if (!alive) return;
+          if (r.ok) { setTwin(twinUrl); return; }
+          setTwin("none");
+          return fetch(`/api/courses/${encodeURIComponent(slug)}/doc?path=${encodeURIComponent(path)}`)
+            .then((r2) => r2.json())
+            .then((j) => { if (alive) setText(j.error ? `⚠️ ${j.error}` : (j.text || "(empty)")); });
+        })
+        .catch(() => {
+          if (!alive) return;
+          setTwin("none");
+          fetch(`/api/courses/${encodeURIComponent(slug)}/doc?path=${encodeURIComponent(path)}`)
+            .then((r2) => r2.json())
+            .then((j) => { if (alive) setText(j.error ? `⚠️ ${j.error}` : (j.text || "(empty)")); })
+            .catch(() => { if (alive) setText("preview unavailable"); });
+        });
+      return;
+    }
     fetch(`/api/courses/${encodeURIComponent(slug)}/doc?path=${encodeURIComponent(path)}`)
       .then((r) => r.json())
       .then((j) => { if (alive) setText(j.error ? `⚠️ ${j.error}` : (j.text || "(empty)")); })
       .catch(() => { if (alive) setText("preview unavailable"); });
     return () => { alive = false; };
-  }, [slug, path, ext]);
+  }, [slug, path, ext, twinUrl]);
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -40,14 +66,16 @@ function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClo
           <button onClick={onClose}>✕ close</button>
         </div>
         <div style={{ flex: 1, overflow: "auto" }}>
-          {ext === "pdf" ? (
-            <iframe src={media} title={path} style={{ width: "100%", height: "100%", border: 0, background: "#fff", borderRadius: 8 }} />
+          {ext === "pdf" || twin?.startsWith("/") ? (
+            <iframe src={twin?.startsWith("/") ? twin : media} title={path} style={{ width: "100%", height: "100%", border: 0, background: "#fff", borderRadius: 8 }} />
           ) : ["png", "jpg", "jpeg", "gif", "webp"].includes(ext) ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={media} alt={path} style={{ maxWidth: "100%", display: "block", margin: "0 auto" }} />
           ) : (
             <div className="notes" style={{ fontSize: 14 }}>
-              {text === null ? <p className="muted">extracting text…</p> : <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>}
+              {ext === "docx" && twin === null ? <p className="muted">checking for PDF twin…</p> : null}
+              {text === null && !(ext === "docx" && twin === null) ? <p className="muted">extracting text…</p> : null}
+              {text !== null ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown> : null}
             </div>
           )}
         </div>

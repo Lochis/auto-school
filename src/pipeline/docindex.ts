@@ -23,6 +23,7 @@ const run = (cmd: string, args: string[]): Promise<{ code: number | null; out: s
   });
 
 const TEXTUAL = new Set([".md", ".txt", ".csv", ".json", ".ts", ".js", ".py", ".sql", ".xml", ".yml", ".yaml", ".log"]);
+const SHEETLY = new Set([".xlsx", ".xls"]);
 const pageNum = (f: string): number => Number(f.match(/page-(\d+)\.txt$/)?.[1] ?? 0);
 
 /** .index/<relPath>/ for a material — mirrors the tree, extension stripped per leaf. */
@@ -31,7 +32,7 @@ export const indexDir = (course: string, rel: string): string =>
 
 export const supportsIndex = (rel: string): boolean => {
   const e = extname(rel).toLowerCase();
-  return e === ".pdf" || e === ".docx" || TEXTUAL.has(e);
+  return e === ".pdf" || e === ".docx" || SHEETLY.has(e) || TEXTUAL.has(e);
 };
 
 /** PDF → page texts + page PNGs in the bundle dir (shared by real PDFs and
@@ -96,6 +97,20 @@ export async function ensureIndex(course: string, rel: string): Promise<number> 
 
   if (ext === ".pdf") {
     return indexPdf(src, dir);
+  }
+  if (SHEETLY.has(ext)) {
+    // spreadsheet → one "page" per sheet, CSV-formatted (computed values)
+    const X = await import("xlsx");
+    const XLSX = X.default ?? X; // CJS interop: readFile lives on default in node ESM
+    const wb = XLSX.readFile(src, { cellDates: true });
+    const names = wb.SheetNames.slice(0, 20);
+    names.forEach((name, i) => {
+      let csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]!, { blankrows: false });
+      const lines = csv.split("\n");
+      if (lines.length > 200) csv = lines.slice(0, 200).join("\n") + "\n…(truncated at 200 rows)";
+      writeFileSync(join(dir, `page-${i + 1}.txt`), `# Sheet: ${name}\n\n${csv.trim()}\n`);
+    });
+    return Math.max(names.length, 1);
   }
   if (ext === ".docx") {
     // during a live recording, never launch a second browser — text-only now,

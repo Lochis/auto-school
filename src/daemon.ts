@@ -32,6 +32,7 @@ import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } f
 import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
 import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
 import { TOOL_DEFS, runTool, allCourses } from "./pipeline/tools.ts";
+import { ensureIndex, indexDir } from "./pipeline/docindex.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
@@ -1158,7 +1159,33 @@ export async function daemon(): Promise<void> {
   // background queue: rescue old segments WITHOUT blocking discovery —
   // consolidations are serial (2 encode threads) and can take minutes
   void rescueOrphans().finally(() => { retentionPass(); setActivity("idle — finished orphan rescue", {}); });
-  console.log(`[daemon] schedule-driven: morning pull, sleep until join windows (join ${joinEarlyMs() / 60_000} min early, rebuild every ${REBUILD_MS / 60_000} min)`);
+
+  /** Convert every .docx that lacks a finished PDF twin in its bundle.
+   *  Runs at startup + every rebuild interval; defers while recording
+   *  (the guard lives inside ensureIndex, which retries next pass). */
+  let twinBusy = false;
+  const docxTwinPass = async (): Promise<void> => {
+    if (twinBusy) return;
+    twinBusy = true;
+    try {
+      for (const c of allCourses()) {
+        for (const m of listMaterials(c)) {
+          if (!m.path.toLowerCase().endsWith(".docx")) continue;
+          const dir = indexDir(c, m.path);
+          if (existsSync(join(dir, "source.pdf")) && !existsSync(join(dir, ".textonly"))) continue; // twin done
+          pushEvent(`docx twin: converting ${m.filename}`);
+          await ensureIndex(c, m.path);
+        }
+      }
+    } catch (e) {
+      pushEvent(`docx twin pass failed: ${String(e).slice(0, 90)}`);
+    } finally { twinBusy = false; }
+  };
+  // DOCX→PDF twin pass: every .docx gets a viewable PDF twin in its bundle
+  // (source.pdf). ensureIndex has the recording guard — during class it defers
+  void docxTwinPass();
+  setInterval(() => void docxTwinPass(), REBUILD_MS);
+console.log(`[daemon] schedule-driven: morning pull, sleep until join windows (join ${joinEarlyMs() / 60_000} min early, rebuild every ${REBUILD_MS / 60_000} min)`);
   for (;;) {
     try {
       // stale check only — never force-rebuild just because schedule is empty,

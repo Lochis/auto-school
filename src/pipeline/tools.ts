@@ -242,7 +242,10 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
       const rel = String(args.path ?? "");
       const page = Number(args.page ?? 1);
       const img = await pageImage(slug, rel, page);
-      if (!img) return `no page image for ${rel} p${page} (PDFs/DOCXs only)`;
+      if (!img) {
+        if (/\.(xlsx|xls)$/i.test(rel)) return `"${rel}" is a spreadsheet — no page images. Use read_document (page N = sheet N) to read its cells as CSV.`;
+        return `no page image for ${rel} p${page} (PDFs/DOCXs only)`;
+      }
       const b64 = readFileSync(img).toString("base64");
       return await vlmDescribe(
         "Describe this page of a course document precisely and completely: text content, diagrams, charts (read values), tables, and any formulas. Structure the answer as markdown.",
