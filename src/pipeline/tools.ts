@@ -61,6 +61,14 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "list_checklists",
+      description: "The student's per-task execution checklists with live step progress (which steps are already done) and their own context notes (e.g. group members and their roles). Read this before answering 'what's left on X' / 'where am I on X' / 'help me plan X'.",
+      parameters: { type: "object", properties: { course: COURSE_PARAM }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_materials",
       description: "List the course material files (folder tree with week tags). Paths are relative to the materials root. Some entries show an available page count.",
       parameters: { type: "object", properties: { course: COURSE_PARAM }, required: [] },
@@ -153,15 +161,16 @@ async function execTool(name: string, args: Record<string, unknown>, fallbackSlu
   switch (name) {
     case "list_deadlines": {
       try {
-        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean }[];
+        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string }[];
         if (!Array.isArray(dl) || !dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
         const rows = dl
           .filter((d) => !d.done)
           .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
-          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — [${d.course}] ${d.title} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
+          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — [${d.course}] ${d.title} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
         return rows.length ? `Open deadlines across all courses (done items already checked off by the student — don't re-suggest those):\n${rows.join("\n")}` : "no open deadlines — everything on the calendar is done";
       } catch { return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)"; }
     }
+    case "list_checklists": return checklistRows(slug || undefined);
     case "list_courses": {
       return allCourses().map((c) => {
         const cfg = getCourseConfig(c);
@@ -211,19 +220,43 @@ async function execTool(name: string, args: Record<string, unknown>, fallbackSlu
 }
 
 /** Course-scoped tools — execTool validated the slug. */
+/** Checklist listing shared by both scopes: per-task steps with live progress
+ *  + the student's own context note (group members, roles, …). */
+function checklistRows(slug?: string): string {
+  try {
+    const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { id: string; course: string; title: string; due: string | null; kind: string; done: boolean; userNote?: string }[];
+    const cks = JSON.parse(readFileSync(join(config.userDataDir, "checklists.json"), "utf8")) as { deadlineId: string; course: string; title: string; items: { text: string; done: boolean; manual?: boolean }[]; updatedAt: number }[];
+    const byId = new Map(dl.map((d) => [d.id, d]));
+    const rows = cks
+      .filter((c) => (!slug || c.course === slug) && !byId.get(c.deadlineId)?.done)
+      .map((c) => {
+        const d = byId.get(c.deadlineId);
+        const prog = `${c.items.filter((i) => i.done).length}/${c.items.length}`;
+        const steps = c.items.map((i) => `    ${i.done ? "[x]" : "[ ]"} ${i.text}${i.manual ? " (added by the student)" : ""}`).join("\n");
+        return `- ${d?.due ?? "no date"} — ${slug ? "" : `[${c.course}] `}${c.title} (${prog} steps done${d?.userNote ? `; student note: ${d.userNote}` : ""}):\n${steps}`;
+      });
+    return rows.length
+      ? `Checklists (per-task step progress, checked off by the student — unchecked = still to do):\n${rows.join("\n")}`
+      : "no checklists built yet (build them from the Deadlines panel on the Courses page)";
+  } catch {
+    return "no checklists built yet (build them from the Deadlines panel on the Courses page)";
+  }
+}
+
 async function courseTool(name: string, args: Record<string, unknown>, slug: string): Promise<string> {
   switch (name) {
     case "list_deadlines": {
       try {
-        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean }[];
+        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string }[];
         if (!Array.isArray(dl) || !dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
         const rows = dl
           .filter((d) => d.course === slug && !d.done)
           .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
-          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — ${d.title} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
+          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — ${d.title} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
         return rows.length ? `Open deadlines for this course (done items already checked off by the student):\n${rows.join("\n")}` : "all deadlines for this course are done (or none exist)";
       } catch { return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)"; }
     }
+    case "list_checklists": return checklistRows(slug || undefined);
     case "list_materials": {
       const mats = listMaterials(slug);
       if (!mats.length) return "no materials uploaded";

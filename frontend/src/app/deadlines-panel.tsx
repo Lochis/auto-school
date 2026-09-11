@@ -21,6 +21,7 @@ export interface DeadEntry {
   confidence: string;
   done?: boolean;
   doneAt?: number | null;
+  userNote?: string;
 }
 
 export interface ChecklistItem {
@@ -75,6 +76,8 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const [genBusy, setGenBusy] = useState<Record<string, boolean>>({});
   const [ckMsg, setCkMsg] = useState<Record<string, string>>({});
   const [addText, setAddText] = useState<Record<string, string>>({});
+  const [noteEdit, setNoteEdit] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState<string>("");
 
   useEffect(() => setItems(initial), [initial]);
 
@@ -145,6 +148,18 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const week = dated.filter((i) => daysUntil(i.due!) >= 0 && daysUntil(i.due!) <= 7);
   const later = dated.filter((i) => daysUntil(i.due!) > 7);
   const spread = open.filter((i) => !i.due && (i.spread || i.startBy));
+
+  const saveNote = async (it: DeadEntry): Promise<void> => {
+    const v = noteText.trim().slice(0, 2000);
+    // optimistic
+    setItems((m) => m.map((x) => (x.id === it.id ? { ...x, userNote: v || undefined } : x)));
+    setNoteEdit(null);
+    try {
+      const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: it.id, userNote: v }) });
+      const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
+      if (j.deadlines) setItems(j.deadlines); // server truth
+    } catch { /* keep optimistic state */ }
+  };
 
   const ChecklistBox = ({ it }: { it: DeadEntry }) => {
     const c = cks[it.id];
@@ -236,10 +251,36 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
             <button onClick={() => { setExpanded(it.id); void genCk(it); }} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: "#7aa2f7" }} title="AI-generate an execution checklist for this task">✚ checklist</button>
           )}
           {genBusy[it.id] && <span className="muted" style={{ fontSize: 11 }}>building checklist…</span>}
+          <button
+            onClick={() => { setNoteEdit(noteEdit === it.id ? null : it.id); setNoteText(it.userNote ?? ""); }}
+            title="add your own context — group members, roles, links… (shown to the AI and kept across rebuilds)"
+            style={{ all: "unset", cursor: "pointer", fontSize: 12, color: it.userNote ? "#e0af68" : undefined }}
+          >
+            {it.userNote ? "🗒 note ✓" : "✎ add note"}
+          </button>
           {it.confidence !== "high" && <span className="muted" style={{ fontSize: 11 }}>({it.confidence})</span>}
           {it.note && <span className="muted" style={{ fontSize: 12 }} title={it.source}>— {it.note}</span>}
           {it.done && it.doneAt && <span className="muted" style={{ fontSize: 11 }}>✓ {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
+          {it.userNote && noteEdit !== it.id && (
+            <span className="muted" style={{ fontSize: 12, color: "#e0af68" }} title={it.userNote}>🗒 {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
+          )}
         </div>
+        {noteEdit === it.id && (
+          <div style={{ margin: "2px 0 6px 26px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <textarea
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              placeholder="context the AI should know: group members and their roles, links, decisions made…"
+              rows={3}
+              style={{ width: 420, fontSize: 12, fontFamily: "inherit" }}
+              autoFocus
+            />
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <button onClick={() => void saveNote(it)}>Save</button>
+              <button onClick={() => setNoteEdit(null)} style={{ fontSize: 12 }}>Cancel</button>
+            </div>
+          </div>
+        )}
         {expanded === it.id && <ChecklistBox it={it} />}
       </>
     );

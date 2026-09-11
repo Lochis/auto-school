@@ -850,7 +850,7 @@ function startController(): void {
     // ── deadlines (AI-built calendar of due dates + spread-out items) ──
     if (url.pathname === "/deadlines") {
       const DEADLINES = join(config.userDataDir, "deadlines.json");
-      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null };
+      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string };
       const readDl = (): Dl[] => {
         try {
           const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
@@ -877,12 +877,22 @@ function startController(): void {
             let body: Record<string, unknown> = {};
             try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
             // ── toggle done-ness by id (survives rebuilds) ──
-            if (typeof body.id === "string") {
+            if (typeof body.id === "string" && body.userNote === undefined) {
               const dl = readDl();
               const it = dl.find((d) => d.id === body.id);
               if (!it) return send(404, { error: "no such deadline id" });
               it.done = body.done !== false; // default true; explicit false un-checks
               it.doneAt = it.done ? Date.now() : null;
+              writeDl(dl);
+              return send(200, { ok: true, deadlines: dl });
+            }
+            // ── student context note (group members, roles, …) by id ──
+            if (typeof body.id === "string" && typeof body.userNote === "string") {
+              const dl = readDl();
+              const it = dl.find((d) => d.id === body.id);
+              if (!it) return send(404, { error: "no such deadline id" });
+              const v = body.userNote.trim().slice(0, 2000);
+              if (v) it.userNote = v; else delete it.userNote; // empty clears
               writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
             }
@@ -925,9 +935,10 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
             const slugs = allCourses();
             const prev = readDl();
             const prevDone = new Map(prev.filter((d) => d.done).map((d) => [dlKey(d.course, d.title), d]));
+            const prevNote = new Map(prev.filter((d) => d.userNote).map((d) => [dlKey(d.course, d.title), d.userNote!]));
             const norm = items
               .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
-              .map((it) => {
+              .map((it): Dl => {
                 const course = slugs.includes(String(it.course)) ? String(it.course) : String(it.course ?? "");
                 const title = String(it.title ?? "(untitled)").slice(0, 140);
                 const old = prevDone.get(dlKey(course, title));
@@ -943,6 +954,7 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                   confidence: ["high", "medium", "low"].includes(String(it.confidence)) ? String(it.confidence) : "medium",
                   done: Boolean(old?.done ?? false),
                   doneAt: old?.doneAt ?? null,
+                  userNote: prevNote.get(dlKey(course, title)),
                 } satisfies Dl;
               })
               .filter((it) => slugs.includes(it.course));
@@ -1148,6 +1160,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
 
             const systemPrompt = `You are a study assistant for ALL of the student's courses (semester dates come from list_courses / week_overview).
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar (items they finished are checked off and excluded — never re-suggest those).
+For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
 Start broad: list_deadlines, week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
 Read enough of the actual materials to answer concretely — never guess what a file contains. Cite EXACT file names so they can be previewed. If nothing exists for a week/course, say so honestly.
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
@@ -1224,6 +1237,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const cfg = getCourseConfig(slug);
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar for THIS course (items they finished are checked off and excluded — never re-suggest those).
+For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
 Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 
