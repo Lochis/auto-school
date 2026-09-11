@@ -23,6 +23,21 @@ export interface DeadEntry {
   doneAt?: number | null;
 }
 
+export interface ChecklistItem {
+  id: string;
+  text: string;
+  done: boolean;
+  doneAt?: number | null;
+  manual?: boolean;
+}
+export interface Checklist {
+  deadlineId: string;
+  course: string;
+  title: string;
+  items: ChecklistItem[];
+  updatedAt: number;
+}
+
 const KIND_ICON: Record<string, string> = {
   assignment: "📝", lab: "🧪", reading: "📖", install: "⬇️",
   signup: "👥", post: "💬", exam: "🎓", other: "📌",
@@ -54,8 +69,39 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [tab, setTab] = useState<"up" | "done">("up");
+  // ── per-deadline checklists ──
+  const [cks, setCks] = useState<Record<string, Checklist>>({});
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [genBusy, setGenBusy] = useState<Record<string, boolean>>({});
+  const [ckMsg, setCkMsg] = useState<Record<string, string>>({});
+  const [addText, setAddText] = useState<Record<string, string>>({});
 
   useEffect(() => setItems(initial), [initial]);
+
+  const refreshCks = async (): Promise<void> => {
+    try {
+      const j = (await fetch("/api/checklists").then((r) => r.json())) as { checklists?: Checklist[] };
+      if (j.checklists) setCks(Object.fromEntries(j.checklists.map((c) => [c.deadlineId, c])));
+    } catch { /* leave state */ }
+  };
+  useEffect(() => { void refreshCks(); }, []);
+
+  const postCk = async (body: Record<string, unknown>): Promise<void> => {
+    const r = await fetch("/api/checklists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = (await r.json().catch(() => ({}))) as { checklists?: Checklist[]; error?: string };
+    if (j.checklists) setCks(Object.fromEntries(j.checklists.map((c) => [c.deadlineId, c])));
+    if (!r.ok) setCkMsg((m) => ({ ...m, [String(body.deadlineId)]: j.error ?? `HTTP ${r.status}` }));
+  };
+
+  const genCk = async (it: DeadEntry): Promise<void> => {
+    setGenBusy((m) => ({ ...m, [it.id]: true }));
+    setCkMsg((m) => ({ ...m, [it.id]: "" }));
+    try {
+      await postCk({ deadlineId: it.id });
+      setExpanded(it.id);
+    } catch { setCkMsg((m) => ({ ...m, [it.id]: "backend unreachable" })); }
+    finally { setGenBusy((m) => ({ ...m, [it.id]: false })); }
+  };
 
   const rebuild = async (): Promise<void> => {
     setBusy(true); setMsg("");
@@ -99,18 +145,104 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const later = dated.filter((i) => daysUntil(i.due!) > 7);
   const spread = open.filter((i) => !i.due && (i.spread || i.startBy));
 
-  const Row = ({ it, hot }: { it: DeadEntry; hot?: boolean }) => (
-    <div style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "3px 0", flexWrap: "wrap" }}>
-      <input type="checkbox" checked={!!it.done} onChange={() => toggle(it.id)} style={{ accentColor: "#4ade80", transform: "translateY(1px)" }} aria-label={`mark ${it.title} done`} />
-      <span style={{ fontSize: 13 }}>{KIND_ICON[it.kind] ?? "📌"}</span>
-      <span className="muted" style={{ fontSize: 12, minWidth: 120 }}>{it.due ? fmtDue(it.due) : it.startBy ? `start by ${it.startBy}` : "no date"}</span>
-      <span style={{ fontSize: 14, color: hot ? "#f87171" : undefined, fontWeight: hot ? 600 : undefined, textDecoration: it.done ? "line-through" : undefined }}>{it.title}</span>
-      <Link href={`/course/${encodeURIComponent(it.course)}?tab=ask&prompt=${encodeURIComponent(starterPrompt(it))}`} style={{ fontSize: 12 }}>ask AI ↗</Link>
-      {it.confidence !== "high" && <span className="muted" style={{ fontSize: 11 }}>({it.confidence})</span>}
-      {it.note && <span className="muted" style={{ fontSize: 12 }} title={it.source}>— {it.note}</span>}
-      {it.done && it.doneAt && <span className="muted" style={{ fontSize: 11 }}>✓ {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
-    </div>
-  );
+  const ChecklistBox = ({ it }: { it: DeadEntry }) => {
+    const c = cks[it.id];
+    if (!c) {
+      return (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 0 2px 26px" }}>
+          <button onClick={() => void genCk(it)} disabled={!!genBusy[it.id]}>
+            {genBusy[it.id] ? "building… (reads the task sheet — can take a minute)" : "Generate checklist with AI"}
+          </button>
+          {ckMsg[it.id] && <span className="muted" style={{ fontSize: 12, color: "#f87171" }}>{ckMsg[it.id]}</span>}
+        </div>
+      );
+    }
+    const doneN = c.items.filter((x) => x.done).length;
+    const pct = c.items.length ? Math.round((doneN / c.items.length) * 100) : 0;
+    return (
+      <div style={{ margin: "4px 0 6px 26px", padding: "6px 10px", borderLeft: "2px solid #7aa2f7", background: "rgba(122,162,247,0.06)", borderRadius: 4 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: doneN === c.items.length && c.items.length > 0 ? "#4ade80" : undefined }}>
+            {doneN}/{c.items.length} steps{doneN === c.items.length && c.items.length > 0 ? " — done ✓" : ""}
+          </span>
+          <div style={{ width: 90, height: 5, borderRadius: 3, background: "#333", overflow: "hidden" }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: doneN === c.items.length ? "#4ade80" : "#7aa2f7" }} />
+          </div>
+          <button
+            onClick={() => void genCk(it)} disabled={!!genBusy[it.id]} title="re-sweep the materials; checked steps stay checked"
+            style={{ fontSize: 11, padding: "1px 7px" }}
+          >
+            {genBusy[it.id] ? "rebuilding…" : "↻ Regenerate"}
+          </button>
+          <button
+            onClick={() => { void fetch(`/api/checklists?deadlineId=${encodeURIComponent(it.id)}`, { method: "DELETE" }).then(() => refreshCks()); }}
+            title="delete this checklist (the deadline itself stays)"
+            style={{ fontSize: 11, padding: "1px 7px" }}
+          >
+            ✕ remove
+          </button>
+          {ckMsg[it.id] && <span className="muted" style={{ fontSize: 12, color: "#f87171" }}>{ckMsg[it.id]}</span>}
+        </div>
+        {genBusy[it.id] && <p className="muted" style={{ margin: "2px 0 4px", fontSize: 12 }}>building… (reads the task sheet — can take a minute)</p>}
+        {c.items.map((x) => (
+          <div key={x.id} style={{ display: "flex", gap: 7, alignItems: "baseline", padding: "2px 0" }}>
+            <input type="checkbox" checked={x.done} aria-label={x.text}
+              onChange={() => {
+                setCks((m) => ({ ...m, [it.id]: { ...c, items: c.items.map((y) => (y.id === x.id ? { ...y, done: !y.done, doneAt: !y.done ? Date.now() : null } : y)) } })); // optimistic
+                void postCk({ deadlineId: it.id, itemId: x.id, done: !x.done });
+              }}
+              style={{ accentColor: "#7aa2f7", transform: "translateY(1px)" }}
+            />
+            <span style={{ fontSize: 13, textDecoration: x.done ? "line-through" : undefined, opacity: x.done ? 0.6 : 1 }}>{x.text}{x.manual ? " ✎" : ""}</span>
+            <button onClick={() => void postCk({ deadlineId: it.id, removeItemId: x.id })} title="remove step" style={{ all: "unset", cursor: "pointer", fontSize: 11, color: "#888" }}>✕</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <input
+            value={addText[it.id] ?? ""}
+            onChange={(e) => setAddText((m) => ({ ...m, [it.id]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (addText[it.id] ?? "").trim()) {
+                void postCk({ deadlineId: it.id, add: addText[it.id].trim() });
+                setAddText((m) => ({ ...m, [it.id]: "" }));
+              }
+            }}
+            placeholder="add a step yourself…"
+            style={{ width: 300, fontSize: 12 }}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  const Row = ({ it, hot }: { it: DeadEntry; hot?: boolean }) => {
+    const ck = cks[it.id];
+    const doneN = ck ? ck.items.filter((x) => x.done).length : 0;
+    return (
+      <>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "3px 0", flexWrap: "wrap" }}>
+          <input type="checkbox" checked={!!it.done} onChange={() => toggle(it.id)} style={{ accentColor: "#4ade80", transform: "translateY(1px)" }} aria-label={`mark ${it.title} done`} />
+          <span style={{ fontSize: 13 }}>{KIND_ICON[it.kind] ?? "📌"}</span>
+          <span className="muted" style={{ fontSize: 12, minWidth: 120 }}>{it.due ? fmtDue(it.due) : it.startBy ? `start by ${it.startBy}` : "no date"}</span>
+          <span style={{ fontSize: 14, color: hot ? "#f87171" : undefined, fontWeight: hot ? 600 : undefined, textDecoration: it.done ? "line-through" : undefined }}>{it.title}</span>
+          {ck && (
+            <button onClick={() => setExpanded(expanded === it.id ? null : it.id)} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: doneN === ck.items.length && ck.items.length > 0 ? "#4ade80" : "#7aa2f7" }} title="show checklist">
+              ✓ {doneN}/{ck.items.length}{expanded === it.id ? " ▴" : " ▾"}
+            </button>
+          )}
+          <Link href={`/course/${encodeURIComponent(it.course)}?tab=ask&prompt=${encodeURIComponent(starterPrompt(it))}`} style={{ fontSize: 12 }}>ask AI ↗</Link>
+          {!ck && !genBusy[it.id] && (
+            <button onClick={() => { setExpanded(it.id); void genCk(it); }} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: "#7aa2f7" }} title="AI-generate an execution checklist for this task">✚ checklist</button>
+          )}
+          {genBusy[it.id] && <span className="muted" style={{ fontSize: 11 }}>building checklist…</span>}
+          {it.confidence !== "high" && <span className="muted" style={{ fontSize: 11 }}>({it.confidence})</span>}
+          {it.note && <span className="muted" style={{ fontSize: 12 }} title={it.source}>— {it.note}</span>}
+          {it.done && it.doneAt && <span className="muted" style={{ fontSize: 11 }}>✓ {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
+        </div>
+        {expanded === it.id && <ChecklistBox it={it} />}
+      </>
+    );
+  };
 
   return (
     <details className="card" style={{ marginTop: 12 }}>

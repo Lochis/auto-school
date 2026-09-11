@@ -959,6 +959,142 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
         return; // async handler sends the response
       }
     }
+    // ── checklists (AI-generated, per-deadline execution lists) ──
+    if (url.pathname === "/checklists") {
+      const CHECKLISTS = join(config.userDataDir, "checklists.json");
+      const DEADLINES = join(config.userDataDir, "deadlines.json");
+      const readDlAll = (): { id: string; course: string; title: string; kind: string; due: string | null; note: string }[] => {
+        try {
+          const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
+          return Array.isArray(j) ? j : [];
+        } catch { return []; }
+      };
+      type Item = { id: string; text: string; done: boolean; doneAt: number | null; manual?: boolean };
+      type Ck = { deadlineId: string; course: string; title: string; items: Item[]; updatedAt: number };
+      const itemId = (dl: string, t: string): string => { // stable: same deadline+text → same id
+        let h = 5381;
+        for (const ch of `${dl}|${t.toLowerCase().trim()}`) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
+        return h.toString(16);
+      };
+      const readCk = (): Ck[] => {
+        try {
+          const j = JSON.parse(readFileSync(CHECKLISTS, "utf8"));
+          return Array.isArray(j) ? j : [];
+        } catch { return []; }
+      };
+      const writeCk = (c: Ck[]): void => { mkdirSync(config.userDataDir, { recursive: true }); writeFileSync(CHECKLISTS, JSON.stringify(c, null, 2)); };
+      if (req.method === "GET") return send(200, { checklists: readCk() });
+      if (req.method === "DELETE") {
+        const id = url.searchParams.get("deadlineId");
+        if (!id) { try { rmSync(CHECKLISTS, { force: true }); } catch { /* gone */ } return send(200, { ok: true }); }
+        const ck = readCk().filter((c) => c.deadlineId !== id);
+        writeCk(ck);
+        return send(200, { ok: true, checklists: ck });
+      }
+      if (req.method === "POST") {
+        (async () => {
+          try {
+            const body = await new Promise<Record<string, unknown>>((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); });
+            const ck = readCk();
+            const dlId = String(body.deadlineId ?? "");
+            const mine = (): Ck | undefined => ck.find((c) => c.deadlineId === dlId);
+            // ── toggle an item ──
+            if (typeof body.itemId === "string") {
+              const c = mine();
+              const it = c?.items.find((x) => x.id === body.itemId);
+              if (!c || !it) return send(404, { error: "no such checklist item" });
+              it.done = body.done !== false;
+              it.doneAt = it.done ? Date.now() : null;
+              c.updatedAt = Date.now();
+              writeCk(ck);
+              return send(200, { ok: true, checklists: ck });
+            }
+            // ── manual add ──
+            if (typeof body.add === "string" && body.add.trim()) {
+              const text = body.add.trim().slice(0, 200);
+              let c = mine();
+              if (!c) {
+                const dl = readDlAll().find((d) => d.id === dlId);
+                c = { deadlineId: dlId, course: dl?.course ?? "", title: dl?.title ?? text, items: [], updatedAt: Date.now() };
+                ck.push(c);
+              }
+              const id = itemId(dlId, text);
+              if (!c.items.some((x) => x.id === id)) c.items.push({ id, text, done: false, doneAt: null, manual: true });
+              c.updatedAt = Date.now();
+              writeCk(ck);
+              return send(200, { ok: true, checklists: ck });
+            }
+            // ── remove an item ──
+            if (typeof body.removeItemId === "string") {
+              const c = mine();
+              if (!c) return send(404, { error: "no such checklist" });
+              c.items = c.items.filter((x) => x.id !== body.removeItemId);
+              c.updatedAt = Date.now();
+              writeCk(ck);
+              return send(200, { ok: true, checklists: ck });
+            }
+            // ── generate / regenerate for a deadline ──
+            const dl = readDlAll().find((d) => d.id === dlId);
+            if (!dl) return send(404, { error: "no such deadline id" });
+            const systemPrompt = `You build an EXECUTION CHECKLIST for one specific student task, from the real course files — never invent steps.
+Task: "${dl.title}" (${dl.kind})${dl.due ? `, due ${dl.due}` : ""}${dl.note ? `. Known detail: ${dl.note}` : ""}
+Course slug: ${dl.course}
+Explore with tools first: list_materials / read_document / view_page on anything related to THIS task (task sheets, lab specs, submission instructions). Read enough to know what concretely must be done; skim, don't quote.
+Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered steps:
+[{"text": "short imperative step, individually verifiable"}]
+5-12 items unless the source genuinely demands more. Split the work into its real parts (prepare → do → verify → submit) — a 1- or 2-item checklist is almost never useful. Steps must be concrete and checkable (e.g. "Complete Section 2 query exercises", "Upload the .zip to Moodle"), not vague ("understand the lab"). Include setup, the actual work, and submission. Today is ${new Date().toISOString().slice(0, 10)}.`;
+            const convo: ChatMsg[] = [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Build the checklist for "${dl.title}" now. Explore the course materials with tools, then output ONLY the JSON array.` },
+            ];
+            let raw = "";
+            for (let step = 0; step < 10; step++) {
+              const msg = await glmChatRaw(convo, TOOL_DEFS);
+              if (msg.tool_calls?.length) {
+                convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
+                for (const tc of msg.tool_calls) {
+                  const result = await runTool(tc, dl.course);
+                  pushEvent(`checklist tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
+                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
+                }
+                continue;
+              }
+              raw = msg.content;
+              break;
+            }
+            const m = raw.match(/\[[\s\S]*\]/);
+            if (!m) return send(500, { error: `model produced no JSON array: ${raw.slice(0, 120)}` });
+            let parsed: unknown[];
+            try { parsed = JSON.parse(m[0]); } catch (e) {
+              return send(500, { error: `JSON parse failed: ${String(e).slice(0, 120)}` });
+            }
+            const steps = parsed
+              .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+              .map((s) => String(s.text ?? "").trim().slice(0, 200))
+              .filter((t) => t.length > 1);
+            if (!steps.length) return send(500, { error: "model returned no usable steps" });
+            // done-ness + manual items carry over (id = deadlineId|text)
+            const prev = mine();
+            const prevDone = new Map((prev?.items ?? []).filter((x) => x.done).map((x) => [x.id, x]));
+            const items: Item[] = steps.map((text) => {
+              const id = itemId(dlId, text);
+              const old = prevDone.get(id);
+              return { id, text, done: Boolean(old?.done), doneAt: old?.doneAt ?? null };
+            });
+            for (const x of prev?.items ?? []) if (x.manual && !items.some((n) => n.id === x.id)) items.push(x); // keep manual adds
+            const entry: Ck = { deadlineId: dlId, course: dl.course, title: dl.title, items, updatedAt: Date.now() };
+            const out = ck.filter((c) => c.deadlineId !== dlId);
+            out.push(entry);
+            writeCk(out);
+            pushEvent(`checklist built: ${dl.title} — ${items.length} step(s)`);
+            return send(200, { ok: true, count: items.length });
+          } catch (e) {
+            return send(500, { error: `checklist failed: ${String(e).slice(0, 150)}` });
+          }
+        })();
+        return; // async handler sends the response
+      }
+    }
     // ── ALL-COURSES chat (/chat) ─────────────────────────────────
     // Same tool loop, no fixed course: the model must pass course= per
     // tool call (list_courses / week_overview help it navigate).
