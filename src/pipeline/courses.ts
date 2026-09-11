@@ -3,7 +3,11 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from 
 import { NOTES_DIR, DATA_DIR } from "../paths.ts";
 
 /** Manual title → folder overrides from <data>/mapping.json (managed via the UI).
- *  Exact title match wins over pattern parsing; invalid JSON is ignored. */
+ *  Exact title match wins; a normalized match is the second chance — calendar
+ *  chips truncate titles at ~40 chars and drop "&", so the daemon can join
+ *  with "26F --Data Warehs  Predictv Anltcs SEC 4" while the mapping key is
+ *  "26F --Data Warehs & Predictv Anltcs (SEC. 402)". Normalizing away
+ *  punctuation/case/spacing/sections makes both land on the same entry. */
 function mappingOverrides(): Map<string, string> {
   try {
     const raw = JSON.parse(readFileSync(`${DATA_DIR}/mapping.json`, "utf8"));
@@ -11,6 +15,23 @@ function mappingOverrides(): Map<string, string> {
   } catch {
     return new Map();
   }
+}
+const normTitle = (s: string): string =>
+  s.toLowerCase().replace(/&/g, " ").replace(/\(\s*sec\.?\s*\d+\s*\)|sec\.?\s*\d+/gi, " ").replace(/[^a-z0-9]+/g, "");
+function mappingLookup(title: string): string | undefined {
+  const ex = mappingOverrides();
+  const direct = ex.get(title.trim());
+  if (direct) return direct;
+  const n = normTitle(title);
+  if (!n) return undefined;
+  for (const [k, v] of ex) {
+    const nk = normTitle(k);
+    // containment either way absorbs chip truncation ("...sec 4" ⊂ "...sec 402"
+    // once sections are stripped) without false-matching unrelated courses
+    if (!nk) continue;
+    if (n.includes(nk) || nk.includes(n)) return v;
+  }
+  return undefined;
 }
 
 export interface CourseInfo {
@@ -27,7 +48,7 @@ export interface CourseInfo {
  *  "2nd half - 26M --Software Systems Design (SEC. 401)"
  *  fallback: first 4+ words of the title. */
 export function parseCourse(meetingTitle: string): CourseInfo {
-  const mapped = mappingOverrides().get(meetingTitle.trim());
+  const mapped = mappingLookup(meetingTitle);
   if (mapped) {
     return { code: "MAP", slug: mapped, name: mapped.replace(/_/g, " ") };
   }

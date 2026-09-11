@@ -119,6 +119,19 @@ async function rescueOrphans(): Promise<void> {
       // title slug lives before the "__<ISO timestamp>" suffix — keeps
       // rescued sessions filed under the same course folder as live ones
       const title = stem.replace(/__\d{4}-\d{2}-\d{2}.*$/, "").replace(/_/g, " ") || stem;
+      // dedupe guard: if the target course already has a consolidated file
+      // from this date, the normal pipeline handled it — rescue would only
+      // mint a "<stem>__<ts>" twin of the same class
+      const dateTag = parts[0].match(/__(\d{4}-\d{2}-\d{2})T/)?.[1];
+      if (dateTag) {
+        const dest = join(RECORDINGS_DIR, parseCourse(title).slug);
+        const dup = readdirSync(dest).find((f) => f.startsWith(`${dateTag}__`) && /\.(webm|mp4)$/.test(f));
+        if (dup) {
+          console.log(`[daemon] orphan rescue: ${stem} already consolidated as ${dest}/${dup} — skipping`);
+          updateSession(stem, { stage: "done", stageNote: "duplicate — already consolidated" });
+          continue;
+        }
+      }
       const r = await consolidateSession(title, paths, undefined, ogg && existsSync(ogg) ? ogg : undefined);
       pushEvent(r ? `orphan rescued ✓ ${r.mp4}` : `orphan rescue failed for ${stem} (segments kept)`);
       updateSession(stem, r ? { stage: "done", mp4: r.mp4, sizeMB: Math.round(r.outBytes / 1e6) } : { stage: "failed", stageNote: "rescue failed — segments kept" });
@@ -212,13 +225,22 @@ async function buildSchedule(): Promise<Sched[]> {
             const sameDay = (a: number, b: number): boolean =>
               new Date(a).toDateString() === new Date(b).toDateString();
             const used = new Set<number>();
+            // calendar chips truncate titles at ~40 chars and drop "&" — match
+            // API events to scraped ones by normalized containment so a
+            // truncated chip never spawns a duplicate event, and the join
+            // uses the FULL API title (mapping keys match those exactly)
+            const nKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+            const sameEvt = (a: string, b: string): boolean => {
+              const x = nKey(a), y = nKey(b);
+              return x === y || (x.length >= 10 && (x.includes(y) || y.includes(x)));
+            };
             for (const ae of apiEvts) {
               if (!ae.joinUrl) continue;
               const idx = evs.findIndex((e) =>
                 !used.has(evs.indexOf(e)) &&
-                e.title.toLowerCase() === ae.title.toLowerCase() &&
-                sameDay(e.start, ae.start));
-              if (idx >= 0) { evs[idx].joinUrl = ae.joinUrl; used.add(idx); }
+                sameDay(e.start, ae.start) &&
+                (e.title.toLowerCase() === ae.title.toLowerCase() || sameEvt(e.title, ae.title)));
+              if (idx >= 0) { evs[idx].joinUrl = ae.joinUrl; evs[idx].title = ae.title; used.add(idx); }
               else evs.push({ title: ae.title, start: ae.start, end: ae.end, joinUrl: ae.joinUrl });
             }
             // recurring-series propagation: occurrences of the same course
