@@ -2,9 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { courses, readText, sessions, timelineToMd, DATA_DIR } from "@/lib/data";
+import { courses, sessions, DATA_DIR } from "@/lib/data";
 import SessionCard from "./session-card";
-import SessionNotes from "./session-notes";
+import LazyNotes from "./lazy-notes";
 import MaterialsTab from "./materials-tab";
 import IngestForm from "./ingest-form";
 import ChatTab from "./chat-tab";
@@ -79,17 +79,12 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
             <div key={w} style={{ marginBottom: 20 }}>
               {start && <h2 style={{ fontSize: 17, margin: "0 0 8px" }}>Week {w}</h2>}
               {(groups.get(w) ?? []).map((s) => {
-                const transcriptMd = s.transcript ? readText(s.transcript) : timelineToMd(s.timeline);
+                const hasText = Boolean(s.transcript || s.timeline);
                 return (
                   <div className="card" key={s.stem}>
-                    <SessionCard session={{ ...s, transcript: transcriptMd ? (s.transcript ?? "timeline") : undefined }} course={slug} />
-                    {s.notes && <SessionNotes markdown={readText(s.notes) ?? "*(notes unreadable)*"} />}
-                    {transcriptMd && (
-                      <details>
-                        <summary>Transcript</summary>
-                        <SessionNotes markdown={transcriptMd} />
-                      </details>
-                    )}
+                    <SessionCard session={{ ...s, transcript: hasText ? (s.transcript ?? "timeline") : undefined }} course={slug} />
+                    {s.notes && <LazyNotes course={slug} stem={s.stem} kind="notes" eager />}
+                    {hasText && <LazyNotes course={slug} stem={s.stem} kind="transcript" title="Transcript" />}
                   </div>
                 );
               })}

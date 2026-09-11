@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { readFileSync } from "node:fs";
 import { DATA_DIR, sessions } from "@/lib/data";
-import SessionNotes from "../../session-notes";
+import LazyNotes from "../../lazy-notes";
 import { t12 } from "@/lib/format";
 import TranscriptTimeline, { type TimelineEntry } from "./transcript-timeline";
 
@@ -43,7 +43,7 @@ export default async function SessionPage({ params }: { params: Promise<{ slug: 
 
       {s.notes && (
         <div className="card">
-          <SessionNotes markdown={readFileSync(`${DATA_DIR}/${s.notes}`, "utf8")} />
+          <LazyNotes course={slug} stem={stem} kind="notes" eager />
         </div>
       )}
     </main>
