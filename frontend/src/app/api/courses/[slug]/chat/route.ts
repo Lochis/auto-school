@@ -11,7 +11,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   try {
-    const res = await fetch(base(slug), { method: "POST", headers: { "Content-Type": "application/json" }, body: await req.text(), signal: AbortSignal.timeout(30_000) });
+    const res = await fetch(base(slug), { method: "POST", headers: { "Content-Type": "application/json" }, body: await req.text(), signal: AbortSignal.timeout(600_000) }); // tool loop + docx→PDF + VLM pages = minutes
     return NextResponse.json(await res.json(), { status: res.status });
   } catch { return NextResponse.json({ error: "backend unreachable" }, { status: 502 }); }
 }

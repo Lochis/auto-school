@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 
 interface Msg { role: "user" | "assistant"; content: string; at: string }
 interface Material { path: string; filename: string }
@@ -225,6 +226,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
               <div className="notes" style={{ marginTop: 4, fontSize: 14 }}>
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[[rehypeHighlight, { detect: false }]]}
                   components={{
                     a: ({ href, children }) => href?.startsWith("#doc:") ? (
                       <a href="#" onClick={(e) => { e.preventDefault(); openPreview(href); }}
