@@ -1087,7 +1087,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
             out.push(entry);
             writeCk(out);
             pushEvent(`checklist built: ${dl.title} — ${items.length} step(s)`);
-            return send(200, { ok: true, count: items.length });
+            return send(200, { ok: true, count: items.length, checklists: out });
           } catch (e) {
             return send(500, { error: `checklist failed: ${String(e).slice(0, 150)}` });
           }

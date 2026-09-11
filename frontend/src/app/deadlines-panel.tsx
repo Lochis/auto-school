@@ -98,6 +98,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
     setCkMsg((m) => ({ ...m, [it.id]: "" }));
     try {
       await postCk({ deadlineId: it.id });
+      if (!cks[it.id]) await refreshCks(); // generate returns {ok,count} — pull the list
       setExpanded(it.id);
     } catch { setCkMsg((m) => ({ ...m, [it.id]: "backend unreachable" })); }
     finally { setGenBusy((m) => ({ ...m, [it.id]: false })); }
