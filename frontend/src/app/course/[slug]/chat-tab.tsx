@@ -55,7 +55,7 @@ function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClo
   );
 }
 
-export default function ChatTab({ slug }: { slug?: string }) {
+export default function ChatTab({ slug, initialPrompt }: { slug?: string; initialPrompt?: string }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [lexicon, setLexicon] = useState<Record<string, LexHit[]>>({});
@@ -148,8 +148,8 @@ export default function ChatTab({ slug }: { slug?: string }) {
       .join("");
   };
 
-  const send = async (): Promise<void> => {
-    const message = input.trim();
+  const send = async (override?: string): Promise<void> => {
+    const message = (override ?? input).trim();
     if (!message || busy) return;
     setInput("");
     setErr("");
@@ -182,6 +182,15 @@ export default function ChatTab({ slug }: { slug?: string }) {
     if (sep < 0) return;
     setPreview({ course: raw.slice(0, sep), path: raw.slice(sep + 1) });
   };
+
+  // auto-send once when navigated here with ?prompt=… (deadline "ask AI" links)
+  const autoSent = useRef(false);
+  useEffect(() => {
+    if (initialPrompt && !autoSent.current) {
+      autoSent.current = true;
+      void send(initialPrompt);
+    }
+  }, [initialPrompt]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "70vh" }}>

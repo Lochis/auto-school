@@ -827,19 +827,43 @@ function startController(): void {
     // ── deadlines (AI-built calendar of due dates + spread-out items) ──
     if (url.pathname === "/deadlines") {
       const DEADLINES = join(config.userDataDir, "deadlines.json");
-      const readDl = (): unknown[] => {
-        try { const j = JSON.parse(readFileSync(DEADLINES, "utf8")); return Array.isArray(j) ? j : []; } catch { return []; }
+      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null };
+      const readDl = (): Dl[] => {
+        try {
+          const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
+          if (!Array.isArray(j)) return [];
+          // backfill ids/done for files written before those fields existed
+          return j.map((d: Partial<Dl>) => ({ done: false, doneAt: null, ...d, id: d.id ?? dlId(String(d.course ?? ""), String(d.title ?? "")) }) as Dl);
+        } catch { return []; }
       };
+      const dlKey = (c: string, t: string): string => `${c}|${t.toLowerCase().trim()}`;
+      const dlId = (c: string, t: string): string => { // stable: same course+title → same id
+        let h = 5381;
+        for (const ch of dlKey(c, t)) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
+        return h.toString(16);
+      };
+      const writeDl = (d: Dl[]): void => { mkdirSync(config.userDataDir, { recursive: true }); writeFileSync(DEADLINES, JSON.stringify(d, null, 2)); };
       if (req.method === "GET") return send(200, { deadlines: readDl() });
       if (req.method === "DELETE") {
         try { rmSync(DEADLINES, { force: true }); } catch { /* gone */ }
         return send(200, { ok: true });
       }
-      if (req.method === "POST") { // rebuild: LLM sweeps all courses → JSON
+      if (req.method === "POST") {
         (async () => {
           try {
             let body: Record<string, unknown> = {};
             try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
+            // ── toggle done-ness by id (survives rebuilds) ──
+            if (typeof body.id === "string") {
+              const dl = readDl();
+              const it = dl.find((d) => d.id === body.id);
+              if (!it) return send(404, { error: "no such deadline id" });
+              it.done = body.done !== false; // default true; explicit false un-checks
+              it.doneAt = it.done ? Date.now() : null;
+              writeDl(dl);
+              return send(200, { ok: true, deadlines: dl });
+            }
+            // ── rebuild: LLM sweeps all courses → JSON ──
             const userPrompt = String(body.prompt ?? "").trim();
             const systemPrompt = `You build the student's DEADLINE CALENDAR across ALL courses from the real files — never invent dates.
 Explore with tools first: list_courses, then week_overview / list_materials / read_document on anything likely to carry due dates (syllabi, intro/summary sheets, exercise and lab docs, course configs). Read enough to pin dates down; skim, don't quote.${userPrompt ? `\nStudent focus: ${userPrompt}` : ""}
@@ -873,24 +897,36 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
               return send(500, { error: `JSON parse failed: ${String(e).slice(0, 120)}` });
             }
             if (!Array.isArray(items) || !items.length) return send(500, { error: "empty deadline list" });
-            // normalize: real course slugs, valid-ish dates
+            // normalize: real course slugs, valid-ish dates, stable ids;
+            // done-ness carries over from the previous build (by course+title)
             const slugs = allCourses();
+            const prev = readDl();
+            const prevDone = new Map(prev.filter((d) => d.done).map((d) => [dlKey(d.course, d.title), d]));
             const norm = items
               .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
-              .map((it) => ({
-                course: slugs.includes(String(it.course)) ? String(it.course) : String(it.course ?? ""),
-                title: String(it.title ?? "(untitled)").slice(0, 140),
-                due: /^\d{4}-\d{2}-\d{2}$/.test(String(it.due ?? "")) ? String(it.due) : null,
-                kind: ["assignment", "lab", "reading", "install", "signup", "post", "exam", "other"].includes(String(it.kind)) ? String(it.kind) : "other",
-                spread: Boolean(it.spread),
-                startBy: /^\d{4}-\d{2}-\d{2}$/.test(String(it.startBy ?? "")) ? String(it.startBy) : null,
-                note: String(it.note ?? "").slice(0, 160),
-                source: String(it.source ?? "").slice(0, 160),
-                confidence: ["high", "medium", "low"].includes(String(it.confidence)) ? String(it.confidence) : "medium",
-              }))
+              .map((it) => {
+                const course = slugs.includes(String(it.course)) ? String(it.course) : String(it.course ?? "");
+                const title = String(it.title ?? "(untitled)").slice(0, 140);
+                const old = prevDone.get(dlKey(course, title));
+                return {
+                  id: old?.id ?? dlId(course, title),
+                  course, title,
+                  due: /^\d{4}-\d{2}-\d{2}$/.test(String(it.due ?? "")) ? String(it.due) : null,
+                  kind: ["assignment", "lab", "reading", "install", "signup", "post", "exam", "other"].includes(String(it.kind)) ? String(it.kind) : "other",
+                  spread: Boolean(it.spread),
+                  startBy: /^\d{4}-\d{2}-\d{2}$/.test(String(it.startBy ?? "")) ? String(it.startBy) : null,
+                  note: String(it.note ?? "").slice(0, 160),
+                  source: String(it.source ?? "").slice(0, 160),
+                  confidence: ["high", "medium", "low"].includes(String(it.confidence)) ? String(it.confidence) : "medium",
+                  done: Boolean(old?.done ?? false),
+                  doneAt: old?.doneAt ?? null,
+                } satisfies Dl;
+              })
               .filter((it) => slugs.includes(it.course));
-            mkdirSync(config.userDataDir, { recursive: true });
-            writeFileSync(DEADLINES, JSON.stringify(norm, null, 2));
+            // checked-off items the new build no longer finds still persist
+            const kept = new Set(norm.map((d) => d.id));
+            for (const d of prevDone.values()) if (!kept.has(d.id)) norm.push(d);
+            writeDl(norm);
             pushEvent(`deadlines rebuilt: ${norm.length} item(s)`);
             return send(200, { ok: true, count: norm.length });
           } catch (e) {
@@ -952,7 +988,8 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
             history.push({ role: "user", content: message, at: new Date().toISOString() });
 
             const systemPrompt = `You are a study assistant for ALL of the student's courses (semester dates come from list_courses / week_overview).
-Start broad: week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
+For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar (items they finished are checked off and excluded — never re-suggest those).
+Start broad: list_deadlines, week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
 Read enough of the actual materials to answer concretely — never guess what a file contains. Cite EXACT file names so they can be previewed. If nothing exists for a week/course, say so honestly.
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
             const convo: ChatMsg[] = [
@@ -1027,6 +1064,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             // ── tool-calling loop: the model explores the course itself ──
             const cfg = getCourseConfig(slug);
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
+For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar for THIS course (items they finished are checked off and excluded — never re-suggest those).
 Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 

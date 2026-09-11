@@ -27,9 +27,9 @@ function semesterStart(slug: string): string | null {
   } catch { return null; }
 }
 
-export default async function CoursePage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ tab?: string }> }) {
+export default async function CoursePage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ tab?: string; prompt?: string }> }) {
   const { slug } = await params;
-  const { tab } = await searchParams;
+  const { tab, prompt } = await searchParams;
   if (!courses().includes(slug)) notFound();
   const list = sessions(slug);
   const showMaterials = tab === "materials";
@@ -70,7 +70,7 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
       {showMaterials ? (
         <MaterialsTab slug={slug} />
       ) : showAsk ? (
-        <ChatTab slug={slug} />
+        <ChatTab slug={slug} initialPrompt={prompt} />
       ) : (
         <>
           {!start && <p className="muted">Tip: set a semester start on the Materials tab to group sessions by week.</p>}

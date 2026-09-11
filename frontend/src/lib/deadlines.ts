@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DATA_DIR } from "./data";
 
 export interface DeadEntry {
+  id: string;
   course: string;
   title: string;
   due: string | null;
@@ -14,6 +15,8 @@ export interface DeadEntry {
   note: string;
   source: string;
   confidence: string;
+  done?: boolean;
+  doneAt?: number | null;
 }
 
 export function readDeadlines(): DeadEntry[] {
