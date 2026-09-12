@@ -4,7 +4,7 @@
  *  items persist across rebuilds (backend carries done-ness by course+title).
  *  Each row links into that course's chat with a task-specific starter
  *  prompt (guide-me-through for labs/assignments, study plan for exams). */
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -281,7 +281,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
             </div>
           </div>
         )}
-        {expanded === it.id && <ChecklistBox it={it} />}
+        {expanded === it.id ? ChecklistBox({ it }) : null}
       </>
     );
   };
@@ -308,19 +308,19 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
             {tab === "up" ? (
               <>
                 {overdue.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600, color: "#f87171" }}>Overdue</p>}
-                {overdue.map((it) => <Row key={it.id} it={it} hot />)}
+                {overdue.map((it) => <Fragment key={it.id}>{Row({ it, hot: true })}</Fragment>)}
                 {week.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>This week</p>}
-                {week.map((it) => <Row key={it.id} it={it} />)}
+                {week.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
                 {later.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Later</p>}
-                {later.map((it) => <Row key={it.id} it={it} />)}
+                {later.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
                 {spread.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Worth spreading out</p>}
-                {spread.map((it) => <Row key={it.id} it={it} />)}
+                {spread.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
                 {open.length === 0 && <p className="muted" style={{ margin: "4px 0" }}>Nothing open — 🎉</p>}
               </>
             ) : (
               <>
                 {done.length === 0 && <p className="muted" style={{ margin: "4px 0" }}>Nothing checked off yet.</p>}
-                {done.map((it) => <Row key={it.id} it={it} />)}
+                {done.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
               </>
             )}
           </>
