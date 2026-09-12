@@ -321,7 +321,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           disabled={busy}
         />
         <button onClick={() => void send()} disabled={busy || !input.trim()}>Send</button>
-        <button onClick={() => void clear()} title="Clear chat history">🗑</button>
+        <button onClick={() => void clear()} title="Clear chat history">✕</button>
       </div>
     </div>
   );

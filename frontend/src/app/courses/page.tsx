@@ -58,7 +58,7 @@ export default function CoursesPage() {
                       {s.stem.split("__").slice(1).join("__").replace(/_/g, " ") || s.stem}
                     </Link>
                     <span className="muted" style={{ fontSize: 12 }}>
-                      {s.audio ? "🎬" : ""}{s.hasTimeline ? "📝" : s.transcript ? "📄" : ""}{s.notes ? "🗒" : ""}
+                      {s.audio ? "🎬" : ""}{s.hasTimeline ? "📝" : s.transcript ? "📄" : ""}{s.notes ? "📋" : ""}
                     </span>
                   </div>
                 );

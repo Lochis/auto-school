@@ -71,7 +71,7 @@ export default function CalendarList({ events, asOf }: { events: CalEvent[]; asO
                 <div key={i}
                   className={`cal-ev ${st}${joined ? " joined" : ""}`}
                   style={{ left: `${left}%`, width: `${width}%` }}
-                  title={`${joined ? "🤖 joined — " : ""}${ev.title}\n${fmt(ev.start)} – ${fmt(ev.end)}`} />
+                  title={`${joined ? "⚙️ joined — " : ""}${ev.title}\n${fmt(ev.start)} – ${fmt(ev.end)}`} />
               );
             })}
           </div>
@@ -110,7 +110,7 @@ export default function CalendarList({ events, asOf }: { events: CalEvent[]; asO
                       color: attendingTitle === ev.title ? "#ff8a8a" : joined ? "#7ddc9a" : undefined,
                     }}
                   >
-                    {attendingTitle === ev.title ? "🤖 recording now" : joined ? "🤖 attended — persisted" : "— not joined"}
+                    {attendingTitle === ev.title ? "⚙️ recording now" : joined ? "⚙️ attended — persisted" : "— not joined"}
                   </span>
                 </li>
               );

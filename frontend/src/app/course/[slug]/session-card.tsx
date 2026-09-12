@@ -66,7 +66,7 @@ export default function SessionCard({ session, course }: { session: Session; cou
           </button>
         )}
         <button onClick={purge} disabled={busy} title="Delete the recording and its transcript/notes/timeline">
-          {busy ? "deleting…" : "🗑 Delete"}
+          {busy ? "deleting…" : "✕ Delete"}
         </button>
       </div>
       {job && <p className="muted" style={{ margin: "6px 0 0" }}>{job}</p>}

@@ -28,7 +28,7 @@ export default function CourseDelete({ course }: { course: string }) {
     <span style={{ marginLeft: "auto" }}>
       {err && <span className="muted" style={{ marginRight: 8, color: "#b91c1c" }}>{err}</span>}
       <button onClick={del} disabled={busy} title="Delete this course folder (only when it has no sessions)">
-        {busy ? "…" : "🗑"}
+        {busy ? "…" : "✕"}
       </button>
     </span>
   );

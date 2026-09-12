@@ -195,7 +195,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
           <summary style={{ cursor: "pointer", fontWeight: 600, padding: "3px 0" }}>
             📁 {n.name}
             <button onClick={(e) => { e.preventDefault(); setRenaming(n.path); setRenameTo(n.path); }} title="Rename folder" style={{ marginLeft: 8, fontSize: 11 }}>✎</button>
-            <button onClick={(e) => { e.preventDefault(); del(n.path); }} title="Delete folder" style={{ marginLeft: 4, fontSize: 11 }}>🗑</button>
+            <button onClick={(e) => { e.preventDefault(); del(n.path); }} title="Delete folder" style={{ marginLeft: 4, fontSize: 11 }}>✕</button>
           </summary>
           {renaming === n.path && (
             <div style={{ margin: "4px 0" }}>
@@ -216,7 +216,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
           {f.week !== null && <span className="muted" style={{ fontSize: 12 }}>· week {f.week}</span>}
           <span className="muted" style={{ fontSize: 12 }}>{fmtSize(f.size)}</span>
           <button onClick={() => { setRenaming(f.path); setRenameTo(f.path); }} title="Rename/move" style={{ fontSize: 11 }}>✎</button>
-          <button onClick={() => del(f.path)} title="Delete" style={{ fontSize: 11 }}>🗑</button>
+          <button onClick={() => del(f.path)} title="Delete" style={{ fontSize: 11 }}>✕</button>
           {renaming === f.path && (
             <span>
               <input value={renameTo} onChange={(e) => setRenameTo(e.target.value)} style={{ width: 320 }} placeholder="new path" />

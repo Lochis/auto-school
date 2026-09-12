@@ -40,7 +40,7 @@ export interface Checklist {
 }
 
 const KIND_ICON: Record<string, string> = {
-  assignment: "📝", lab: "🧪", reading: "📖", install: "⬇️",
+  assignment: "📝", lab: "🔬", reading: "📖", install: "⬇️",
   signup: "👥", post: "💬", quiz: "❓", exam: "🎓", other: "📌",
 };
 
@@ -262,13 +262,13 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
             title="add your own context — group members, roles, links… (shown to the AI and kept across rebuilds)"
             style={{ all: "unset", cursor: "pointer", fontSize: 12, color: it.userNote ? "#e0af68" : undefined }}
           >
-            {it.userNote ? "🗒 note ✓" : "✎ add note"}
+            {it.userNote ? "📋 note ✓" : "✎ add note"}
           </button>
           {it.confidence !== "high" && <span className="muted" style={{ fontSize: 11 }}>({it.confidence})</span>}
           {it.note && <span className="muted" style={{ fontSize: 12 }} title={it.source}>— {it.note}</span>}
           {it.done && it.doneAt && <span className="muted" style={{ fontSize: 11 }}>✓ {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
           {it.userNote && noteEdit !== it.id && (
-            <span className="muted" style={{ fontSize: 12, color: "#e0af68" }} title={it.userNote}>🗒 {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
+            <span className="muted" style={{ fontSize: 12, color: "#e0af68" }} title={it.userNote}>📋 {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
           )}
         </div>
         {noteEdit === it.id && (

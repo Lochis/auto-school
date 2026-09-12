@@ -14,7 +14,7 @@ function linkShots(msg: string): React.ReactNode {
 }
 
 const STAGE_ICON: Record<string, string> = {
-  recording: "⏺", remuxing: "⏳", transcribing: "✍️", noting: "📝", consolidating: "🎬", done: "✅", failed: "⚠️",
+  recording: "⏺", remuxing: "⏳", transcribing: "✎️", noting: "📝", consolidating: "🎬", done: "✅", failed: "⚠️",
 };
 
 /** What runs next, derived from the current phase — the "will be doing" list. */
