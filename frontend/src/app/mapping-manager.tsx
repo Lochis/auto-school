@@ -44,8 +44,9 @@ export default function MappingManager({ initial }: { initial: Snapshot }) {
   const entries = Object.entries(snap.mapping);
   const isNewFolder = folder.trim().length > 0 && !snap.folders.includes(folder.trim().replace(/\s+/g, "_"));
   return (
-    <div className="card">
-      <h2 style={{ margin: 0 }}>Meeting → folder mapping</h2>
+    <details className="card">
+      <summary style={{ cursor: "pointer", fontWeight: 600 }}>🗺 Meeting → folder mapping</summary>
+      <div style={{ marginTop: 8 }}>
       <p className="muted" style={{ margin: "4px 0 10px" }}>
         Exact title match files a session under the folder you choose — overrides automatic course parsing.
         Typing a <strong>new folder name</strong> creates it (spaces → underscores).
@@ -87,6 +88,7 @@ export default function MappingManager({ initial }: { initial: Snapshot }) {
       ) : (
         <p className="muted">No manual mappings — everything filed by automatic parsing.</p>
       )}
-    </div>
+      </div>
+    </details>
   );
 }
