@@ -164,7 +164,7 @@ export default function SettingsPanel() {
         <h3 style={{ margin: "18px 0 2px", fontSize: 15 }}>API keys</h3>
         <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
           Stored on the data volume and applied without a restart. A value typed here overrides the environment;
-          clearing a field (empty + Save) falls back to it. Keys are never shown back in full.
+          the “use env” button removes the override. Keys are never shown back in full.
         </p>
         {([
           { id: "gemini" as const, label: "Gemini API key", info: s.keys?.gemini, type: "password", ph: "AIza…" },
@@ -190,8 +190,29 @@ export default function SettingsPanel() {
               />
               {f.info && f.info.from && (
                 <span className="muted" style={{ fontSize: 12 }}>
-                  set: {f.info.from} {f.info.hint ?? ""}{f.info.from === "settings" ? " — clear field + Save to fall back to env" : ""}
+                  set: {f.info.from} {f.info.hint ?? ""}
                 </span>
+              )}
+              {f.info?.from === "settings" && (
+                <button
+                  disabled={busy}
+                  title={f.id === "glmBase" ? "remove the stored override and use the default/env base URL" : "remove the stored key and fall back to the environment"}
+                  style={{ fontSize: 11, padding: "1px 7px" }}
+                  onClick={async () => {
+                    setBusy(true);
+                    const field = f.id === "glmBase" ? "glmBase" : `${f.id}ApiKey`;
+                    const v = await put({ [field]: "" });
+                    if (v) {
+                      setS(v);
+                      setKeyDrafts((m) => ({ ...m, [f.id]: "" }));
+                      setKeyDirty((m) => ({ ...m, [f.id]: false }));
+                      setMsg(f.id === "glmBase" ? "cleared — using default/env base URL" : "cleared — using env key");
+                    }
+                    setBusy(false);
+                  }}
+                >
+                  {f.id === "glmBase" ? "use default" : "use env"}
+                </button>
               )}
             </div>
           );
