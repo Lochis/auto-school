@@ -243,11 +243,18 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   };
 
   // auto-send once when navigated here with ?prompt=… (deadline "ask AI" links)
-  const autoSent = useRef(false);
+  const lastSent = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (initialPrompt && !autoSent.current) {
-      autoSent.current = true;
+    if (initialPrompt && lastSent.current !== initialPrompt) {
+      lastSent.current = initialPrompt;
       void send(initialPrompt);
+      // consume the prompt from the URL — reloads/back-nav must NOT re-send;
+      // it lives on in the chat history anyway
+      const u = new URL(window.location.href);
+      if (u.searchParams.has("prompt")) {
+        u.searchParams.delete("prompt");
+        window.history.replaceState(null, "", u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : ""));
+      }
     }
   }, [initialPrompt]);
 
