@@ -953,33 +953,120 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
             // done-ness carries over from the previous build (by course+title)
             const slugs = allCourses();
             const prev = readDl();
-            const prevDone = new Map(prev.filter((d) => d.done).map((d) => [dlKey(d.course, d.title), d]));
-            const prevNote = new Map(prev.filter((d) => d.userNote).map((d) => [dlKey(d.course, d.title), d.userNote!]));
+            // ── fuzzy identity: the same real task can come back under a
+            // different title next build ("Discussion: Wk3 Q1" vs "Week 3 -
+            // Question One") — normalize + abbreviation-expand for matching
+            const normTitle = (t: string): string =>
+              t.toLowerCase().replace(/&/g, " and ")
+                .replace(/\bwk\s*/g, "week ").replace(/\bw(\d+)\b/g, "week $1")
+                .replace(/\bq\s*(\d+)\b/g, "question $1")
+                .replace(/#/g, " ")
+                .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/g,
+                  (m) => String(["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"].indexOf(m) + 1))
+                .replace(/\bquiz(zes)?\b/g, "quiz").replace(/\bdiscussions?\b/g, "discussion")
+                .replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+            const tokensOf = (t: string): Set<string> => new Set(normTitle(t).split(" ").filter((w) => w.length > 1));
+            const sim = (a: string, b: string): number => {
+              const A = tokensOf(a), B = tokensOf(b);
+              if (!A.size || !B.size) return 0;
+              let hit = 0;
+              for (const w of A) if (B.has(w)) hit++;
+              return hit / Math.min(A.size, B.size); // containment of the smaller
+            };
+            // numbers in titles are strong identity (Q1 vs Q2): every digit in
+            // one title must appear in the other for a match
+            const digitsOk = (a: string, b: string): boolean => {
+              const d = (t: string) => new Set(normTitle(t).match(/\d+/g) ?? []);
+              const A = d(a), B = d(b);
+              if (!A.size || !B.size) return true;
+              const [sm, bg] = A.size <= B.size ? [A, B] : [B, A];
+              for (const n of sm) if (!bg.has(n)) return false;
+              return true;
+            };
+            const RANGE = /\d\s*[-\u2013]\s*#?\s*\d/; // "#1-#11" umbrellas never re-match
+            const sameTask = (a: string, b: string): boolean =>
+              !RANGE.test(a) && !RANGE.test(b) && digitsOk(a, b) && sim(a, b) >= 0.5;
             const norm = items
               .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
-              .map((it): Dl => {
-                const course = slugs.includes(String(it.course)) ? String(it.course) : String(it.course ?? "");
-                const title = String(it.title ?? "(untitled)").slice(0, 140);
-                const old = prevDone.get(dlKey(course, title));
-                return {
-                  id: old?.id ?? dlId(course, title),
-                  course, title,
-                  due: /^\d{4}-\d{2}-\d{2}$/.test(String(it.due ?? "")) ? String(it.due) : null,
-                  kind: ["assignment", "lab", "reading", "install", "signup", "post", "quiz", "exam", "other"].includes(String(it.kind)) ? String(it.kind) : "other",
-                  spread: Boolean(it.spread),
-                  startBy: /^\d{4}-\d{2}-\d{2}$/.test(String(it.startBy ?? "")) ? String(it.startBy) : null,
-                  note: String(it.note ?? "").slice(0, 160),
-                  source: String(it.source ?? "").slice(0, 160),
-                  confidence: ["high", "medium", "low"].includes(String(it.confidence)) ? String(it.confidence) : "medium",
-                  done: Boolean(old?.done ?? false),
-                  doneAt: old?.doneAt ?? null,
-                  userNote: prevNote.get(dlKey(course, title)),
-                } satisfies Dl;
-              })
+              .map((it): Dl => ({
+                id: "", // filled by carry-over / dedupe below
+                course: slugs.includes(String(it.course)) ? String(it.course) : String(it.course ?? ""),
+                title: String(it.title ?? "(untitled)").slice(0, 140),
+                due: /^\d{4}-\d{2}-\d{2}$/.test(String(it.due ?? "")) ? String(it.due) : null,
+                kind: ["assignment", "lab", "reading", "install", "signup", "post", "quiz", "exam", "other"].includes(String(it.kind)) ? String(it.kind) : "other",
+                spread: Boolean(it.spread),
+                startBy: /^\d{4}-\d{2}-\d{2}$/.test(String(it.startBy ?? "")) ? String(it.startBy) : null,
+                note: String(it.note ?? "").slice(0, 160),
+                source: String(it.source ?? "").slice(0, 160),
+                confidence: ["high", "medium", "low"].includes(String(it.confidence)) ? String(it.confidence) : "medium",
+                done: false,
+                doneAt: null,
+              }) satisfies Dl)
               .filter((it) => slugs.includes(it.course));
+            // ── carry-over: inherit id/done/userNote from the previous build's
+            // same task (exact key first, then fuzzy) — id stability is what
+            // keeps checklists attached across rebuilds
+            const pool = prev.filter((p) => !RANGE.test(p.title));
+            for (const it of norm) {
+              const exact = pool.find((p) => p.course === it.course && dlKey(p.course, p.title) === dlKey(it.course, it.title));
+              if (exact) {
+                it.id = exact.id; it.done = exact.done; it.doneAt = exact.doneAt;
+                if (exact.userNote) it.userNote = exact.userNote;
+                pool.splice(pool.indexOf(exact), 1);
+                continue;
+              }
+              let bi = -1, bs = 0;
+              for (let i = 0; i < pool.length; i++) {
+                const p = pool[i];
+                if (p.course !== it.course || p.kind !== it.kind) continue;
+                const sameDue = p.due === it.due;
+                if (!sameDue && p.due && it.due) continue; // both dated but different days → different tasks
+                const s = sim(p.title, it.title) * (sameDue ? 1 : 0.85);
+                const need = sameDue ? 0.5 : 0.7;
+                if (s > bs && s >= need && sameTask(p.title, it.title)) { bs = s; bi = i; }
+              }
+              if (bi >= 0) {
+                const p = pool.splice(bi, 1)[0];
+                it.id = p.id; it.done = p.done; it.doneAt = p.doneAt;
+                if (p.userNote) it.userNote = p.userNote;
+              }
+            }
+            // fresh ids for anything unmatched
+            for (const it of norm) if (!it.id) it.id = dlId(it.course, it.title);
+            // ── dedupe within this build: same course + kind + due + similar
+            // title from two sources → keep the first (higher in the model's list)
+            for (let i = 0; i < norm.length; i++) {
+              for (let j = norm.length - 1; j > i; j--) {
+                const a = norm[i], b = norm[j];
+                if (a.course === b.course && a.kind === b.kind && a.due === b.due && sameTask(a.title, b.title)) {
+                  if (!a.userNote && b.userNote) a.userNote = b.userNote; // never lose a note
+                  norm.splice(j, 1);
+                }
+              }
+            }
             // checked-off items the new build no longer finds still persist
-            const kept = new Set(norm.map((d) => d.id));
-            for (const d of prevDone.values()) if (!kept.has(d.id)) norm.push(d);
+            for (const p of pool) if (p.done) norm.push(p);
+            // heal orphaned checklists: entries whose deadlineId vanished get
+            // fuzzy-reattached to the current entry of the same task
+            try {
+              const ckPath = join(config.userDataDir, "checklists.json");
+              const cks = JSON.parse(readFileSync(ckPath, "utf8")) as { deadlineId: string; course: string; title: string }[];
+              if (Array.isArray(cks)) {
+                const ids = new Set(norm.map((d) => d.id));
+                let healed = 0;
+                for (const c of cks) {
+                  if (ids.has(c.deadlineId)) continue;
+                  const t = norm.find((d) => d.course === c.course && dlKey(d.course, d.title) === dlKey(c.course, c.title))
+                    ?? norm.filter((d) => d.course === c.course && sameTask(c.title, d.title))
+                        .sort((x, y) => sim(y.title, c.title) - sim(x.title, c.title))[0];
+                  if (t) { c.deadlineId = t.id; healed++; }
+                }
+                if (healed) {
+                  writeFileSync(ckPath, JSON.stringify(cks, null, 2));
+                  pushEvent(`checklists: re-attached ${healed} orphaned checklist(s) to renamed deadlines`);
+                }
+              }
+            } catch { /* no checklists yet */ }
             writeDl(norm);
             pushEvent(`deadlines rebuilt: ${norm.length} item(s)`);
             return send(200, { ok: true, count: norm.length });

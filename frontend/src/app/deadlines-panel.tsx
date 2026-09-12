@@ -63,6 +63,11 @@ function starterPrompt(it: DeadEntry): string {
   return `I need to do "${it.title}"${when}. Check the course materials with your tools, tell me exactly what's involved, and give me a short ordered checklist to get it done.`;
 }
 
+/** short course code from a slug — "26F-COMP303-Enterprise_App_Dev" → "COMP303" */
+function courseCode(slug: string): string {
+  return slug.match(/([A-Z]{2,4}\d{2,4})/)?.[1] ?? slug.split("-").slice(0, 2).join("-");
+}
+
 export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const router = useRouter();
   const [items, setItems] = useState<DeadEntry[]>(initial);
@@ -240,6 +245,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
           <input type="checkbox" checked={!!it.done} onChange={() => toggle(it.id)} style={{ accentColor: "#4ade80", transform: "translateY(1px)" }} aria-label={`mark ${it.title} done`} />
           <span style={{ fontSize: 13 }}>{KIND_ICON[it.kind] ?? "📌"}</span>
           <span className="muted" style={{ fontSize: 12, minWidth: 120 }}>{it.due ? fmtDue(it.due) : it.startBy ? `start by ${it.startBy}` : "no date"}</span>
+          <Link href={`/course/${encodeURIComponent(it.course)}`} title={it.course} style={{ fontSize: 11, color: "#94a3b8", border: "1px solid #444", borderRadius: 4, padding: "0 5px", textDecoration: "none" }}>{courseCode(it.course)}</Link>
           <span style={{ fontSize: 14, color: hot ? "#f87171" : undefined, fontWeight: hot ? 600 : undefined, textDecoration: it.done ? "line-through" : undefined }}>{it.title}</span>
           {ck && (
             <button onClick={() => setExpanded(expanded === it.id ? null : it.id)} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: doneN === ck.items.length && ck.items.length > 0 ? "#4ade80" : "#7aa2f7" }} title="show checklist">
