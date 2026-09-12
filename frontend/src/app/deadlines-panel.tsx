@@ -74,7 +74,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const [tab, setTab] = useState<"up" | "done">("up");
+  const [tab, setTab] = useState<"week" | "later" | "done">("week");
   // ── per-deadline checklists ──
   const [cks, setCks] = useState<Record<string, Checklist>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -153,6 +153,11 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const week = dated.filter((i) => daysUntil(i.due!) >= 0 && daysUntil(i.due!) <= 7);
   const later = dated.filter((i) => daysUntil(i.due!) > 7);
   const spread = open.filter((i) => !i.due && (i.spread || i.startBy));
+  // spread items belong to This Week when their start-by date is near
+  const spreadSoon = spread.filter((i) => !i.startBy || daysUntil(i.startBy) <= 7);
+  const spreadFar = spread.filter((i) => i.startBy && daysUntil(i.startBy) > 7);
+  const weekTab = [...overdue, ...week, ...spreadSoon];
+  const laterTab = [...later, ...spreadFar];
 
   const saveNote = async (it: DeadEntry): Promise<void> => {
     const v = noteText.trim().slice(0, 2000);
@@ -305,23 +310,29 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
         ) : (
           <>
             <div style={{ display: "flex", gap: 12, marginBottom: 6, borderBottom: "1px solid #444" }}>
-              {(["up", "done"] as const).map((t) => (
+              {(["week", "later", "done"] as const).map((t) => (
                 <button key={t} onClick={() => setTab(t)} style={{ all: "unset", cursor: "pointer", padding: "4px 2px", fontWeight: t === tab ? 600 : 400, color: t === tab ? undefined : "var(--muted, #999)", borderBottom: t === tab ? "2px solid #7aa2f7" : "2px solid transparent" }}>
-                  {t === "up" ? "Upcoming" : `Done (${done.length})`}
+                  {t === "week" ? `This Week (${weekTab.length})` : t === "later" ? `Later (${laterTab.length})` : `Done (${done.length})`}
                 </button>
               ))}
             </div>
-            {tab === "up" ? (
+            {tab === "week" ? (
               <>
                 {overdue.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600, color: "#f87171" }}>Overdue</p>}
                 {overdue.map((it) => <Fragment key={it.id}>{Row({ it, hot: true })}</Fragment>)}
-                {week.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>This week</p>}
+                {week.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Due this week</p>}
                 {week.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
-                {later.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Later</p>}
+                {spreadSoon.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Worth spreading out</p>}
+                {spreadSoon.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
+                {weekTab.length === 0 && <p className="muted" style={{ margin: "4px 0" }}>Nothing due this week — 🎉</p>}
+              </>
+            ) : tab === "later" ? (
+              <>
+                {later.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Due later</p>}
                 {later.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
-                {spread.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Worth spreading out</p>}
-                {spread.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
-                {open.length === 0 && <p className="muted" style={{ margin: "4px 0" }}>Nothing open — 🎉</p>}
+                {spreadFar.length > 0 && <p style={{ margin: "6px 0 2px", fontWeight: 600 }}>Worth spreading out</p>}
+                {spreadFar.map((it) => <Fragment key={it.id}>{Row({ it })}</Fragment>)}
+                {laterTab.length === 0 && <p className="muted" style={{ margin: "4px 0" }}>Nothing further out.</p>}
               </>
             ) : (
               <>
