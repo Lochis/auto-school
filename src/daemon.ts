@@ -918,15 +918,16 @@ function startController(): void {
             const userPrompt = String(body.prompt ?? "").trim();
             const systemPrompt = `You build the student's DEADLINE CALENDAR across ALL courses from the real files — never invent dates.
 Explore with tools first: list_courses, then week_overview / list_materials / read_document on anything likely to carry due dates (syllabi, intro/summary sheets, exercise and lab docs, course configs). Read enough to pin dates down; skim, don't quote.${userPrompt ? `\nStudent focus: ${userPrompt}` : ""}
+JSON schedule files (quizzes.json, discussions.json, …) carry EXACT per-item due dates — always read them fully and emit ONE entry per item with its date; NEVER lump recurring weekly work (quizzes, discussion posts) into a single undated umbrella entry when individual dates exist.
 Then reply with ONLY a JSON array (no prose, no markdown fences), one object per task:
-{"course": exact slug from list_courses, "title": short task name, "due": "YYYY-MM-DD" or null, "kind": "assignment"|"lab"|"reading"|"install"|"signup"|"post"|"exam"|"other", "spread": true if worth spreading out / starting early (installs, long projects, readings) else false, "startBy": "YYYY-MM-DD" or null, "note": "≤120 chars, key detail", "source": "exact file name or session stem", "confidence": "high"|"medium"|"low"}
+{"course": exact slug from list_courses, "title": short task name, "due": "YYYY-MM-DD" or null, "kind": "assignment"|"lab"|"reading"|"install"|"signup"|"post"|"quiz"|"exam"|"other", "spread": true if worth spreading out / starting early (installs, long projects, readings) else false, "startBy": "YYYY-MM-DD" or null, "note": "≤120 chars, key detail", "source": "exact file name or session stem", "confidence": "high"|"medium"|"low"}
 Include hard deadlines AND soft/spread-out items. If a date is uncertain use confidence "low". Today is ${new Date().toISOString().slice(0, 10)}.`;
             const convo: ChatMsg[] = [
               { role: "system", content: systemPrompt },
               { role: "user", content: `Build the deadline calendar now. Explore the courses with tools, then output ONLY the JSON array.${userPrompt ? ` Focus: ${userPrompt}` : ""}` },
             ];
             let raw = "";
-            for (let step = 0; step < 14; step++) {
+            for (let step = 0; step < 26; step++) {
               const msg = await glmChatRaw(convo, TOOL_DEFS);
               if (msg.tool_calls?.length) {
                 convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
@@ -964,7 +965,7 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                   id: old?.id ?? dlId(course, title),
                   course, title,
                   due: /^\d{4}-\d{2}-\d{2}$/.test(String(it.due ?? "")) ? String(it.due) : null,
-                  kind: ["assignment", "lab", "reading", "install", "signup", "post", "exam", "other"].includes(String(it.kind)) ? String(it.kind) : "other",
+                  kind: ["assignment", "lab", "reading", "install", "signup", "post", "quiz", "exam", "other"].includes(String(it.kind)) ? String(it.kind) : "other",
                   spread: Boolean(it.spread),
                   startBy: /^\d{4}-\d{2}-\d{2}$/.test(String(it.startBy ?? "")) ? String(it.startBy) : null,
                   note: String(it.note ?? "").slice(0, 160),

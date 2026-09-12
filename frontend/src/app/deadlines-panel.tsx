@@ -41,7 +41,7 @@ export interface Checklist {
 
 const KIND_ICON: Record<string, string> = {
   assignment: "📝", lab: "🧪", reading: "📖", install: "⬇️",
-  signup: "👥", post: "💬", exam: "🎓", other: "📌",
+  signup: "👥", post: "💬", quiz: "❓", exam: "🎓", other: "📌",
 };
 
 function daysUntil(date: string): number {
