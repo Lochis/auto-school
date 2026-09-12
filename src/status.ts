@@ -10,6 +10,12 @@ export interface StatusEvent { ts: string; msg: string }
 
 export interface Settings {
   transcribe: boolean;
+  /** optional stored API keys/endpoints — override the .env values at use
+   *  time; empty/absent falls back to the environment. Never seeded from
+   *  .env into the file (env secrets stay where they are). */
+  geminiApiKey?: string;
+  glmApiKey?: string;
+  glmBase?: string;
   /** delete recording videos older than this many days (0 = keep forever);
    *  transcripts/notes are never deleted */
   recordRetentionDays: number;
@@ -169,6 +175,19 @@ export function noteModelUsed(model: string): void {
   (modelQuotas.get(model) ?? modelQuotas.set(model, blank(model)).get(model)!).lastUsedAt = new Date().toISOString();
 }
 
+/** Resolve an API key: settings override first, .env fallback. */
+export function apiKey(name: "GEMINI_API_KEY" | "GLM_API_KEY"): string | undefined {
+  const s = getSettings();
+  const stored = (name === "GEMINI_API_KEY" ? s.geminiApiKey : s.glmApiKey)?.trim();
+  return stored || process.env[name] || undefined;
+}
+
+/** Resolve the GLM endpoint base (settings → env → Zhipu coding default). */
+export function glmBase(): string {
+  const stored = getSettings().glmBase?.trim();
+  return stored || process.env.GLM_BASE || "https://open.bigmodel.cn/api/coding/paas/v4";
+}
+
 export function getSettings(): Settings {
   try { return { ...defaultSettings(), ...JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) }; }
   catch { return defaultSettings(); }
@@ -198,6 +217,9 @@ export function applySettingsPatch(body: Record<string, unknown>): { prev: Setti
   const chain = typeof body.geminiModels === "string"
     ? body.geminiModels.split(",").map((m) => m.trim()).filter(Boolean).join(",")
     : "";
+  const str = (v: unknown, max = 300): string | undefined =>
+    typeof v === "string" ? v.trim().slice(0, max) : undefined;
+  const gk = str(body.geminiApiKey), lk = str(body.glmApiKey), gb = str(body.glmBase, 500);
   const next = setSettings({
     ...("transcribe" in body ? { transcribe: !!body.transcribe } : {}),
     ...(num(body.recordRetentionDays, 0, 3650) !== undefined ? { recordRetentionDays: num(body.recordRetentionDays, 0, 3650)! } : {}),
@@ -205,6 +227,9 @@ export function applySettingsPatch(body: Record<string, unknown>): { prev: Setti
     ...(num(body.transcribeBatch, 1, 9) !== undefined ? { transcribeBatch: num(body.transcribeBatch, 1, 9)! } : {}),
     ...(num(body.joinEarlyMinutes, 0, 30) !== undefined ? { joinEarlyMinutes: num(body.joinEarlyMinutes, 0, 30)! } : {}),
     ...(chain ? { geminiModels: chain } : {}), // commas-only input can't wipe the chain
+    ...(gk !== undefined ? { geminiApiKey: gk } : {}), // "" clears the override → env
+    ...(lk !== undefined ? { glmApiKey: lk } : {}),
+    ...(gb !== undefined ? { glmBase: gb } : {}),
   });
   return { prev, next };
 }

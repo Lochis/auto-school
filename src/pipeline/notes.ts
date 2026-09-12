@@ -5,7 +5,7 @@
  */
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { notify } from "../notify.ts";
-import { pushEvent } from "../status.ts";
+import { pushEvent, apiKey } from "../status.ts";
 import type { TimelineEntry } from "./segment.ts";
 import { sessionPaths, rebuildIndex } from "./courses.ts";
 import { textCall } from "./llm.ts";
@@ -16,7 +16,7 @@ function statePath(meeting: string) {
 
 async function gemini(prompt: string): Promise<string> { return textCall(prompt); }
 async function _unused_gemini(prompt: string): Promise<string> {
-  const key = process.env.GEMINI_API_KEY;
+  const key = apiKey("GEMINI_API_KEY");
   const model = process.env.ASR_MODEL ?? "gemini-3.6-flash";
   if (!key) throw new Error("GEMINI_API_KEY not set");
   const res = await fetch(

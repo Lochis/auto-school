@@ -10,7 +10,7 @@
  * quota for video), else Gemini chain.
  */
 
-import { isModelExhausted, isModelAvailable, recordQuota429, markModelUnavailable, noteModelUsed, getModelQuotas, modelChain } from "../status.ts";
+import { isModelExhausted, isModelAvailable, recordQuota429, markModelUnavailable, noteModelUsed, getModelQuotas, modelChain, apiKey, glmBase } from "../status.ts";
 
 try { process.loadEnvFile(); } catch { /* .env optional if env vars come from elsewhere */ }
 
@@ -32,7 +32,7 @@ export async function geminiCall(
   parts: AnyPart[],
   opts: { json?: boolean; temperature?: number } = {},
 ): Promise<string> {
-  const key = process.env.GEMINI_API_KEY;
+  const key = apiKey("GEMINI_API_KEY");
   if (!key) throw new Error("GEMINI_API_KEY not set");
   const models = geminiModels().filter((m) => !isModelExhausted(m) && isModelAvailable(m));
   if (!models.length) throw new Error(`all Gemini models cooling down — next recovers in ${Math.ceil(nearestRecoveryMs() / 1000)}s (GEMINI_MODELS)`);
@@ -75,8 +75,7 @@ export async function geminiCall(
 /** GLM endpoint — Coding Plan keys only authorize /api/coding/paas/v4 (the
  *  standard /api/paas/v4 returns 1113 "insufficient balance" for them).
  *  Overridable via GLM_BASE. */
-const glmEndpoint = (): string =>
-  `${process.env.GLM_BASE ?? "https://open.bigmodel.cn/api/coding/paas/v4"}/chat/completions`;
+const glmEndpoint = (): string => `${glmBase()}/chat/completions`;
 
 export interface ToolCall {
   id: string;
@@ -96,7 +95,7 @@ export async function glmChatRaw(
   messages: ChatMsg[],
   tools?: unknown[],
 ): Promise<{ content: string; tool_calls?: ToolCall[] }> {
-  const key = process.env.GLM_API_KEY;
+  const key = apiKey("GLM_API_KEY");
   if (!key) throw new Error("GLM_API_KEY not set");
   const model = process.env.GLM_MODEL ?? "glm-5.3";
   const res = await fetch(glmEndpoint(), {
@@ -145,7 +144,7 @@ export async function vlmDescribe(prompt: string, imageBase64: string, mime = "i
 
 /** Text completion via GLM (Zhipu, OpenAI-compatible). Throws if no key. */
 export async function glmCall(prompt: string): Promise<string> {
-  const key = process.env.GLM_API_KEY;
+  const key = apiKey("GLM_API_KEY");
   if (!key) throw new Error("GLM_API_KEY not set");
   const model = process.env.GLM_MODEL ?? "glm-5.3";
   const res = await fetch(glmEndpoint(), {
@@ -163,7 +162,7 @@ export async function glmChat(
   system: string,
   messages: { role: "user" | "assistant"; content: string }[],
 ): Promise<string> {
-  const key = process.env.GLM_API_KEY;
+  const key = apiKey("GLM_API_KEY");
   if (!key) throw new Error("GLM_API_KEY not set");
   const model = process.env.GLM_MODEL ?? "glm-5.3";
   const res = await fetch(glmEndpoint(), {
@@ -182,7 +181,7 @@ export async function glmChat(
 
 /** Text work: GLM if configured, else the Gemini chain. */
 export async function textCall(prompt: string): Promise<string> {
-  if (process.env.GLM_API_KEY) {
+  if (apiKey("GLM_API_KEY")) {
     try { return await glmCall(prompt); }
     catch (e) { console.warn(`[llm] GLM failed (${String(e).slice(0, 120)}) → Gemini`); }
   }

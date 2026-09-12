@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
  *  (on the Longhorn volume) and applied WITHOUT a restart: each consumer reads
  *  the setting at use time (per segment close, per request, per spawn).
  *  .env values only seed defaults on a fresh volume. */
+interface KeyInfo { from: "settings" | "env" | null; hint: string | null }
 interface AllSettings {
   transcribe: boolean;
   recordRetentionDays: number;
@@ -14,6 +15,7 @@ interface AllSettings {
   geminiModels: string;
   joinEarlyMinutes: number;
   offline?: boolean;
+  keys?: { gemini: KeyInfo; glm: KeyInfo; glmBase: string };
 }
 
 const FIELDS: { key: keyof AllSettings; label: string; min: number; max: number; hint: string }[] = [
@@ -32,6 +34,9 @@ export default function SettingsPanel() {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // key drafts: empty = leave as-is; typed = override; cleared flag = remove override
+  const [keyDrafts, setKeyDrafts] = useState<{ gemini: string; glm: string; glmBase: string }>({ gemini: "", glm: "", glmBase: "" });
+  const [keyDirty, setKeyDirty] = useState<{ gemini: boolean; glm: boolean; glmBase: boolean }>({ gemini: false, glm: false, glmBase: false });
 
   useEffect(() => {
     fetch("/api/settings")
@@ -66,7 +71,7 @@ export default function SettingsPanel() {
     if (v && typeof v.transcribe === "boolean") setS({ ...v, offline: v.offline });
   };
 
-  const save = async () => {
+  const save = async (): Promise<void> => {
     if (!s) return;
     setBusy(true);
     const v = await put({
@@ -75,8 +80,18 @@ export default function SettingsPanel() {
       transcribeBatch: s.transcribeBatch,
       joinEarlyMinutes: s.joinEarlyMinutes,
       ...(s.geminiModels.trim() ? { geminiModels: s.geminiModels } : {}),
+      // keys: only send fields the user touched ("" = clear override → env)
+      ...(keyDirty.gemini ? { geminiApiKey: keyDrafts.gemini } : {}),
+      ...(keyDirty.glm ? { glmApiKey: keyDrafts.glm } : {}),
+      ...(keyDirty.glmBase ? { glmBase: keyDrafts.glmBase } : {}),
     });
-    if (v && !v.offline) { setS(v); setDirty(false); setMsg("saved — applies immediately"); }
+    if (v && !v.offline) {
+      setS(v);
+      setDirty(false);
+      setKeyDirty({ gemini: false, glm: false, glmBase: false });
+      setKeyDrafts({ gemini: "", glm: "", glmBase: v.keys?.glmBase ?? "" });
+      setMsg("saved — applies immediately");
+    }
     setBusy(false);
   };
 
@@ -145,6 +160,42 @@ export default function SettingsPanel() {
             comma-separated, tried in order until one isn&apos;t rate-limited — table below shows live quota state
           </span>
         </div>
+
+        <h3 style={{ margin: "18px 0 2px", fontSize: 15 }}>API keys</h3>
+        <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
+          Stored on the data volume and applied without a restart. A value typed here overrides the environment;
+          clearing a field (empty + Save) falls back to it. Keys are never shown back in full.
+        </p>
+        {([
+          { id: "gemini" as const, label: "Gemini API key", info: s.keys?.gemini, type: "password", ph: "AIza…" },
+          { id: "glm" as const, label: "GLM API key", info: s.keys?.glm, type: "password", ph: "Zhipu coding-plan key…" },
+          { id: "glmBase" as const, label: "GLM base URL", type: "text", ph: "https://open.bigmodel.cn/api/coding/paas/v4" },
+        ]).map((f) => {
+          const cur = f.id === "glmBase" ? (s.keys?.glmBase ?? "") : undefined;
+          return (
+            <div key={f.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "3px 0" }}>
+              <label htmlFor={`key-${f.id}`} style={{ fontWeight: 600, minWidth: 150 }}>{f.label}</label>
+              <input
+                id={`key-${f.id}`}
+                type={f.type}
+                autoComplete="off"
+                style={{ width: 330, fontFamily: f.id === "glmBase" ? "inherit" : "monospace" }}
+                placeholder={f.id === "glmBase" ? (cur || f.ph) : f.info?.from ? `currently from ${f.info.from} (${f.info.hint}) — type to override` : f.ph}
+                value={f.id === "glmBase" ? (keyDirty.glmBase ? keyDrafts.glmBase : (s.keys?.glmBase ?? "")) : keyDrafts[f.id]}
+                onChange={(e) => {
+                  setKeyDrafts((m) => ({ ...m, [f.id]: e.target.value }));
+                  setKeyDirty((m) => ({ ...m, [f.id]: true }));
+                  setDirty(true);
+                }}
+              />
+              {f.info && f.info.from && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  set: {f.info.from} {f.info.hint ?? ""}{f.info.from === "settings" ? " — clear field + Save to fall back to env" : ""}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>

@@ -624,7 +624,22 @@ function startController(): void {
       }
     }
     if (url.pathname === "/settings") {
-      if (req.method === "GET") return send(200, getSettings());
+      // masked view: raw keys never leave the daemon — the page only sees
+      // where each key comes from + its last 4 chars
+      const maskedSettings = (s: ReturnType<typeof getSettings>) => {
+        const hint = (v?: string): string | null => (!v ? null : v.length <= 8 ? "••••" : `••••${v.slice(-4)}`);
+        const gemini = s.geminiApiKey || process.env.GEMINI_API_KEY || "";
+        const glm = s.glmApiKey || process.env.GLM_API_KEY || "";
+        return {
+          ...s, geminiApiKey: undefined, glmApiKey: undefined,
+          keys: {
+            gemini: { from: s.geminiApiKey ? "settings" : gemini ? "env" : null, hint: hint(gemini) || null },
+            glm: { from: s.glmApiKey ? "settings" : glm ? "env" : null, hint: hint(glm) || null },
+            glmBase: s.glmBase || process.env.GLM_BASE || "",
+          },
+        };
+      };
+      if (req.method === "GET") return send(200, maskedSettings(getSettings()));
       if (req.method === "PUT") {
         const body = await new Promise<Record<string, unknown>>((res) => {
           let b = "";
@@ -640,8 +655,11 @@ function startController(): void {
         if (prev.transcribeBatch !== s.transcribeBatch) changes.push(`asr batch ${s.transcribeBatch}/req`);
         if (prev.joinEarlyMinutes !== s.joinEarlyMinutes) changes.push(`join early ${s.joinEarlyMinutes}min`);
         if (prev.geminiModels !== s.geminiModels) changes.push(`model chain → ${s.geminiModels}`);
+        if (prev.geminiApiKey !== s.geminiApiKey) changes.push(`Gemini key ${s.geminiApiKey ? "updated (settings)" : "cleared → env"}`);
+        if (prev.glmApiKey !== s.glmApiKey) changes.push(`GLM key ${s.glmApiKey ? "updated (settings)" : "cleared → env"}`);
+        if (prev.glmBase !== s.glmBase) changes.push(`GLM base ${s.glmBase ? "updated" : "cleared → default"}`);
         if (changes.length) pushEvent(`settings: ${changes.join(" · ")}`);
-        return send(200, s);
+        return send(200, maskedSettings(s));
       }
     }
     if (url.pathname === "/models") {
