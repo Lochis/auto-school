@@ -12,7 +12,6 @@ interface Msg { role: "user" | "assistant"; content: string; at: string }
 interface Material { path: string; filename: string }
 interface LexHit { course: string; path: string }
 
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** overlay: fixed, click-outside to close */
 function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClose: () => void }) {
@@ -133,6 +132,18 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     return m;
   }, [slug, materials, lexicon]);
 
+  /** full material path ("Week 1/Week1 - exercise 1.pdf") → hits — the model
+   *  cites paths this way when it echoes list_materials output verbatim */
+  const byPath = useMemo(() => {
+    const m = new Map<string, LexHit[]>();
+    if (slug) {
+      for (const mat of materials) m.set(mat.path, [{ course: slug, path: mat.path }]);
+    } else {
+      for (const hits of Object.values(lexicon)) for (const h of hits) m.set(h.path, [...(m.get(h.path) ?? []), h]);
+    }
+    return m;
+  }, [slug, materials, lexicon]);
+
   /** pick the right course when a filename exists in several: score hint
    *  tokens (from the course slug + its meeting titles) found in the text
    *  just before the citation — longer hits count more */
@@ -157,12 +168,23 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
    *  so it becomes a link too. */
   const linkify = (md: string): string => {
     const linkifySegment = (seg: string): string => {
-      let out = seg;
-      for (const [leaf, cands] of byLeaf) {
-        if (!out.includes(leaf)) continue;
-        out = out.replace(new RegExp(escapeRe(leaf), "g"), (match, offset: number, whole: string) =>
-          linkFor(match, resolveHit(cands, whole.slice(0, Math.max(0, offset)))),
-        );
+      // all known citations (full paths + bare leaves), longest first — a
+      // single left-to-right scan never re-enters inserted link text, so a
+      // leaf that's part of a longer path can't nest inside its own link
+      const targets = [...byPath, ...byLeaf].sort((a, b) => b[0].length - a[0].length);
+      let out = "";
+      let i = 0;
+      while (i < seg.length) {
+        let hit = false;
+        for (const [name, cands] of targets) {
+          if (name && seg.startsWith(name, i)) {
+            out += linkFor(name, resolveHit(cands, seg.slice(0, i)));
+            i += name.length;
+            hit = true;
+            break;
+          }
+        }
+        if (!hit) { out += seg[i]!; i++; }
       }
       return out;
     };
@@ -171,8 +193,16 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
       .map((seg, i) => {
         if (i % 2 === 0) return linkifySegment(seg);
         const inner = seg.replace(/^`+|`+$/g, "");
-        const cands = byLeaf.get(inner);
-        return cands ? linkFor(inner, resolveHit(cands, seg)) : seg;
+        const direct = byPath.get(inner) ?? byLeaf.get(inner);
+        if (direct) return linkFor(inner, resolveHit(direct, seg));
+        // cited as a code span WITH its folder path — match on the basename,
+        // but only when a known hit actually lives at that path
+        if (inner.includes("/")) {
+          const base = inner.slice(inner.lastIndexOf("/") + 1);
+          const bc = byLeaf.get(base);
+          if (bc?.some((h) => h.path === inner)) return linkFor(inner, resolveHit(bc, seg));
+        }
+        return seg;
       })
       .join("");
   };
