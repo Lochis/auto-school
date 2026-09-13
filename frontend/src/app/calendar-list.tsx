@@ -31,7 +31,7 @@ export default function CalendarList({ events, asOf }: { events: CalEvent[]; asO
   // full calendar: today + upcoming days (scan window is 7 days with Graph)
   const days = Array.from(new Set(events.map((e) => new Date(e.start).toDateString())))
     .filter((d) => new Date(d) >= new Date(now.toDateString())) // today and later only
-    .sort();
+    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
   const nowLeft = ((Math.min(Math.max(now.getHours() * 60 + now.getMinutes(), 360), 1440) - 360) / 1080) * 100;
 
   return (
