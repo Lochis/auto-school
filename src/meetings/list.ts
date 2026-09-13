@@ -49,29 +49,31 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   }
   console.log("[meetings] Calendar rail clicked");
   // auto-click Microsoft's consent screen ("Almost there! … additional permissions … Calendar")
-  // the dialog can appear on the main page OR inside the OWA iframe
-  for (let i = 0; i < 6; i++) {
-    let found = false;
-    // check main page first
-    const mainBtn = await page.getByRole("button", { name: /continue/i }).first().isVisible({ timeout: 1200 }).catch(() => false);
-    if (mainBtn) {
-      console.log("[meetings] consent dialog (main page) — clicking Continue");
-      await page.getByRole("button", { name: /continue/i }).first().click({ timeout: 5_000 }).catch(() => {});
-      found = true;
-    } else {
-      // check inside OWA / auth iframes
-      for (const frame of page.frames()) {
-        if (found) break;
-        const fBtn = await frame.getByRole("button", { name: /continue/i }).first().isVisible({ timeout: 1200 }).catch(() => false);
-        if (fBtn) {
-          console.log(`[meetings] consent dialog (frame ${frame.url().slice(0, 60)}) — clicking Continue`);
-          await frame.getByRole("button", { name: /continue/i }).first().click({ timeout: 5_000 }).catch(() => {});
-          found = true;
-        }
+  // the dialog can appear on the main page OR inside the OWA iframe, and may
+  // pop up AFTER the initial click — so we also probe inside the OWA wait loop
+  const dismissConsent = async (where: string, ctx: Page | Frame): Promise<boolean> => {
+    // getByRole misses Teams' custom button components — try multiple selectors
+    const selectors = [
+      ctx.getByRole("button", { name: /continue/i }),
+      ctx.locator("button:has-text('Continue')"),
+      ctx.locator("[data-testid*='continue'], [aria-label*='continue' i]"),
+    ];
+    for (const sel of selectors) {
+      const btn = sel.first();
+      if (await btn.isVisible({ timeout: 800 }).catch(() => false)) {
+        console.log(`[meetings] consent dialog (${where}) — clicking Continue`);
+        await btn.click({ timeout: 5_000 }).catch(() => {});
+        await page.waitForTimeout(3_000);
+        return true;
       }
     }
-    if (!found) break;
-    await page.waitForTimeout(3_000);
+    return false;
+  };
+  // immediate sweep (dialog may already be visible)
+  for (let i = 0; i < 4; i++) {
+    let hit = await dismissConsent("main page", page);
+    if (!hit) for (const frame of page.frames()) { if (await dismissConsent(`frame ${frame.url().slice(0, 50)}`, frame)) { hit = true; break; } }
+    if (!hit) break;
   }
   await page.screenshot({ path: outPath("calendar-view.png") }).catch(() => {});
   // wait for the OWA calendar frame to appear AND have content
@@ -80,6 +82,9 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   let calFrame: Frame | null = null;
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
+    // consent dialog can appear late — keep dismissing while we wait
+    await dismissConsent("main page", page);
+    for (const frame of page.frames()) await dismissConsent(`frame ${frame.url().slice(0, 50)}`, frame);
     calFrame = page.frames().find((f) => f.url().includes("outlook.office.com")) ?? null;
     if (calFrame) {
       // check if the frame actually has calendar content (not just a spinner)
