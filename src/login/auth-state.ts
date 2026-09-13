@@ -135,7 +135,10 @@ export async function handleConsent(page: Page, creds?: { email: string; passwor
   if (await page.getByText("sign in to your account", { exact: false }).first().isVisible({ timeout: 2_000 }).catch(() => false)) {
     console.log("[auth] post-consent redirect → school SSO login page");
     await handleSsoLogin(page, creds?.email ?? "", creds?.password ?? "");
+    await page.waitForTimeout(3_000);
   }
+  // after SSO login + MFA, Centennial may show its own "Stay signed in?" prompt
+  await handleKmsi(page);
   return true;
 }
 
@@ -201,11 +204,21 @@ export async function handleMfaTotp(page: Page, totpSecret: string | undefined):
 }
 
 export async function handleKmsi(page: Page): Promise<boolean> {
+  // Microsoft KMSI (#idSIButton9) — or Centennial/WSO2 variant ("Yes" button)
   const yes = page.locator(SEL.staySignedInYes).first();
-  if (!await yes.isVisible({ timeout: 1_000 }).catch(() => false)) return false;
-  if (await yes.isEnabled({ timeout: 500 }).catch(() => false)) {
+  const altYes = page.getByRole("button", { name: /^Yes$/i }).first();
+  const btn = await yes.isVisible({ timeout: 1_000 }).catch(() => false)
+    ? yes
+    : await altYes.isVisible({ timeout: 1_000 }).catch(() => false)
+    ? altYes
+    : null;
+  if (!btn) return false;
+  // also check "Don't show this again" if present (Centennial variant)
+  const dontShow = page.getByText("don't show this again", { exact: false }).first();
+  if (await dontShow.isVisible({ timeout: 500 }).catch(() => false)) await dontShow.click({ timeout: 1_000 }).catch(() => {});
+  if (await btn.isEnabled({ timeout: 500 }).catch(() => false)) {
     console.log("[auth] clicking 'Stay signed in' → Yes");
-    await yes.click({ timeout: 2_000 }).catch(() => {});
+    await btn.click({ timeout: 2_000 }).catch(() => {});
   } else {
     console.log("[auth] KMSI Yes not clickable — submitting form directly");
     await page.evaluate(() => {
