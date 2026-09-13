@@ -71,9 +71,14 @@ function courseCode(slug: string): string {
 export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const router = useRouter();
   const [items, setItems] = useState<DeadEntry[]>(initial);
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"" | "update" | "full">("");
   const [msg, setMsg] = useState("");
+  const [toast, setToast] = useState<{ added: { course: string; title: string; due: string | null }[]; text: string } | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 10_000);
+    return () => clearTimeout(t);
+  }, [toast]);
   const [tab, setTab] = useState<"week" | "later" | "done">("week");
   // ── per-deadline checklists ──
   const [cks, setCks] = useState<Record<string, Checklist>>({});
@@ -112,24 +117,27 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
     finally { setGenBusy((m) => ({ ...m, [it.id]: false })); }
   };
 
-  const rebuild = async (): Promise<void> => {
-    setBusy(true); setMsg("");
+  const rebuild = async (mode: "update" | "full"): Promise<void> => {
+    setBusy(mode); setMsg(""); setToast(null);
     try {
       const r = await fetch("/api/deadlines", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: prompt.trim() || undefined }),
+        body: JSON.stringify({ mode }),
       });
-      const j = (await r.json().catch(() => ({}))) as { count?: number; error?: string };
+      const j = (await r.json().catch(() => ({}))) as { count?: number; error?: string; added?: { course: string; title: string; due: string | null }[]; changed?: number; mode?: string };
       if (!r.ok) setMsg(j.error ?? `HTTP ${r.status}`);
       else {
-        setMsg(`built ${j.count} item(s)`);
+        if (j.mode === "update") {
+          setMsg(`updated — ${j.count} item(s), ${j.changed ?? 0} doc(s) scanned`);
+          if (j.added?.length) setToast({ added: j.added, text: `${j.added.length} new deadline${j.added.length > 1 ? "s" : ""} added:` });
+        } else setMsg(`built ${j.count} item(s)`);
         const lr = await fetch("/api/deadlines").then((x) => x.json()).catch(() => ({}) as { deadlines?: DeadEntry[] });
         if (lr.deadlines) setItems(lr.deadlines);
         router.refresh();
       }
     } catch { setMsg("rebuild failed — backend unreachable"); }
-    finally { setBusy(false); }
+    finally { setBusy(""); }
   };
 
   const toggle = (id: string): void => {
@@ -298,6 +306,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   };
 
   return (
+    <>
     <details className="card" style={{ marginTop: 12 }}>
       <summary style={{ cursor: "pointer", fontWeight: 600, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         📅 Deadlines {open.length > 0 && <span className="muted" style={{ fontWeight: 400 }}>— {open.length} open</span>}
@@ -343,16 +352,31 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
           </>
         )}
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
-          <input
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder='optional focus, e.g. "include readings and group signups"'
-            style={{ width: 320 }}
-          />
-          <button onClick={() => void rebuild()} disabled={busy}>{busy ? "building… (reads documents — can take minutes)" : items.length ? "Rebuild with AI" : "Build with AI"}</button>
+          <button onClick={() => void rebuild("update")} disabled={busy !== ""}>
+            {busy === "update" ? "updating… (scans only changed documents — quick)" : items.length ? "Update deadlines" : "Build deadlines"}
+          </button>
+          <button onClick={() => void rebuild("full")} disabled={busy !== ""} style={{ fontSize: 12 }} title="re-read every document and rebuild from scratch">
+            {busy === "full" ? "building… (reads all documents — can take minutes)" : "Full rebuild"}
+          </button>
           {msg && <span className="muted" style={{ fontSize: 13 }}>{msg}</span>}
         </div>
       </div>
     </details>
+    {toast && (
+      <div
+        onClick={() => setToast(null)}
+        style={{ position: "fixed", bottom: 18, right: 18, zIndex: 50, maxWidth: 380, cursor: "pointer", background: "#1c2333", border: "1px solid #7aa2f7", borderRadius: 10, padding: "10px 14px", boxShadow: "0 6px 24px rgba(0,0,0,.35)", fontSize: 13 }}
+      >
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>✨ {toast.text}</div>
+        {toast.added.slice(0, 6).map((a, i) => (
+          <div key={i} style={{ color: "var(--muted, #999)" }}>
+            • {a.course.split("-")[1] ?? a.course}: {a.title}{a.due ? ` — due ${a.due}` : " (no date)"}
+          </div>
+        ))}
+        {toast.added.length > 6 && <div style={{ color: "var(--muted, #999)" }}>+{toast.added.length - 6} more…</div>}
+        <div style={{ color: "var(--muted, #999)", fontSize: 11, marginTop: 6 }}>click to dismiss</div>
+      </div>
+    )}
+    </>
   );
 }

@@ -868,7 +868,7 @@ function startController(): void {
     // ── deadlines (AI-built calendar of due dates + spread-out items) ──
     if (url.pathname === "/deadlines") {
       const DEADLINES = join(config.userDataDir, "deadlines.json");
-      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string };
+      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string; stale?: number };
       const readDl = (): Dl[] => {
         try {
           const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
@@ -914,20 +914,66 @@ function startController(): void {
               writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
             }
-            // ── rebuild: LLM sweeps all courses → JSON ──
-            const userPrompt = String(body.prompt ?? "").trim();
+            // ── rebuild: LLM sweep → JSON; full, or incremental (changed docs only) ──
+            const mode: "full" | "update" = body.mode === "full" ? "full" : "update";
+            // manifest: mtime+size of every course document at last build —
+            // a stat walk (no LLM) tells us exactly what changed since
+            const META = join(config.userDataDir, "deadlines-meta.json");
+            type DocStat = { m: number; s: number };
+            const readMeta = (): { docs: Record<string, DocStat> } => { try { return JSON.parse(readFileSync(META, "utf8")); } catch { return { docs: {} }; } };
+            const snapshotDocs = (): Record<string, DocStat & { course: string }> => {
+              const out: Record<string, DocStat & { course: string }> = {};
+              for (const c of allCourses()) {
+                const root = join(DATA_DIR, "courses", c, "materials");
+                const walk = (rel: string): void => {
+                  let names: string[] = [];
+                  try { names = readdirSync(join(root, rel)); } catch { return; }
+                  for (const n of names.sort()) {
+                    if (n === "materials.json") continue;
+                    const child = rel ? `${rel}/${n}` : n;
+                    let st;
+                    try { st = statSync(join(root, child)); } catch { continue; }
+                    if (st.isDirectory()) walk(child);
+                    else out[`${c}/${child}`] = { m: Math.round(st.mtimeMs), s: st.size, course: c };
+                  }
+                };
+                walk("");
+              }
+              return out;
+            };
+            const prevMeta = readMeta();
+            const changedDocs = new Map<string, string[]>(); // slug → rel paths changed/new
+            const deletedKeys = new Set<string>();           // manifest keys whose file is gone
+            let scoped = false;
+            if (mode === "update" && readDl().length > 0 && Object.keys(prevMeta.docs).length > 0) {
+              const cur = snapshotDocs();
+              for (const [k, v] of Object.entries(cur)) {
+                const p = prevMeta.docs[k];
+                if (!p || p.m !== v.m || p.s !== v.s) changedDocs.set(v.course, [...(changedDocs.get(v.course) ?? []), k.slice(v.course.length + 1)]);
+              }
+              for (const k of Object.keys(prevMeta.docs)) if (!cur[k]) deletedKeys.add(k);
+              if (changedDocs.size === 0 && deletedKeys.size === 0) {
+                return send(200, { ok: true, mode: "update", count: readDl().length, added: [], changed: 0 });
+              }
+              scoped = true; // baseline exists → only rescan what moved
+            }
+            const scopeText = scoped ? `
+This is an INCREMENTAL update — only these documents changed since the last full build (course slug → paths under materials/):
+${[...changedDocs].map(([c, docs]) => `- ${c}: ${docs.join(", ")}`).join("\n")}
+Read ONLY these documents (list_courses first to resolve slugs). Re-extract every deadline item each changed document defines — one entry per item, exact dates as before. Do NOT output items from unchanged documents; the rest of the calendar is already correct.`
+: `Explore with tools first: list_courses, then week_overview / list_materials / read_document on anything likely to carry due dates (syllabi, intro/summary sheets, exercise and lab docs, course configs). Read enough to pin dates down; skim, don't quote.`;
             const systemPrompt = `You build the student's DEADLINE CALENDAR across ALL courses from the real files — never invent dates.
-Explore with tools first: list_courses, then week_overview / list_materials / read_document on anything likely to carry due dates (syllabi, intro/summary sheets, exercise and lab docs, course configs). Read enough to pin dates down; skim, don't quote.${userPrompt ? `\nStudent focus: ${userPrompt}` : ""}
+${scopeText}
 JSON schedule files (quizzes.json, discussions.json, …) carry EXACT per-item due dates — always read them fully and emit ONE entry per item with its date; NEVER lump recurring weekly work (quizzes, discussion posts) into a single undated umbrella entry when individual dates exist.
 Then reply with ONLY a JSON array (no prose, no markdown fences), one object per task:
 {"course": exact slug from list_courses, "title": short task name, "due": "YYYY-MM-DD" or null, "kind": "assignment"|"lab"|"reading"|"install"|"signup"|"post"|"quiz"|"exam"|"other", "spread": true if worth spreading out / starting early (installs, long projects, readings) else false, "startBy": "YYYY-MM-DD" or null, "note": "≤120 chars, key detail", "source": "exact file name or session stem", "confidence": "high"|"medium"|"low"}
 Include hard deadlines AND soft/spread-out items. If a date is uncertain use confidence "low". Today is ${new Date().toISOString().slice(0, 10)}.`;
             const convo: ChatMsg[] = [
               { role: "system", content: systemPrompt },
-              { role: "user", content: `Build the deadline calendar now. Explore the courses with tools, then output ONLY the JSON array.${userPrompt ? ` Focus: ${userPrompt}` : ""}` },
+              { role: "user", content: scoped ? `Update the deadline calendar now: read exactly the changed documents listed above, then output ONLY the JSON array of items they define.` : `Build the deadline calendar now. Explore the courses with tools, then output ONLY the JSON array.` },
             ];
             let raw = "";
-            for (let step = 0; step < 26; step++) {
+            for (let step = 0; step < (scoped ? 18 : 26); step++) {
               const msg = await glmChatRaw(convo, TOOL_DEFS);
               if (msg.tool_calls?.length) {
                 convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
@@ -962,7 +1008,7 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 .replace(/\bq\s*(\d+)\b/g, "question $1")
                 .replace(/#/g, " ")
                 .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/g,
-                  (m) => String(["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"].indexOf(m) + 1))
+                  (mm) => String(["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"].indexOf(mm) + 1))
                 .replace(/\bquiz(zes)?\b/g, "quiz").replace(/\bdiscussions?\b/g, "discussion")
                 .replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
             const tokensOf = (t: string): Set<string> => new Set(normTitle(t).split(" ").filter((w) => w.length > 1));
@@ -1003,10 +1049,21 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 doneAt: null,
               }) satisfies Dl)
               .filter((it) => slugs.includes(it.course));
+            // ── incremental split: prev entries sourced from CHANGED/DELETED
+            // docs are up for re-extraction; everything else is kept verbatim
+            const baseOf = (p: string): string => p.split("/").pop() ?? p;
+            const touchedKeys = new Set<string>(); // "course|basename"
+            if (scoped) {
+              for (const [c, docs] of changedDocs) for (const d of docs) touchedKeys.add(`${c}|${baseOf(d)}`);
+              for (const k of deletedKeys) touchedKeys.add(`${k.split("/")[0]}|${baseOf(k)}`);
+            }
+            const isTouched = (p: Dl): boolean => touchedKeys.has(`${p.course}|${baseOf(p.source)}`);
+            const kept = scoped ? prev.filter((p) => !isTouched(p)) : [];
             // ── carry-over: inherit id/done/userNote from the previous build's
             // same task (exact key first, then fuzzy) — id stability is what
-            // keeps checklists attached across rebuilds
-            const pool = prev.filter((p) => !RANGE.test(p.title));
+            // keeps checklists attached across rebuilds. Scoped mode only
+            // matches against touched entries (kept ones stay verbatim).
+            const pool = (scoped ? prev.filter(isTouched) : prev).filter((p) => !RANGE.test(p.title));
             for (const it of norm) {
               const exact = pool.find((p) => p.course === it.course && dlKey(p.course, p.title) === dlKey(it.course, it.title));
               if (exact) {
@@ -1021,9 +1078,9 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 if (p.course !== it.course || p.kind !== it.kind) continue;
                 const sameDue = p.due === it.due;
                 if (!sameDue && p.due && it.due) continue; // both dated but different days → different tasks
-                const s = sim(p.title, it.title) * (sameDue ? 1 : 0.85);
+                const sv = sim(p.title, it.title) * (sameDue ? 1 : 0.85);
                 const need = sameDue ? 0.5 : 0.7;
-                if (s > bs && s >= need && sameTask(p.title, it.title)) { bs = s; bi = i; }
+                if (sv > bs && sv >= need && sameTask(p.title, it.title)) { bs = sv; bi = i; }
               }
               if (bi >= 0) {
                 const p = pool.splice(bi, 1)[0];
@@ -1031,8 +1088,9 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 if (p.userNote) it.userNote = p.userNote;
               }
             }
-            // fresh ids for anything unmatched
-            for (const it of norm) if (!it.id) it.id = dlId(it.course, it.title);
+            // fresh ids for anything unmatched — these are the NEW items
+            const freshIds = new Set<string>();
+            for (const it of norm) if (!it.id) { it.id = dlId(it.course, it.title); freshIds.add(it.id); }
             // ── dedupe within this build: same course + kind + due + similar
             // title from two sources → keep the first (higher in the model's list)
             for (let i = 0; i < norm.length; i++) {
@@ -1044,20 +1102,46 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 }
               }
             }
-            // checked-off items the new build no longer finds still persist
-            for (const p of pool) if (p.done) norm.push(p);
+            // ── incremental cross-dedupe: an extracted item that duplicates a
+            // KEPT entry (same task, same day) loses to the kept one — its
+            // id/done/notes/checklists are the stable identity
+            if (scoped) {
+              outer: for (let i = norm.length - 1; i >= 0; i--) {
+                const a = norm[i];
+                for (const k of kept) {
+                  if (a.course === k.course && a.kind === k.kind && a.due === k.due && sameTask(a.title, k.title)) { norm.splice(i, 1); continue outer; }
+                }
+              }
+            }
+            let merged: Dl[];
+            if (scoped) {
+              // touched entries the rescan no longer found: KEEP them (never
+              // silently drop a deadline the student may know about) but flag
+              // stale so the UI/chat can surface it
+              const now = Date.now();
+              for (const p of pool) { p.stale = p.stale ?? now; norm.push(p); }
+              merged = [...kept, ...norm];
+            } else {
+              // full rebuild re-saw everything → stale flags are obsolete;
+              // checked-off items the new build no longer finds still persist
+              for (const it of norm) delete it.stale;
+              for (const p of pool) if (p.done) norm.push(p);
+              merged = norm;
+            }
+            merged.sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.course.localeCompare(b.course));
+            const added = merged.filter((d) => freshIds.has(d.id)).map((d) => ({ course: d.course, title: d.title, due: d.due, kind: d.kind }));
             // heal orphaned checklists: entries whose deadlineId vanished get
             // fuzzy-reattached to the current entry of the same task
             try {
               const ckPath = join(config.userDataDir, "checklists.json");
               const cks = JSON.parse(readFileSync(ckPath, "utf8")) as { deadlineId: string; course: string; title: string }[];
               if (Array.isArray(cks)) {
-                const ids = new Set(norm.map((d) => d.id));
+                const ids = new Set(merged.map((d) => d.id));
                 let healed = 0;
                 for (const c of cks) {
                   if (ids.has(c.deadlineId)) continue;
-                  const t = norm.find((d) => d.course === c.course && dlKey(d.course, d.title) === dlKey(c.course, c.title))
-                    ?? norm.filter((d) => d.course === c.course && sameTask(c.title, d.title))
+                  const t = merged.find((d) => d.course === c.course && dlKey(d.course, d.title) === dlKey(c.course, c.title))
+                    ?? merged.filter((d) => d.course === c.course && sameTask(c.title, d.title))
                         .sort((x, y) => sim(y.title, c.title) - sim(x.title, c.title))[0];
                   if (t) { c.deadlineId = t.id; healed++; }
                 }
@@ -1067,9 +1151,13 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 }
               }
             } catch { /* no checklists yet */ }
-            writeDl(norm);
-            pushEvent(`deadlines rebuilt: ${norm.length} item(s)`);
-            return send(200, { ok: true, count: norm.length });
+            writeDl(merged);
+            writeFileSync(META, JSON.stringify({ docs: snapshotDocs(), builtAt: Date.now() }, null, 2));
+            const changedCount = [...changedDocs.values()].reduce((n, ds) => n + ds.length, 0) + deletedKeys.size;
+            pushEvent(scoped
+              ? `deadlines updated: +${added.length} new, ${changedCount} changed doc(s) scanned — ${merged.length} item(s) total`
+              : `deadlines rebuilt: ${merged.length} item(s)`);
+            return send(200, { ok: true, mode: scoped ? "update" : "full", count: merged.length, added, changed: changedCount });
           } catch (e) {
             return send(500, { error: `deadline rebuild failed: ${String(e).slice(0, 150)}` });
           }

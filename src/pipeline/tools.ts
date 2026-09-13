@@ -161,12 +161,12 @@ async function execTool(name: string, args: Record<string, unknown>, fallbackSlu
   switch (name) {
     case "list_deadlines": {
       try {
-        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string }[];
+        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string; stale?: number }[];
         if (!Array.isArray(dl) || !dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
         const rows = dl
           .filter((d) => !d.done)
           .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
-          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — [${d.course}] ${d.title} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
+          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — [${d.course}] ${d.title}${d.stale ? " [STALE — not seen in its source at the last update; verify before relying on it]" : ""} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
         return rows.length ? `Open deadlines across all courses (done items already checked off by the student — don't re-suggest those):\n${rows.join("\n")}` : "no open deadlines — everything on the calendar is done";
       } catch { return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)"; }
     }
@@ -247,12 +247,12 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
   switch (name) {
     case "list_deadlines": {
       try {
-        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string }[];
+        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string; stale?: number }[];
         if (!Array.isArray(dl) || !dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
         const rows = dl
           .filter((d) => d.course === slug && !d.done)
           .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
-          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — ${d.title} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
+          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — ${d.title}${d.stale ? " [STALE — not seen in its source at the last update; verify before relying on it]" : ""} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
         return rows.length ? `Open deadlines for this course (done items already checked off by the student):\n${rows.join("\n")}` : "all deadlines for this course are done (or none exist)";
       } catch { return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)"; }
     }
