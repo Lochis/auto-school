@@ -48,6 +48,15 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
     await cal.click({ timeout: 10_000 }).catch((e) => console.warn(`[meetings] rail click soft-fail: ${String(e).slice(0, 80)}`));
   }
   console.log("[meetings] Calendar rail clicked");
+  // auto-click Microsoft's consent screen ("Almost there! … additional permissions … Calendar")
+  for (let i = 0; i < 4; i++) {
+    const btn = await page.getByRole("button", { name: /continue/i }).first().isVisible({ timeout: 1500 }).catch(() => false);
+    if (btn) {
+      console.log("[meetings] consent dialog detected — clicking Continue");
+      await page.getByRole("button", { name: /continue/i }).first().click({ timeout: 5_000 }).catch(() => {});
+      await page.waitForTimeout(3_000);
+    } else break;
+  }
   await page.screenshot({ path: outPath("calendar-view.png") }).catch(() => {});
   // wait for the OWA calendar frame to appear AND have content
   // (Teams loads slowly on a throttled pod — splash screens + spinners
