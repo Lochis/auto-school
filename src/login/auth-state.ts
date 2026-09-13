@@ -109,24 +109,34 @@ export async function detectState(page: Page): Promise<AuthState> {
 // ─── Handlers ──────────────────────────────────────────────────────────
 // Each handler returns true if it advanced the flow (caller should poll again).
 
-export async function handleConsent(page: Page): Promise<boolean> {
+export async function handleConsent(page: Page, creds?: { email: string; password: string }): Promise<boolean> {
   const selectors = [
     (c: Page | import("playwright").Frame) => c.getByRole("button", { name: /continue/i }),
     (c: Page | import("playwright").Frame) => c.locator("button:has-text('Continue')"),
     (c: Page | import("playwright").Frame) => c.locator("[data-testid*='continue'], [aria-label*='continue' i]"),
   ];
+  let clicked = false;
   for (const ctx of [page, ...page.frames()]) {
+    if (clicked) break;
     for (const sel of selectors) {
       const btn = sel(ctx).first();
       if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
         console.log("[auth] consent dialog — clicking Continue");
         await btn.click({ timeout: 5_000 }).catch(() => {});
-        await page.waitForTimeout(2_000);
-        return true;
+        clicked = true;
+        break;
       }
     }
   }
-  return false;
+  if (!clicked) return false;
+  // wait for the post-consent redirect — often lands on school SSO
+  await page.waitForTimeout(4_000);
+  // check if redirected to school SSO login page
+  if (await page.getByText("sign in to your account", { exact: false }).first().isVisible({ timeout: 2_000 }).catch(() => false)) {
+    console.log("[auth] post-consent redirect → school SSO login page");
+    await handleSsoLogin(page, creds?.email ?? "", creds?.password ?? "");
+  }
+  return true;
 }
 
 export async function handleEmail(page: Page, email: string): Promise<boolean> {
@@ -232,17 +242,21 @@ export async function handlePasswordExpired(page: Page): Promise<boolean> {
 }
 
 export async function handleSsoLogin(page: Page, username: string, password: string): Promise<boolean> {
-  // Centennial myLogin or generic school IdP
-  const userInput = page.locator('#centennial_username, input[name="username"], #txtUsername').first();
-  const passInput = page.locator('#centennial_password, input[name="password"], #txtPassword').first();
-  if (!await userInput.isVisible({ timeout: 2_000 }).catch(() => false)) return false;
+  // Centennial myLogin or generic school IdP — fields use placeholder text,
+  // custom IDs, or standard name/type attributes; try several selectors
+  const userInput = page.locator(
+    '#centennial_username, input[name="username"], #txtUsername, input[placeholder*="sername" i], input[type="text"]'
+  ).first();
+  const passInput = page.locator(
+    '#centennial_password, input[name="password"], #txtPassword, input[placeholder*="assword"], input[type="password"]'
+  ).first();
+  if (!await userInput.isVisible({ timeout: 3_000 }).catch(() => false)) return false;
   console.log(`[auth] SSO login page — filling credentials for ${username}`);
   await userInput.fill(username);
   await passInput.fill(password);
-  // click Sign In button
-  const signIn = page.locator('button:has-text("Sign In"), input[type="submit"], button[type="submit"]').first();
+  const signIn = page.locator('button:has-text("Sign In"), input[type="submit"]').first();
   await signIn.click({ timeout: 5_000 }).catch(() => {});
-  await page.waitForTimeout(3_000);
+  await page.waitForTimeout(4_000);
   return true;
 }
 
@@ -258,12 +272,14 @@ export async function handleProcessing(page: Page): Promise<boolean> {
   return true;
 }
 
+let unknownLogs = 0;
 export async function handleUnknown(page: Page): Promise<boolean> {
-  console.log(`[auth] unknown state on ${page.url().slice(0, 80)} — waiting`);
+  if (unknownLogs++ % 5 === 0) console.log(`[auth] unknown state on ${page.url().slice(0, 80)} — waiting (${unknownLogs} polls)`);
   return true;
 }
 
 /** High-level helper: scan main page + all frames for consent dialog, click Continue. */
 export async function dismissConsent(page: Page): Promise<boolean> {
-  return handleConsent(page);
+  const { config } = await import("../config.ts");
+  return handleConsent(page, { email: config.centennialUser || config.email || "", password: config.centennialPassword || config.password || "" });
 }

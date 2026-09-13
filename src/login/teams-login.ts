@@ -8,6 +8,7 @@ import { rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { chromium, type Page, type BrowserContext } from "playwright";
 import { config } from "../config.ts";
+import { notify } from "../notify.ts";
 import { outPath } from "../paths.ts";
 import {
   type AuthState,
@@ -53,37 +54,37 @@ async function findActionablePage(ctx: BrowserContext): Promise<Page | null> {
 
 export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; hold?: boolean } = {}): Promise<LoginResult> {
   const keepOpen = opts.keepOpen || opts.hold;
-  const profileDir = resolve(config.dataDir, "teams-profile");
-  mkdirSync(profileDir, { recursive: true });
-
-  // clear stale locks from previous unclean shutdowns
-  try { rmSync(join(profileDir, "SingletonLock"), { force: true }); } catch { /* */ }
-  try { rmSync(join(profileDir, "SingletonSocket"), { force: true }); } catch { /* */ }
-  try { rmSync(join(profileDir, "SingletonCookie"), { force: true }); } catch { /* */ }
-
-  const ctx = await chromium.launchPersistentContext(profileDir, {
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-gpu",
-      "--use-fake-ui-for-media-stream",
-      "--disable-features=MediaStream",
-    ],
-    ignoreDefaultArgs: ["--enable-automation"],
-    viewport: { width: 1280, height: 800 },
-    timeout: 60_000,
-  }).catch(async (e) => {
-    console.warn(`[login] launch failed (${String(e).slice(0, 90)}) — clearing stale profile locks, retrying`);
+  const profileDir = resolve(config.userDataDir);
+  if (opts.fresh) {
     rmSync(profileDir, { recursive: true, force: true });
-    mkdirSync(profileDir, { recursive: true });
-    return chromium.launchPersistentContext(profileDir, {
-      headless: true,
-      args: ["--no-sandbox", "--disable-gpu", "--use-fake-ui-for-media-stream", "--disable-features=MediaStream"],
-      ignoreDefaultArgs: ["--enable-automation"],
-      viewport: { width: 1280, height: 800 },
-      timeout: 60_000,
-    });
-  });
+    console.log(`[login] wiped profile at ${profileDir}`);
+  }
+
+  const launchOpts: Parameters<typeof chromium.launchPersistentContext>[1] = {
+    headless: false, // headful under Xvfb (entrypoint provides DISPLAY=:99)
+    channel: config.browserChannel, // msedge — Teams blocks vanilla Chromium
+    chromiumSandbox: config.chromiumSandbox, // containers: CHROMIUM_SANDBOX=0
+    env: { ...process.env, PULSE_SINK: process.env.REC_SINK ?? "rec", PULSE_SOURCE: `${process.env.REC_SINK ?? "rec"}.monitor` },
+    timeout: 120_000, // Edge cold-start on a throttled pod can exceed 60s
+    viewport: null,
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--window-size=1920,1080",
+      "--start-maximized",
+      `--disable-extensions-except=${resolve("extension")}`,
+      `--load-extension=${resolve("extension")}`,
+      "--use-fake-ui-for-media-stream",
+    ],
+  };
+  let ctx: BrowserContext;
+  try {
+    ctx = await chromium.launchPersistentContext(profileDir, launchOpts);
+  } catch (e) {
+    // hard-killed Chromium leaves Singleton* symlinks that block relaunch
+    for (const f of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) rmSync(join(profileDir, f), { force: true });
+    console.warn(`[login] launch failed (${String(e).slice(0, 90)}) — cleared stale profile locks, retrying`);
+    ctx = await chromium.launchPersistentContext(profileDir, launchOpts);
+  }
 
   let page = ctx.pages()[0] ?? await ctx.newPage();
   ctx.on("requestfailed", (r) => {
@@ -98,6 +99,8 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
   // credentials
   const email = config.email || "";
   const password = config.password || config.centennialPassword || "";
+  const centennialUser = config.centennialUser || config.email || "";
+  const centennialPassword = config.centennialPassword || config.password || "";
   const totpSecret = config.totpSecret;
   const mfaDeadline = Date.now() + config.mfaWaitMs;
   const started = Date.now();
@@ -105,6 +108,8 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
   let lastState: AuthState = "unknown";
   let sameStateCount = 0;
   let sawLoginUrl = false;
+  let firstTeamsTs: number | undefined; // continuous Teams-presence tracker (session heuristic)
+  let stuckPinged = false;
   let iter = 0;
 
   while (true) {
@@ -125,13 +130,45 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     if (state === lastState) {
       sameStateCount++;
       if (sameStateCount > 30 && state !== "processing" && state !== "mfa-push") {
-        console.log(`[login] stuck in state "${state}" for ${sameStateCount} iterations — taking screenshot and waiting`);
         await page.screenshot({ path: outPath("login-stuck.png") }).catch(() => {});
+        const txt = await page.evaluate(() => document.body?.innerText?.slice(0, 4_000) ?? "").catch(() => "");
+        if (txt) writeFileSync(outPath("login-stuck.txt"), txt);
+        console.log(`[login] stuck in state "${state}" — screenshot+text dumped to out/login-stuck.*`);
+        // one Discord ping with evidence — repeated cycles stay quiet
+        if (!stuckPinged) {
+          stuckPinged = true;
+          const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
+          await notify(`⚠️ **Teams login stuck** in state \`${state}\` for 30+ polls — evidence at /data/out/login-stuck.png + .txt`, shot).catch(() => {});
+        }
         sameStateCount = 0;
       }
     } else {
       sameStateCount = 0;
+      console.log(`[login] state: ${state}`);
       lastState = state;
+    }
+
+    // ── session heuristic (from the original flow): on a Teams URL with no
+    //    sign-in UI and no login-form markers for 20s+ → already logged in.
+    //    Covers new-Teams DOMs whose app shell doesn't match SEL.teamsApp. ──
+    const onTeams = url.startsWith("https://teams.microsoft.com") || url.startsWith("https://teams.cloud.microsoft");
+    if (onTeams && state !== "teams-ready") {
+      const signInUi = await page.getByText("sign in", { exact: false }).first().isVisible({ timeout: 300 }).catch(() => false);
+      const loginForm = await page.locator('input[type="email"], input[type="password"]').first().isVisible({ timeout: 300 }).catch(() => false);
+      if (!signInUi && !loginForm) {
+        firstTeamsTs ??= Date.now();
+        if (Date.now() - firstTeamsTs > 20_000) {
+          console.log("[login] ✓ logged in (heuristic: 20s on Teams, no sign-in UI)");
+          await notify("✅ Teams login **succeeded** (session heuristic)").catch(() => {});
+          if (keepOpen) return { ok: true, method: "session", detail: "session-heuristic", page, ctx };
+          await ctx.close();
+          return { ok: true, method: "session", detail: "session-heuristic" };
+        }
+      } else {
+        firstTeamsTs = undefined;
+      }
+    } else {
+      firstTeamsTs = undefined;
     }
 
     // ── terminal states ──
@@ -153,7 +190,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     // ── handle state ──
     switch (state) {
       case "consent":
-        await handleConsent(page);
+        await handleConsent(page, { email: centennialUser || email, password: centennialPassword || password });
         break;
       case "email":
         if (email) await handleEmail(page, email);
