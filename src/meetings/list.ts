@@ -8,6 +8,7 @@ import type { Page, Frame } from "playwright";
 import { parseCalendar, markInProgress, type Meeting } from "./parse.ts";
 import { notify } from "../notify.ts";
 import { OUT_DIR, outPath } from "../paths.ts";
+import { dismissConsent } from "../login/auth-state.ts";
 
 
 
@@ -48,33 +49,8 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
     await cal.click({ timeout: 10_000 }).catch((e) => console.warn(`[meetings] rail click soft-fail: ${String(e).slice(0, 80)}`));
   }
   console.log("[meetings] Calendar rail clicked");
-  // auto-click Microsoft's consent screen ("Almost there! … additional permissions … Calendar")
-  // the dialog can appear on the main page OR inside the OWA iframe, and may
-  // pop up AFTER the initial click — so we also probe inside the OWA wait loop
-  const dismissConsent = async (where: string, ctx: Page | Frame): Promise<boolean> => {
-    // getByRole misses Teams' custom button components — try multiple selectors
-    const selectors = [
-      ctx.getByRole("button", { name: /continue/i }),
-      ctx.locator("button:has-text('Continue')"),
-      ctx.locator("[data-testid*='continue'], [aria-label*='continue' i]"),
-    ];
-    for (const sel of selectors) {
-      const btn = sel.first();
-      if (await btn.isVisible({ timeout: 800 }).catch(() => false)) {
-        console.log(`[meetings] consent dialog (${where}) — clicking Continue`);
-        await btn.click({ timeout: 5_000 }).catch(() => {});
-        await page.waitForTimeout(3_000);
-        return true;
-      }
-    }
-    return false;
-  };
-  // immediate sweep (dialog may already be visible)
-  for (let i = 0; i < 4; i++) {
-    let hit = await dismissConsent("main page", page);
-    if (!hit) for (const frame of page.frames()) { if (await dismissConsent(`frame ${frame.url().slice(0, 50)}`, frame)) { hit = true; break; } }
-    if (!hit) break;
-  }
+  // consent dialog can appear after rail click — sweep + re-check during OWA wait
+  for (let i = 0; i < 6; i++) { if (!(await dismissConsent(page))) break; }
   await page.screenshot({ path: outPath("calendar-view.png") }).catch(() => {});
   // wait for the OWA calendar frame to appear AND have content
   // (Teams loads slowly on a throttled pod — splash screens + spinners
@@ -82,9 +58,8 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   let calFrame: Frame | null = null;
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    // consent dialog can appear late — keep dismissing while we wait
-    await dismissConsent("main page", page);
-    for (const frame of page.frames()) await dismissConsent(`frame ${frame.url().slice(0, 50)}`, frame);
+    // consent dialog can appear late — dismiss on every iteration
+    await dismissConsent(page);
     calFrame = page.frames().find((f) => f.url().includes("outlook.office.com")) ?? null;
     if (calFrame) {
       // check if the frame actually has calendar content (not just a spinner)
