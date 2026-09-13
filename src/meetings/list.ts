@@ -49,13 +49,29 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   }
   console.log("[meetings] Calendar rail clicked");
   // auto-click Microsoft's consent screen ("Almost there! … additional permissions … Calendar")
-  for (let i = 0; i < 4; i++) {
-    const btn = await page.getByRole("button", { name: /continue/i }).first().isVisible({ timeout: 1500 }).catch(() => false);
-    if (btn) {
-      console.log("[meetings] consent dialog detected — clicking Continue");
+  // the dialog can appear on the main page OR inside the OWA iframe
+  for (let i = 0; i < 6; i++) {
+    let found = false;
+    // check main page first
+    const mainBtn = await page.getByRole("button", { name: /continue/i }).first().isVisible({ timeout: 1200 }).catch(() => false);
+    if (mainBtn) {
+      console.log("[meetings] consent dialog (main page) — clicking Continue");
       await page.getByRole("button", { name: /continue/i }).first().click({ timeout: 5_000 }).catch(() => {});
-      await page.waitForTimeout(3_000);
-    } else break;
+      found = true;
+    } else {
+      // check inside OWA / auth iframes
+      for (const frame of page.frames()) {
+        if (found) break;
+        const fBtn = await frame.getByRole("button", { name: /continue/i }).first().isVisible({ timeout: 1200 }).catch(() => false);
+        if (fBtn) {
+          console.log(`[meetings] consent dialog (frame ${frame.url().slice(0, 60)}) — clicking Continue`);
+          await frame.getByRole("button", { name: /continue/i }).first().click({ timeout: 5_000 }).catch(() => {});
+          found = true;
+        }
+      }
+    }
+    if (!found) break;
+    await page.waitForTimeout(3_000);
   }
   await page.screenshot({ path: outPath("calendar-view.png") }).catch(() => {});
   // wait for the OWA calendar frame to appear AND have content
