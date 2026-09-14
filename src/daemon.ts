@@ -466,8 +466,7 @@ function startController(): void {
           if (!from || !to || !stem) return send(400, { error: "from, to, stem required" });
           if (from === to) return send(400, { error: "session is already in that course" });
           if (!allCourses().includes(to)) return send(404, { error: `unknown course: ${to}` });
-          const safe = (s: string) => s.replace(/[^
- ._-]/g, "");
+          const safe = (s: string) => s.replace(/[^A-Za-z0-9 _.-]/g, "");
           const base = safe(stem).replace(/(__T?\d{6}|\.stale-\d{6})$/, "");
           const esc = safe(stem).replace(/[.\^$*+?()[\]{}|]/g, "\\$&");
           const mine = new RegExp(`^${esc}(__T?\d{6}|\.stale-\d{6})?\.(mp4|webm)$`);
