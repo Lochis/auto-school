@@ -6,14 +6,33 @@ import { t12 } from "@/lib/format";
 import { useRouter } from "next/navigation";
 import type { Session } from "@/lib/data";
 
-/** Player row + purge + manual transcribe. The mp4 has a video track, so it
- *  renders in a <video> element (an <audio> tag shows only the soundtrack). */
-export default function SessionCard({ session, course }: { session: Session; course: string }) {
+/** Player row + purge + manual transcribe + move-to-course. The mp4 has a
+ *  video track, so it renders in a <video> element (an <audio> tag shows only
+ *  the soundtrack). */
+export default function SessionCard({ session, course, courses = [] }: { session: Session; course: string; courses?: string[] }) {
   const [busy, setBusy] = useState(false);
   const [job, setJob] = useState<string | null>(null);
   const [broken, setBroken] = useState(false);
   const [open, setOpen] = useState(false); // player mounts on demand — 20+ concurrent <video> elements crash the page
+  const [moveTo, setMoveTo] = useState("");
+  const [moveMsg, setMoveMsg] = useState("");
   const router = useRouter();
+
+  const move = async () => {
+    if (!moveTo || moveTo === course) return;
+    setBusy(true); setMoveMsg("");
+    try {
+      const r = await fetch("/api/session/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from: course, to: moveTo, stem: session.stem }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { moved?: number; error?: string };
+      if (!r.ok) setMoveMsg(j.error ?? `HTTP ${r.status}`);
+      else { setMoveMsg(""); router.refresh(); }
+    } catch { setMoveMsg("move failed — backend unreachable"); }
+    finally { setBusy(false); }
+  };
 
   const purge = async () => {
     if (!confirm(`Delete this session permanently?\n${session.date} — recording, transcript, notes and timeline.`)) return;
@@ -65,6 +84,16 @@ export default function SessionCard({ session, course }: { session: Session; cou
             {busy ? "…" : session.transcript || session.timeline ? "↻ Re-transcribe" : "✎ Transcribe"}
           </button>
         )}
+        {courses.length > 1 && (
+          <span style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+            <select value={moveTo} onChange={(e) => setMoveTo(e.target.value)} disabled={busy} title="Refile this session to another course">
+              <option value="">move to…</option>
+              {courses.filter((c) => c !== course).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            {moveTo && <button onClick={move} disabled={busy} style={{ fontSize: 12 }}>{busy ? "moving…" : "Move →"}</button>}
+          </span>
+        )}
+        {moveMsg && <span className="muted" style={{ fontSize: 12, color: "#f87171" }}>{moveMsg}</span>}
         <button onClick={purge} disabled={busy} title="Delete the recording and its transcript/notes/timeline">
           {busy ? "deleting…" : "✕ Delete"}
         </button>

@@ -453,6 +453,55 @@ function startController(): void {
         .catch((e) => pushEvent(`Graph approval failed: ${String(e).slice(0, 100)}`));
       return send(202, { ok: true, note: "device code sent to Discord — approve to enable cheap polling" });
     }
+    if (req.method === "POST" && url.pathname === "/session/move") {
+      // refile a session to a different course: mp4/webm + notes + timeline + transcript
+      (async () => {
+        try {
+          const body = await new Promise<Record<string, unknown>>((res) => {
+            let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
+          });
+          const from = String(body.from ?? "");
+          const to = String(body.to ?? "");
+          const stem = String(body.stem ?? "");
+          if (!from || !to || !stem) return send(400, { error: "from, to, stem required" });
+          if (from === to) return send(400, { error: "session is already in that course" });
+          if (!allCourses().includes(to)) return send(404, { error: `unknown course: ${to}` });
+          const safe = (s: string) => s.replace(/[^
+ ._-]/g, "");
+          const base = safe(stem).replace(/(__T?\d{6}|\.stale-\d{6})$/, "");
+          const esc = safe(stem).replace(/[.\^$*+?()[\]{}|]/g, "\\$&");
+          const mine = new RegExp(`^${esc}(__T?\d{6}|\.stale-\d{6})?\.(mp4|webm)$`);
+          let moved = 0;
+          // recordings
+          const fromR = join(RECORDINGS_DIR, safe(from));
+          const toR = join(RECORDINGS_DIR, safe(to));
+          mkdirSync(toR, { recursive: true });
+          for (const f of readdirSync(fromR)) {
+            if (mine.test(f)) { renameSync(join(fromR, f), join(toR, f)); moved++; }
+          }
+          // notes (keyed by day stem — move the whole day set if no sibling recording stays)
+          const fromN = join(NOTES_DIR, safe(from));
+          const toN = join(NOTES_DIR, safe(to));
+          let sameDayLeft = false;
+          try {
+            sameDayLeft = readdirSync(fromR).some((f) => (f.endsWith(".mp4") || f.endsWith(".webm")) && f.replace(/\.(mp4|webm)$/, "").replace(/(__T?\d{6}|\.stale-\d{6})$/, "") === base);
+          } catch { /* dir gone */ }
+          if (!sameDayLeft) {
+            mkdirSync(toN, { recursive: true });
+            try {
+              for (const f of readdirSync(fromN)) {
+                if (["__notes.md", "__running.md", "__timeline.json", "__transcript.md"].some((s) => f === `${base}${s}`)) { renameSync(join(fromN, f), join(toN, f)); moved++; }
+              }
+            } catch { /* dir absent */ }
+          }
+          try { rebuildIndex(); } catch { /* index optional */ }
+          pushEvent(`moved ${moved} file(s): ${stem} ${from} → ${to}`);
+          console.log(`[daemon] session moved: ${stem} ${from} → ${to} (${moved} files)`);
+          return send(200, { ok: true, moved });
+        } catch (e) { return send(500, { error: `move failed: ${String(e).slice(0, 120)}` }); }
+      })();
+      return;
+    }
     if (req.method === "DELETE" && url.pathname === "/session") {
       // purge a session everywhere: mp4(s) + notes + running + timeline + index
       const course = url.searchParams.get("course")?.replace(/[^\w -]/g, "");

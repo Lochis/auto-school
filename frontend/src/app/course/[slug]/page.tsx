@@ -31,6 +31,7 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
   const { slug } = await params;
   const { tab, prompt } = await searchParams;
   if (!courses().includes(slug)) notFound();
+  const all = courses(); // for the session move-to dropdown
   const list = sessions(slug);
   const showMaterials = tab === "materials";
   const showAsk = tab === "ask";
@@ -82,7 +83,7 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
                 const hasText = Boolean(s.transcript || s.timeline);
                 return (
                   <div className="card" key={s.stem}>
-                    <SessionCard session={{ ...s, transcript: hasText ? (s.transcript ?? "timeline") : undefined }} course={slug} />
+                    <SessionCard session={{ ...s, transcript: hasText ? (s.transcript ?? "timeline") : undefined }} course={slug} courses={all} />
                     {s.notes && <LazyNotes course={slug} stem={s.stem} kind="notes" eager />}
                     {hasText && <LazyNotes course={slug} stem={s.stem} kind="transcript" title="Transcript" />}
                   </div>
