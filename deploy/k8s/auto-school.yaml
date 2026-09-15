@@ -114,7 +114,7 @@ spec:
             periodSeconds: 10
           resources:
             requests: { cpu: 500m, memory: 1Gi }
-            limits: { cpu: "2", memory: 4Gi } # headroom for Chromium + ffmpeg bursts
+            limits: { cpu: "4", memory: 4Gi } # headroom for Chromium + ffmpeg bursts (was 2 — cgroup throttling choppy’d audio in 42% of periods)
           volumeMounts:
             - { name: data, mountPath: /data }
             - { name: shm, mountPath: /dev/shm }
