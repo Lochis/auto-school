@@ -62,7 +62,7 @@ spec:
   storageClassName: longhorn
   resources:
     requests:
-      storage: 20Gi # ~100MB consolidated mp4 + notes per class hour
+      storage: 40Gi # expanded on the live PVC 2026-09 (attic cleanup) — keep in sync
 ---
 
 ---
