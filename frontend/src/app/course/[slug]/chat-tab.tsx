@@ -3,7 +3,7 @@
  *  the backend (materials, document bundles, VLM page vision, transcripts).
  *  Assistant messages render as markdown; any material file name it cites
  *  becomes a link that opens an inline previewer. */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -83,6 +83,104 @@ function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClo
   );
 }
 
+/** Build a linkifier with the citation targets precomputed + sorted ONCE —
+ *  calling it per keystroke per message was the main typing-lag source. */
+function makeLinkifier(byPath: Map<string, LexHit[]>, byLeaf: Map<string, LexHit[]>, hints: Record<string, string[]>) {
+  /** pick the right course when a filename exists in several: score hint
+   *  tokens (from the course slug + its meeting titles) found in the text
+   *  just before the citation — longer hits count more */
+  const resolveHit = (cands: LexHit[], context: string): LexHit => {
+    if (cands.length === 1) return cands[0]!;
+    const ctx = context.toLowerCase().slice(-300);
+    let best = cands[0]!;
+    let bestScore = -1;
+    for (const c of cands) {
+      const score = (hints[c.course] ?? []).reduce((s, tok) => s + (ctx.includes(tok) ? tok.length : 0), 0);
+      if (score > bestScore) { best = c; bestScore = score; }
+    }
+    return best;
+  };
+  const linkFor = (leaf: string, hit: LexHit): string =>
+    `[${leaf}](#doc:${encodeURIComponent(hit.course + "/" + hit.path)})`;
+  // all known citations (full paths + bare leaves), longest first — a
+  // single left-to-right scan never re-enters inserted link text, so a
+  // leaf that's part of a longer path can't nest inside its own link
+  const targets = [...byPath, ...byLeaf].sort((a, b) => b[0].length - a[0].length);
+  const linkifySegment = (seg: string): string => {
+    let out = "";
+    let i = 0;
+    while (i < seg.length) {
+      let hit = false;
+      for (const [name, cands] of targets) {
+        if (name && seg.startsWith(name, i)) {
+          out += linkFor(name, resolveHit(cands, seg.slice(0, i)));
+          i += name.length;
+          hit = true;
+          break;
+        }
+      }
+      if (!hit) { out += seg[i]!; i++; }
+    }
+    return out;
+  };
+  return (md: string): string => md
+    .split(/(`+[^`\n]+`+)/g)
+    .map((seg, i) => {
+      if (i % 2 === 0) return linkifySegment(seg);
+      const inner = seg.replace(/^`+|`+$/g, "");
+      const direct = byPath.get(inner) ?? byLeaf.get(inner);
+      if (direct) return linkFor(inner, resolveHit(direct, seg));
+      // cited as a code span WITH its folder path — match on the basename,
+      // but only when a known hit actually lives at that path
+      if (inner.includes("/")) {
+        const base = inner.slice(inner.lastIndexOf("/") + 1);
+        const bc = byLeaf.get(base);
+        if (bc?.some((h) => h.path === inner)) return linkFor(inner, resolveHit(bc, seg));
+      }
+      return seg;
+    })
+    .join("");
+}
+
+/** One chat message. Memoized: typing in the input must NOT re-run
+ *  linkify + markdown + syntax-highlight for every rendered message. */
+const MessageRow = memo(function MessageRow({ m, linkify, onOpenPreview }: { m: Msg; linkify: (md: string) => string; onOpenPreview: (hash: string) => void }) {
+  // linkified markdown computed once per message content
+  const body = useMemo(() => linkify(m.content), [linkify, m.content]);
+  // stable renderer config — a fresh object every render defeats memo downstream
+  const mdComponents = useMemo(() => ({
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => href?.startsWith("#doc:") ? (
+      <a href="#" onClick={(e) => { e.preventDefault(); onOpenPreview(href); }}
+         style={{ color: "#7dc4ff", textDecoration: "underline dotted" }}>{children} 👁</a>
+    ) : (
+      <a href={href} target="_blank" rel="noreferrer">{children}</a>
+    ),
+  }), [onOpenPreview]);
+  return (
+    <div className="card" style={{
+      marginBottom: 8,
+      marginLeft: m.role === "user" ? "18%" : 0,
+      marginRight: m.role === "assistant" ? "12%" : 0,
+      background: m.role === "user" ? "#223049" : undefined,
+    }}>
+      <strong style={{ fontSize: 12, color: m.role === "user" ? "#2563eb" : "#059669" }}>
+        {m.role === "user" ? "you" : "assistant"}
+      </strong>
+      {m.role === "assistant" ? (
+        <div className="notes" style={{ marginTop: 4, fontSize: 14 }}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+            components={mdComponents}
+          >{body}</ReactMarkdown>
+        </div>
+      ) : (
+        <p style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>{m.content}</p>
+      )}
+    </div>
+  );
+});
+
 export default function ChatTab({ slug, initialPrompt }: { slug?: string; initialPrompt?: string }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -149,68 +247,9 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     return m;
   }, [slug, materials, lexicon]);
 
-  /** pick the right course when a filename exists in several: score hint
-   *  tokens (from the course slug + its meeting titles) found in the text
-   *  just before the citation — longer hits count more */
-  const resolveHit = (cands: LexHit[], context: string): LexHit => {
-    if (cands.length === 1) return cands[0]!;
-    const ctx = context.toLowerCase().slice(-300);
-    let best = cands[0]!;
-    let bestScore = -1;
-    for (const c of cands) {
-      const score = (hints[c.course] ?? []).reduce((s, tok) => s + (ctx.includes(tok) ? tok.length : 0), 0);
-      if (score > bestScore) { best = c; bestScore = score; }
-    }
-    return best;
-  };
-
-  const linkFor = (leaf: string, hit: LexHit): string =>
-    `[${leaf}](#doc:${encodeURIComponent(hit.course + "/" + hit.path)})`;
-
-  /** wrap known file names in markdown links pointing at the previewer.
-   *  Code spans are protected (markdown inside them renders literally) — but
-   *  a code span containing EXACTLY a known filename is the model citing it,
-   *  so it becomes a link too. */
-  const linkify = (md: string): string => {
-    const linkifySegment = (seg: string): string => {
-      // all known citations (full paths + bare leaves), longest first — a
-      // single left-to-right scan never re-enters inserted link text, so a
-      // leaf that's part of a longer path can't nest inside its own link
-      const targets = [...byPath, ...byLeaf].sort((a, b) => b[0].length - a[0].length);
-      let out = "";
-      let i = 0;
-      while (i < seg.length) {
-        let hit = false;
-        for (const [name, cands] of targets) {
-          if (name && seg.startsWith(name, i)) {
-            out += linkFor(name, resolveHit(cands, seg.slice(0, i)));
-            i += name.length;
-            hit = true;
-            break;
-          }
-        }
-        if (!hit) { out += seg[i]!; i++; }
-      }
-      return out;
-    };
-    return md
-      .split(/(`+[^`\n]+`+)/g)
-      .map((seg, i) => {
-        if (i % 2 === 0) return linkifySegment(seg);
-        const inner = seg.replace(/^`+|`+$/g, "");
-        const direct = byPath.get(inner) ?? byLeaf.get(inner);
-        if (direct) return linkFor(inner, resolveHit(direct, seg));
-        // cited as a code span WITH its folder path — match on the basename,
-        // but only when a known hit actually lives at that path
-        if (inner.includes("/")) {
-          const base = inner.slice(inner.lastIndexOf("/") + 1);
-          const bc = byLeaf.get(base);
-          if (bc?.some((h) => h.path === inner)) return linkFor(inner, resolveHit(bc, seg));
-        }
-        return seg;
-      })
-      .join("");
-  };
+  /** linkifier built ONCE per materials/lexicon load (targets precomputed
+   *  + sorted) — not per message per render */
+  const linkify = useMemo(() => makeLinkifier(byPath, byLeaf, hints), [byPath, byLeaf, hints]);
 
   const send = async (override?: string): Promise<void> => {
     const message = (override ?? input).trim();
@@ -240,12 +279,12 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     setMessages([]);
   };
 
-  const openPreview = (hash: string): void => {
+  const openPreview = useCallback((hash: string): void => {
     const raw = decodeURIComponent(hash.slice(5));
     const sep = raw.indexOf("/");
     if (sep < 0) return;
     setPreview({ course: raw.slice(0, sep), path: raw.slice(sep + 1) });
-  };
+  }, []);
 
   // auto-send once when navigated here with ?prompt=… (deadline "ask AI" links)
   const lastSent = useRef<string | undefined>(undefined);
@@ -282,35 +321,8 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
             </p>
           </div>
         )}
-        {messages.map((m, i) => (
-          <div key={i} className="card" style={{
-            marginBottom: 8,
-            marginLeft: m.role === "user" ? "18%" : 0,
-            marginRight: m.role === "assistant" ? "12%" : 0,
-            background: m.role === "user" ? "#223049" : undefined,
-          }}>
-            <strong style={{ fontSize: 12, color: m.role === "user" ? "#2563eb" : "#059669" }}>
-              {m.role === "user" ? "you" : "assistant"}
-            </strong>
-            {m.role === "assistant" ? (
-              <div className="notes" style={{ marginTop: 4, fontSize: 14 }}>
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[[rehypeHighlight, { detect: false }]]}
-                  components={{
-                    a: ({ href, children }) => href?.startsWith("#doc:") ? (
-                      <a href="#" onClick={(e) => { e.preventDefault(); openPreview(href); }}
-                         style={{ color: "#7dc4ff", textDecoration: "underline dotted" }}>{children} 👁</a>
-                    ) : (
-                      <a href={href} target="_blank" rel="noreferrer">{children}</a>
-                    ),
-                  }}
-                >{linkify(m.content)}</ReactMarkdown>
-              </div>
-            ) : (
-              <p style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>{m.content}</p>
-            )}
-          </div>
+        {messages.map((m) => (
+          <MessageRow key={m.at ?? m.content.slice(0, 32)} m={m} linkify={linkify} onOpenPreview={openPreview} />
         ))}
         {busy && <p className="muted" style={{ margin: "4px 0" }}>thinking (may read documents / view pages{webSearch ? " / search the web" : ""})…</p>}
         {err && <p style={{ color: "#b91c1c", margin: "4px 0" }}>{err}</p>}

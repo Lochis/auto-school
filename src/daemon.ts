@@ -958,28 +958,11 @@ function startController(): void {
             let body: Record<string, unknown> = {};
             try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
             // ── toggle done-ness by id (survives rebuilds) ──
-            if (typeof body.id === "string" && body.userNote === undefined) {
-              const dl = readDl();
-              const it = dl.find((d) => d.id === body.id);
-              if (!it) return send(404, { error: "no such deadline id" });
-              it.done = body.done !== false; // default true; explicit false un-checks
-              it.doneAt = it.done ? Date.now() : null;
-              writeDl(dl);
-              return send(200, { ok: true, deadlines: dl });
-            }
-            // ── student context note (group members, roles, …) by id ──
-            if (typeof body.id === "string" && typeof body.userNote === "string") {
-              const dl = readDl();
-              const it = dl.find((d) => d.id === body.id);
-              if (!it) return send(404, { error: "no such deadline id" });
-              const v = body.userNote.trim().slice(0, 2000);
-              if (v) it.userNote = v; else delete it.userNote; // empty clears
-              writeDl(dl);
-              return send(200, { ok: true, deadlines: dl });
-            }
             // ── manual date override: { id, due?, startBy?, revert? } ──
             // professor moved the due date → user sets it by hand; survives
             // rebuilds (merge keeps it, sweep can't clobber). revert clears it.
+            // NOTE: must come BEFORE the done-toggle branch — its guard
+            // (userNote === undefined) would otherwise swallow {id, due} bodies.
             if (typeof body.id === "string" && ("due" in body || "startBy" in body || body.revert === true)) {
               const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
               if ("due" in body && body.due !== null && !DATE_RE.test(String(body.due)))
@@ -998,6 +981,25 @@ function startController(): void {
                 it.dueManual = true;
                 it.confidence = "high"; // human-confirmed beats document text
               }
+              writeDl(dl);
+              return send(200, { ok: true, deadlines: dl });
+            }
+            if (typeof body.id === "string" && body.userNote === undefined) {
+              const dl = readDl();
+              const it = dl.find((d) => d.id === body.id);
+              if (!it) return send(404, { error: "no such deadline id" });
+              it.done = body.done !== false; // default true; explicit false un-checks
+              it.doneAt = it.done ? Date.now() : null;
+              writeDl(dl);
+              return send(200, { ok: true, deadlines: dl });
+            }
+            // ── student context note (group members, roles, …) by id ──
+            if (typeof body.id === "string" && typeof body.userNote === "string") {
+              const dl = readDl();
+              const it = dl.find((d) => d.id === body.id);
+              if (!it) return send(404, { error: "no such deadline id" });
+              const v = body.userNote.trim().slice(0, 2000);
+              if (v) it.userNote = v; else delete it.userNote; // empty clears
               writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
             }
