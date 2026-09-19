@@ -16,16 +16,21 @@ export const SEL = {
     "keep you signed in",
     "stay signed in to all your apps",
   ],
-  // account picker ("Pick an account") tiles contain the email as text
-  accountTile: '[role="option"], [role="button"], [data-test-id]', // fallback: text match on email
+  // account picker ("Pick an account"): tiles in #tilesContainer (current MS
+  // DOM); email-matching happens in the handler via :has-text()
+  accountTiles: '#tilesContainer [role="button"], #TilesContainer [role="button"], [role="option"]',
+  useAnotherAccount: '#otherTile, [role="button"]:has-text("another account"), a:has-text("another account")',
 
-  // --- MFA indicators (any one visible => 2FA flow is active) ---
-  mfa: [
-    "#idTxtBx_SAOTCC_OTC", // "Enter the code" (SMS/email OTP)
+  // --- MFA indicators ---
+  // panels that PROVE an MFA flow is active (any one visible ⇒ 2FA underway).
+  // NOTE: #idRichContext_DisplaySign is number-matching PUSH, not TOTP —
+  // it lives in mfaNumberMatch and routes to handleMfaPush.
+  mfaPanels: [
+    "#idTxtBx_SAOTCC_OTC", // "Enter the code" (SMS/email OTP + TOTP)
     "#idDiv_SAOTCS_Description", // "Verify your identity" panel
     "#idDiv_SAOTCS_TitleMsg", // title variant
-    "#idRichContext_DisplaySign", // Authenticator number-matching: the number to match
   ],
+  mfaNumberMatch: "#idRichContext_DisplaySign", // Authenticator number-matching: the number to enter on the phone
   mfaText: [
     "verify your identity",
     "enter the code",

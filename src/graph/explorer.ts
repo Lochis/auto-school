@@ -30,6 +30,7 @@ interface GraphEvent {
   start?: { dateTime: string; timeZone?: string };
   end?: { dateTime: string; timeZone?: string };
   onlineMeeting?: { joinUrl?: string };
+  error?: string;
 }
 
 export async function listViaGraph(ctx: BrowserContext, days = 7): Promise<ExplorerEvent[]> {
@@ -77,7 +78,7 @@ export async function listViaGraph(ctx: BrowserContext, days = 7): Promise<Explo
       throw new Error(`Graph API error: ${json.value[0].error}`);
     }
 
-    const values = json.value ?? [];
+    const values: GraphEvent[] = json.value ?? [];
     const out: ExplorerEvent[] = [];
     for (const e of values) {
       const joinUrl = e.onlineMeeting?.joinUrl;

@@ -167,7 +167,7 @@ export async function startRecording(page: Page, meetingTitle: string, joinUrl?:
         // audio here (verified). Real audio = parecord on the pulse sink monitor.
         audio: false,
         preferCurrentTab: true,            // self-capture: the ONLY choice is this tab
-      });
+      } as unknown as DisplayMediaStreamOptions);
       (window as any).__recStream = stream;
       const vs = stream.getVideoTracks()[0]?.getSettings?.() ?? {};
       console.log(`[rec] captured ${vs.width}x${vs.height}@${vs.frameRate}`);

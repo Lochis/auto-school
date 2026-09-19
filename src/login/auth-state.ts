@@ -17,11 +17,13 @@ import { generateTotp } from "./totp.ts";
 // ─── State union ───────────────────────────────────────────────────────
 export type AuthState =
   | "teams-ready"        // on teams.microsoft.com with app shell — done
+  | "re-auth"            // Teams shell visible but session expired ("sign in again" banner)
   | "consent"            // "Almost there! … additional permissions" dialog
   | "email"              // email input
   | "password"           // password input
   | "account-picker"     // "Pick an account" tiles
-  | "mfa-push"           // "Approve sign in request" (Authenticator push)
+  | "mfa-chooser"        // "sign in another way" / "I can't use my Authenticator"
+  | "mfa-push"           // "Approve sign in request" (Authenticator push, incl. number matching)
   | "mfa-totp"           // TOTP / verification code input
   | "kmsi"               // "Stay signed in?" prompt
   | "security-wizard"    // "Let's keep your account secure" setup
@@ -55,6 +57,13 @@ export async function detectState(page: Page): Promise<AuthState> {
 
   // ── Teams ready ──
   if (url.startsWith("https://teams.microsoft.com") || url.startsWith("https://teams.cloud.microsoft")) {
+    // The "We need you to sign in again" banner may render in a shadow DOM or
+    // custom element that getByText can't reach. Fall back to innerText search.
+    const needsReauth = await page.evaluate(() => {
+      const t = document.body?.innerText ?? "";
+      return /sign in again/i.test(t) && /sign in/i.test(t);
+    }).catch(() => false);
+    if (needsReauth) return "re-auth";
     const hasShell = await page.locator(SEL.teamsApp.join(", ")).first().isVisible({ timeout: 1_200 }).catch(() => false);
     if (hasShell) return "teams-ready";
   }
@@ -80,13 +89,18 @@ export async function detectState(page: Page): Promise<AuthState> {
   if (await vis(page, [SEL.password])) return "password";
 
   // ── Account picker ──
-  if (await visText(page, ["pick an account", "choose an account"])) return "account-picker";
+  if (await visText(page, ["pick an account", "choose an account", "which account do you want"])) return "account-picker";
+
+  // ── MFA: method chooser ("sign in another way" / can't use authenticator) ──
+  if (await visText(page, [...MS_MFA.cantUseAuthenticator, "additional sign in methods"])) return "mfa-chooser";
+
+  // ── MFA: push approval (incl. number matching) ──
+  if (await visText(page, ["approve sign in request", "approve a request", "enter the number displayed"])) return "mfa-push";
+  if (await vis(page, [SEL.mfaNumberMatch])) return "mfa-push"; // number-matching sign element
 
   // ── MFA: TOTP / verification code input ──
-  if (await vis(page, [MS_MFA.totpInput, ...SEL.mfa])) return "mfa-totp";
-
-  // ── MFA: push approval ──
-  if (await visText(page, ["approve sign in request", "approve a request"])) return "mfa-push";
+  if (await vis(page, [MS_MFA.totpInput, ...SEL.mfaPanels])) return "mfa-totp";
+  if (await visText(page, ["enter the code", "verification code", "one-time password"])) return "mfa-totp";
 
   // ── KMSI: stay signed in ──
   if (await visText(page, SEL.staySignedInText)) {
@@ -162,23 +176,43 @@ export async function handlePassword(page: Page, password: string): Promise<bool
   return true;
 }
 
-export async function handleAccountPicker(page: Page): Promise<boolean> {
-  // click the first visible account tile
-  const tile = page.locator(SEL.accountTile).first();
-  if (!await tile.isVisible({ timeout: 2_000 }).catch(() => false)) return false;
-  console.log("[auth] clicking account tile");
-  await tile.click({ timeout: 5_000 }).catch(() => {});
-  await page.waitForTimeout(2_000);
-  return true;
+export async function handleAccountPicker(page: Page, email?: string): Promise<boolean> {
+  // Try, in order:
+  //  1. a tile whose text contains the student's email (exact account)
+  //  2. any tile inside the tiles container / role=option / tile div
+  //  3. text-based locator on the email
+  // Falls back to "Use another account" only when explicitly requested
+  // (handled by caller) — picking the wrong generic button can loop.
+  const candidates: import("playwright").Locator[] = [];
+  if (email) {
+    candidates.push(page.locator(`[role="button"]:has-text("${email}"), [role="option"]:has-text("${email}"), div[id="tilesContainer"] div:has-text("${email}")`).first());
+  }
+  candidates.push(page.locator(SEL.accountTiles).first());
+  if (email) candidates.push(page.getByText(email, { exact: false }).first());
+
+  for (const tile of candidates) {
+    if (await tile.isVisible({ timeout: 1_500 }).catch(() => false)) {
+      console.log(`[auth] account picker — clicking tile${email ? " for " + email : ""}`);
+      await tile.click({ timeout: 5_000 }).catch(() => {});
+      await page.waitForTimeout(2_000);
+      return true;
+    }
+  }
+  console.log("[auth] account picker — no clickable tile found");
+  return false;
 }
 
 export async function handleMfaPush(page: Page, notified: { current: boolean }): Promise<boolean> {
-  if (!await visText(page, ["approve sign in request", "approve a request"])) return false;
+  const isPush = (await visText(page, ["approve sign in request", "approve a request"])) || (await vis(page, [SEL.mfaNumberMatch]));
+  if (!isPush) return false;
   if (!notified.current) {
-    console.log("[auth] MFA push detected — waiting for approval on phone");
+    // number matching: relay the on-screen number so it can be entered on the phone
+    const numTxt = await page.locator(SEL.mfaNumberMatch).first().innerText({ timeout: 1_000 }).catch(() => "");
+    const num = numTxt.match(/\d+/)?.[0];
+    console.log(`[auth] MFA push detected${num ? ` (number matching: ${num})` : ""} — waiting for approval on phone`);
     const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
     await notify(
-      "⏳ **Teams login: approve the sign-in request on your Microsoft Authenticator app** — waiting up to 10 min.",
+      `⏳ **Teams login: approve the sign-in request on your Microsoft Authenticator app**${num ? ` — enter **${num}** in the app` : ""} — waiting up to 10 min.`,
       shot,
     ).catch(() => {});
     notified.current = true;
@@ -186,11 +220,49 @@ export async function handleMfaPush(page: Page, notified: { current: boolean }):
   return true; // keep polling — caller manages deadline
 }
 
-export async function handleMfaTotp(page: Page, totpSecret: string | undefined): Promise<boolean> {
+/** MFA method chooser ("sign in another way" / "I can't use my Authenticator").
+ *  If a TOTP secret is configured, switch to verification-code entry — the
+ *  only method we can complete hands-free. Otherwise ping the user once. */
+export async function handleMfaChooser(page: Page, totpSecret: string | undefined, notified: { current: boolean }): Promise<boolean> {
+  // step 1: the "can't use authenticator" link → opens the method list
+  const alt = page.getByText(MS_MFA.cantUseAuthenticator[0], { exact: false })
+    .or(page.getByText("sign in another way", { exact: false })).first();
+  if (await alt.isVisible({ timeout: 800 }).catch(() => false)) {
+    console.log("[auth] MFA chooser — opening alternative sign-in methods");
+    await alt.click({ timeout: 3_000 }).catch(() => {});
+    await page.waitForTimeout(2_000);
+    return true; // next poll picks up the method list
+  }
+  // step 2: method list — pick verification code when we can auto-fill it
+  if (totpSecret) {
+    for (const t of MS_MFA.useVerificationCode) {
+      const opt = page.getByText(t, { exact: false }).first();
+      if (await opt.isVisible({ timeout: 800 }).catch(() => false)) {
+        console.log("[auth] MFA chooser — switching to verification code (TOTP configured)");
+        await opt.click({ timeout: 3_000 }).catch(() => {});
+        await page.waitForTimeout(2_000);
+        return true; // next poll → mfa-totp fills the code
+      }
+    }
+  }
+  if (!notified.current) {
+    const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
+    await notify("⚠️ **Teams login: MFA method chooser** — no auto-fillable option (TOTP_SECRET not set). Pick a method manually or set TOTP_SECRET.", shot).catch(() => {});
+    notified.current = true;
+  }
+  return true;
+}
+
+export async function handleMfaTotp(page: Page, totpSecret: string | undefined, notified?: { current: boolean }): Promise<boolean> {
   const totpInput = page.locator(MS_MFA.totpInput).first();
   if (!await totpInput.isVisible({ timeout: 1_500 }).catch(() => false)) return false;
   if (!totpSecret) {
-    console.log("[auth] TOTP input visible but no TOTP_SECRET set — cannot auto-fill");
+    if (!notified?.current) {
+      console.log("[auth] TOTP input visible but no TOTP_SECRET set — pinging user for the code");
+      const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
+      await notify("🔢 **Teams login: a verification code is required** — TOTP_SECRET is not set, so it can't be auto-filled. Enter the code manually (or set TOTP_SECRET).", shot).catch(() => {});
+      if (notified) notified.current = true;
+    }
     return true; // keep polling in case it resolves another way
   }
   console.log("[auth] filling TOTP code");
@@ -230,8 +302,21 @@ export async function handleKmsi(page: Page): Promise<boolean> {
   return true;
 }
 
+export async function handleReAuth(page: Page): Promise<boolean> {
+  // Click "Sign in" on the red banner: "We need you to sign in again…"
+  const btn = page.getByRole("button", { name: /sign in/i }).first();
+  if (await btn.isVisible({ timeout: 1_000 }).catch(() => false)) {
+    console.log("[auth] session expired — clicking Sign in on re-auth banner");
+    await btn.click({ timeout: 5_000 }).catch(() => {});
+    await page.waitForTimeout(3_000);
+    return true;
+  }
+  console.log("[auth] re-auth state detected but no Sign in button found");
+  return false;
+}
+
 export async function handleSecurityWizard(page: Page): Promise<boolean> {
-  const skip = page.getByText("don't add anything now", { exact: false }).first();
+  const skip = page.getByText("don't add anything now", { exact: false }).first().or(page.getByText("Not now", { exact: true }).first());
   if (await skip.isVisible({ timeout: 1_000 }).catch(() => false)) {
     console.log("[auth] skipping security wizard");
     await skip.click({ timeout: 3_000 }).catch(() => {});
@@ -273,7 +358,28 @@ export async function handleSsoLogin(page: Page, username: string, password: str
   return true;
 }
 
-export async function handleAuthFailure(page: Page): Promise<boolean> {
+export async function handleAuthFailure(page: Page, email?: string, password?: string): Promise<boolean> {
+  // If the SSO page shows "Authentication Failed" but also has a login form,
+  // the previous attempt failed — fill credentials and retry instead of
+  // re-navigating to Teams (which just loops back here).
+  if (email && password) {
+    const userInput = page.locator(
+      '#centennial_username, input[name="username"], #txtUsername, input[placeholder*="sername" i], input[type="text"]'
+    ).first();
+    const passInput = page.locator(
+      '#centennial_password, input[name="password"], #txtPassword, input[placeholder*="assword"], input[type="password"]'
+    ).first();
+    if (await userInput.isVisible({ timeout: 1_000 }).catch(() => false)) {
+      console.log(`[auth] auth-failure but login form visible — retrying SSO with ${email}`);
+      await userInput.fill("").catch(() => {});
+      await userInput.fill(email);
+      await passInput.fill(password);
+      const signIn = page.locator('button:has-text("Sign In"), input[type="submit"]').first();
+      await signIn.click({ timeout: 5_000 }).catch(() => {});
+      await page.waitForTimeout(4_000);
+      return true;
+    }
+  }
   console.log("[auth] authentication failed on SSO — re-navigating to Teams");
   await page.goto("https://teams.microsoft.com", { waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
   await page.waitForTimeout(3_000);

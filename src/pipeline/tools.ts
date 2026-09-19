@@ -29,6 +29,39 @@ const COURSE_PARAM = {
   description: "course slug — required in the all-courses chat, optional per-course",
 };
 
+/** Firecrawl base URL (self-hosted by default; override via FIRECRAWL_BASE). */
+const webBase = (): string | undefined => process.env.FIRECRAWL_BASE?.trim() || undefined;
+
+const WEB_TOOL_DEFS = [
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the public web (titles, URLs, snippets). Use when the course materials don't cover the question (external background, API/library docs, current info). Always prefer course materials when they answer the question.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "search query" },
+          limit: { type: "number", description: "max results (default 5, max 8)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_read",
+      description: "Fetch one web page as markdown (after web_search, to read a promising result). Cite the source URL in your answer when you use web content.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string", description: "http(s) URL to read" } },
+        required: ["url"],
+      },
+    },
+  },
+] as const;
+
 export const TOOL_DEFS = [
   {
     type: "function",
@@ -78,7 +111,7 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "read_document",
-      description: "Read the text of a material file. Pass a page number for one page, or omit it for the whole document (truncated if long). PDF/DOCX/text supported.",
+      description: "Read the text of a material file. Pass a page number for one page, or omit it for the whole document (truncated if long). Supports PDF, DOCX, spreadsheets, and plain text / code / config files (.txt, .md, .csv, .json, .xml, .yml, .config, .cs, .csproj, .py, .sql, …).",
       parameters: {
         type: "object",
         properties: {
@@ -132,6 +165,10 @@ export const TOOL_DEFS = [
   },
 ];
 
+/** All tools including web search (opt-in — the chat endpoints add these
+ *  only when the request sets webSearch: true). */
+export const TOOL_DEFS_WITH_WEB = [...TOOL_DEFS, ...WEB_TOOL_DEFS];
+
 /** Scan the notes + recordings dirs (NOT sessions.json — the journal only
  *  tracks recordings, and pruned/failed sessions would vanish from chat). */
 export function scanCourseSessions(slug: string): { stem: string; recording?: string; notes?: string; running?: string; transcript?: string; timeline?: string }[] {
@@ -154,11 +191,47 @@ export function scanCourseSessions(slug: string): { stem: string; recording?: st
   return [...out.values()].sort((a, b) => b.stem.localeCompare(a.stem));
 }
 
-async function execTool(name: string, args: Record<string, unknown>, fallbackSlug?: string): Promise<string> {
+export async function execTool(name: string, args: Record<string, unknown>, fallbackSlug?: string): Promise<string> {
   // course scoping: explicit tool arg wins, else the chat's own course
   // (all-courses chat passes none — the model must name the course)
   const slug = typeof args.course === "string" && args.course.trim() ? args.course.trim() : fallbackSlug;
   switch (name) {
+    case "web_search": {
+      const query = String(args.query ?? "").trim();
+      if (!query) return "query required";
+      const base = webBase();
+      if (!base) return "web search disabled — FIRECRAWL_BASE not set";
+      try {
+        const res = await fetch(`${base}/v2/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.FIRECRAWL_KEY ?? "selfhosted"}` },
+          body: JSON.stringify({ query, limit: Math.min(Number(args.limit ?? 5) || 5, 8) }),
+        });
+        if (!res.ok) return `web_search ${res.status}: ${(await res.text()).slice(0, 120)}`;
+        const j = (await res.json()) as { data?: { web?: { url: string; title: string; description: string }[] } };
+        const hits = j.data?.web ?? [];
+        if (!hits.length) return `no web results for "${query}"`;
+        return hits.map((h) => `- ${h.title}\n  ${h.url}\n  ${h.description?.slice(0, 200) ?? ""}`).join("\n");
+      } catch (e) { return `web_search failed: ${String(e).slice(0, 120)}`; }
+    }
+    case "web_read": {
+      const url = String(args.url ?? "").trim();
+      if (!/^https?:\/\//.test(url)) return "url required (http/https)";
+      const base = webBase();
+      if (!base) return "web read disabled — FIRECRAWL_BASE not set";
+      try {
+        const res = await fetch(`${base}/v2/scrape`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.FIRECRAWL_KEY ?? "selfhosted"}` },
+          body: JSON.stringify({ url, formats: ["markdown"] }),
+        });
+        if (!res.ok) return `web_read ${res.status}: ${(await res.text()).slice(0, 120)}`;
+        const j = (await res.json()) as { data?: { markdown?: string } };
+        const md = (j.data?.markdown ?? "").trim();
+        if (!md) return `no readable content at ${url}`;
+        return md.length > 20_000 ? md.slice(0, 20_000) + "\n…(truncated)" : md;
+      } catch (e) { return `web_read failed: ${String(e).slice(0, 120)}`; }
+    }
     case "list_deadlines": {
       try {
         const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string; stale?: number }[];

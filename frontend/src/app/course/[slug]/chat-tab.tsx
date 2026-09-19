@@ -90,6 +90,11 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   const [hints, setHints] = useState<Record<string, string[]>>({});
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [webSearch, setWebSearch] = useState(false);
+  useEffect(() => { setWebSearch(localStorage.getItem("askWebSearch") === "1"); }, []);
+  const toggleWeb = (): void => {
+    setWebSearch((w) => { localStorage.setItem("askWebSearch", w ? "0" : "1"); return !w; });
+  };
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState<{ course: string; path: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -218,7 +223,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
       const r = await fetch(slug ? `/api/courses/${encodeURIComponent(slug)}/chat` : "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, webSearch }),
       });
       const j = (await r.json().catch(() => ({}))) as { reply?: string; error?: string };
       if (!r.ok || !j.reply) setErr(j.error ?? `HTTP ${r.status}`);
@@ -307,7 +312,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
             )}
           </div>
         ))}
-        {busy && <p className="muted" style={{ margin: "4px 0" }}>thinking (may read documents / view pages)…</p>}
+        {busy && <p className="muted" style={{ margin: "4px 0" }}>thinking (may read documents / view pages{webSearch ? " / search the web" : ""})…</p>}
         {err && <p style={{ color: "#b91c1c", margin: "4px 0" }}>{err}</p>}
         <div ref={bottomRef} />
       </div>
@@ -322,6 +327,15 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
         />
         <button onClick={() => void send()} disabled={busy || !input.trim()}>Send</button>
         <button onClick={() => void clear()} title="Clear chat history">✕</button>
+        <button
+          onClick={toggleWeb}
+          title={webSearch ? "Web search ON — the assistant may also search the public web for background (course materials still take priority)" : "Web search OFF — only course materials are used as context"}
+          style={{
+            border: webSearch ? "1px solid #059669" : "1px solid #555",
+            color: webSearch ? "#059669" : "#888",
+            fontWeight: webSearch ? 600 : 400,
+          }}
+        >🌐 {webSearch ? "Web on" : "Web off"}</button>
       </div>
     </div>
   );

@@ -31,7 +31,7 @@ import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
 import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
 import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
-import { TOOL_DEFS, runTool, allCourses } from "./pipeline/tools.ts";
+import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
 import { ensureIndex, indexDir } from "./pipeline/docindex.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
@@ -739,6 +739,19 @@ function startController(): void {
         // date: explicit > week-derived (Monday of week N) > today
         const cfg = getCourseConfig(course);
         let date = field("date");
+        // filename wins if it carries a timestamp (auto-school webm stem or
+        // Teams-style suffix ...-20260917_103216-...): hand-named files then
+        // land on the right day without touching the form
+        let seqFromFile = NaN;
+        const mIso = file.name!.match(/(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+        const mTeams = file.name!.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+        if (mIso) {
+          date = `${mIso[1]}-${mIso[2]}-${mIso[3]}`;
+          seqFromFile = Number(`${mIso[4]}${mIso[5]}${mIso[6]}`);
+        } else if (mTeams) {
+          date = `${mTeams[1]}-${mTeams[2]}-${mTeams[3]}`;
+          seqFromFile = Number(`${mTeams[4]}${mTeams[5]}${mTeams[6]}`);
+        }
         const week = Number(field("week"));
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
           if (Number.isFinite(week) && week >= 1 && cfg && /^\d{4}-\d{2}-\d{2}$/.test(cfg.semesterStart)) {
@@ -753,10 +766,12 @@ function startController(): void {
         mkdirSync(join(NOTES_DIR, course), { recursive: true });
         const stem = `${date}__${course}`;
         // unique 6-digit time suffix — collisions bump to the next "second"
-        let seq = Number(new Date().toLocaleTimeString("en-CA", { hour12: false, timeZone: "America/Toronto" }).replace(/:/g, ""));
+        // filename timestamp > upload clock
+        let seq = Number.isFinite(seqFromFile) ? seqFromFile : Number(new Date().toLocaleTimeString("en-CA", { hour12: false, timeZone: "America/Toronto" }).replace(/:/g, ""));
         if (!Number.isFinite(seq)) seq = 0;
-        let mp4name = `${stem}__${String(seq).padStart(6, "0")}.mp4`;
-        while (existsSync(join(rdir, mp4name))) mp4name = `${stem}__${String(++seq).padStart(6, "0")}.mp4`;
+        let mp4name = `${stem}__${String(seq).padStart(6, "0")}`;
+        while (existsSync(join(rdir, mp4name + ".mp4")) || existsSync(join(rdir, mp4name + ".webm"))) mp4name = `${stem}__${String(++seq).padStart(6, "0")}`;
+        mp4name += file.name!.match(/\.webm$/i) ? ".webm" : ".mp4";
 
         // move the streamed temp files into place (no RAM copies)
         placePart(fileP!.path!, join(rdir, mp4name));
@@ -916,7 +931,7 @@ function startController(): void {
     // ── deadlines (AI-built calendar of due dates + spread-out items) ──
     if (url.pathname === "/deadlines") {
       const DEADLINES = join(config.userDataDir, "deadlines.json");
-      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string; stale?: number };
+      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string; dueManual?: boolean; stale?: number };
       const readDl = (): Dl[] => {
         try {
           const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
@@ -959,6 +974,30 @@ function startController(): void {
               if (!it) return send(404, { error: "no such deadline id" });
               const v = body.userNote.trim().slice(0, 2000);
               if (v) it.userNote = v; else delete it.userNote; // empty clears
+              writeDl(dl);
+              return send(200, { ok: true, deadlines: dl });
+            }
+            // ── manual date override: { id, due?, startBy?, revert? } ──
+            // professor moved the due date → user sets it by hand; survives
+            // rebuilds (merge keeps it, sweep can't clobber). revert clears it.
+            if (typeof body.id === "string" && ("due" in body || "startBy" in body || body.revert === true)) {
+              const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+              if ("due" in body && body.due !== null && !DATE_RE.test(String(body.due)))
+                return send(400, { error: "due must be YYYY-MM-DD or null" });
+              if ("startBy" in body && body.startBy !== null && !DATE_RE.test(String(body.startBy)))
+                return send(400, { error: "startBy must be YYYY-MM-DD or null" });
+              const dl = readDl();
+              const it = dl.find((d) => d.id === body.id);
+              if (!it) return send(404, { error: "no such deadline id" });
+              if (body.revert === true) {
+                delete it.dueManual;
+                it.confidence = "medium"; // until the next rebuild re-extracts
+              } else {
+                if ("due" in body) it.due = body.due === null ? null : String(body.due);
+                if ("startBy" in body) it.startBy = body.startBy === null ? null : String(body.startBy);
+                it.dueManual = true;
+                it.confidence = "high"; // human-confirmed beats document text
+              }
               writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
             }
@@ -1117,6 +1156,7 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
               if (exact) {
                 it.id = exact.id; it.done = exact.done; it.doneAt = exact.doneAt;
                 if (exact.userNote) it.userNote = exact.userNote;
+                if (exact.dueManual) { it.due = exact.due; it.startBy = exact.startBy; it.dueManual = true; it.confidence = "high"; }
                 pool.splice(pool.indexOf(exact), 1);
                 continue;
               }
@@ -1125,7 +1165,9 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 const p = pool[i];
                 if (p.course !== it.course || p.kind !== it.kind) continue;
                 const sameDue = p.due === it.due;
-                if (!sameDue && p.due && it.due) continue; // both dated but different days → different tasks
+                // manual dates shouldn't block identity — the whole point of the
+                // override is that it differs from what the documents say
+                if (!sameDue && p.due && it.due && !p.dueManual) continue; // both dated but different days → different tasks
                 const sv = sim(p.title, it.title) * (sameDue ? 1 : 0.85);
                 const need = sameDue ? 0.5 : 0.7;
                 if (sv > bs && sv >= need && sameTask(p.title, it.title)) { bs = sv; bi = i; }
@@ -1134,6 +1176,7 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 const p = pool.splice(bi, 1)[0];
                 it.id = p.id; it.done = p.done; it.doneAt = p.doneAt;
                 if (p.userNote) it.userNote = p.userNote;
+                if (p.dueManual) { it.due = p.due; it.startBy = p.startBy; it.dueManual = true; it.confidence = "high"; }
               }
             }
             // fresh ids for anything unmatched — these are the NEW items
@@ -1397,6 +1440,8 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
             try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
             const message = String(body.message ?? "").trim();
             if (!message) return send(400, { error: "message required" });
+            const webSearch = body.webSearch === true;
+            const tools = webSearch ? TOOL_DEFS_WITH_WEB : TOOL_DEFS;
             const history = loadChat();
             history.push({ role: "user", content: message, at: new Date().toISOString() });
 
@@ -1404,18 +1449,27 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
 Start broad: list_deadlines, week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
-Read enough of the actual materials to answer concretely — never guess what a file contains. Cite EXACT file names so they can be previewed. If nothing exists for a week/course, say so honestly.
+Read enough of the actual materials to answer concretely — never guess what a file contains. Cite EXACT file names so they can be previewed. If nothing exists for a week/course, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
             const convo: ChatMsg[] = [
               { role: "system", content: systemPrompt },
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
             let reply = "";
+            let webReads = 0;
             for (let step = 0; step < 12; step++) {
-              const msg = await glmChatRaw(convo, TOOL_DEFS);
+              const msg = await glmChatRaw(convo, tools);
               if (msg.tool_calls?.length) {
                 convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
                 for (const tc of msg.tool_calls) {
+                  if ((tc.function.name === "web_search" || tc.function.name === "web_read") && !webSearch) {
+                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web tools are disabled for this chat" });
+                    continue;
+                  }
+                  if (tc.function.name === "web_read" && ++webReads > 4) {
+                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web_read limit reached (4) — answer with what you have" });
+                    continue;
+                  }
                   const result = await runTool(tc);
                   pushEvent(`global chat tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
                   convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
@@ -1472,6 +1526,8 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
             const message = String(body.message ?? "").trim();
             if (!message) return send(400, { error: "message required" });
+            const webSearch = body.webSearch === true;
+            const tools = webSearch ? TOOL_DEFS_WITH_WEB : TOOL_DEFS;
             const history = loadChat();
             history.push({ role: "user", content: message, at: new Date().toISOString() });
 
@@ -1480,7 +1536,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar for THIS course (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
-Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.
+Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 
             const convo: ChatMsg[] = [
@@ -1488,11 +1544,20 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
             let reply = "";
+            let webReads = 0;
             for (let step = 0; step < 8; step++) {
-              const msg = await glmChatRaw(convo, TOOL_DEFS);
+              const msg = await glmChatRaw(convo, tools);
               if (msg.tool_calls?.length) {
                 convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
                 for (const tc of msg.tool_calls) {
+                  if ((tc.function.name === "web_search" || tc.function.name === "web_read") && !webSearch) {
+                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web tools are disabled for this chat" });
+                    continue;
+                  }
+                  if (tc.function.name === "web_read" && ++webReads > 4) {
+                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web_read limit reached (4) — answer with what you have" });
+                    continue;
+                  }
                   const result = await runTool(tc, slug);
                   pushEvent(`chat tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
                   convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });

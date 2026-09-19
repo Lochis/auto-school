@@ -22,6 +22,7 @@ export interface DeadEntry {
   done?: boolean;
   doneAt?: number | null;
   userNote?: string;
+  dueManual?: boolean;
 }
 
 export interface ChecklistItem {
@@ -88,6 +89,9 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const [addText, setAddText] = useState<Record<string, string>>({});
   const [noteEdit, setNoteEdit] = useState<string | null>(null);
   const [noteText, setNoteText] = useState<string>("");
+  const [dateEdit, setDateEdit] = useState<string | null>(null);
+  const [dateVal, setDateVal] = useState<string>("");
+  const [startByVal, setStartByVal] = useState<string>("");
 
   useEffect(() => setItems(initial), [initial]);
 
@@ -152,6 +156,29 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
     }).then((r) => r.json())
       .then((j: { deadlines?: DeadEntry[] }) => { if (j.deadlines) setItems(j.deadlines); }) // server truth (IDs may have merged)
       .catch(() => { /* keep optimistic state */ });
+  };
+
+  const saveDates = async (it: DeadEntry): Promise<void> => {
+    setDateEdit(null);
+    const body: Record<string, unknown> = { id: it.id, due: dateVal.trim() || null };
+    if (startByVal.trim()) body.startBy = startByVal.trim();
+    // optimistic
+    setItems((m) => m.map((x) => (x.id === it.id ? { ...x, due: (body.due as string | null), startBy: startByVal.trim() || null, dueManual: true, confidence: "high" } : x)));
+    try {
+      const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
+      if (j.deadlines) setItems(j.deadlines); // server truth
+    } catch { /* keep optimistic state */ }
+  };
+
+  const revertDate = async (it: DeadEntry): Promise<void> => {
+    setDateEdit(null);
+    setItems((m) => m.map((x) => (x.id === it.id ? { ...x, dueManual: undefined, confidence: "medium" } : x)));
+    try {
+      const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: it.id, revert: true }) });
+      const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
+      if (j.deadlines) setItems(j.deadlines);
+    } catch { /* keep optimistic state */ }
   };
 
   const open = items.filter((i) => !i.done);
@@ -257,7 +284,17 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
         <div style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "3px 0", flexWrap: "wrap" }}>
           <input type="checkbox" checked={!!it.done} onChange={() => toggle(it.id)} style={{ accentColor: "#4ade80", transform: "translateY(1px)" }} aria-label={`mark ${it.title} done`} />
           <span style={{ fontSize: 13 }}>{KIND_ICON[it.kind] ?? "📌"}</span>
-          <span className="muted" style={{ fontSize: 12, minWidth: 120 }}>{it.due ? fmtDue(it.due) : it.startBy ? `start by ${it.startBy}` : "no date"}</span>
+          <span className="muted" style={{ fontSize: 12, minWidth: 120 }}>
+            {it.due ? fmtDue(it.due) : it.startBy ? `start by ${it.startBy}` : "no date"}
+            {it.dueManual && <span title="date set manually — survives rebuilds" style={{ color: "#e0af68" }}> ✎</span>}
+          </span>
+          <button
+            onClick={() => { setDateEdit(dateEdit === it.id ? null : it.id); setDateVal(it.due ?? ""); setStartByVal(it.startBy ?? ""); }}
+            title="change the due date (professor moved it, doc was wrong…) — kept across rebuilds"
+            style={{ all: "unset", cursor: "pointer", fontSize: 12, color: it.dueManual ? "#e0af68" : undefined }}
+          >
+            📅
+          </button>
           <Link href={`/course/${encodeURIComponent(it.course)}`} title={it.course} style={{ fontSize: 11, color: "#94a3b8", border: "1px solid #444", borderRadius: 4, padding: "0 5px", textDecoration: "none" }}>{courseCode(it.course)}</Link>
           <span style={{ fontSize: 14, color: hot ? "#f87171" : undefined, fontWeight: hot ? 600 : undefined, textDecoration: it.done ? "line-through" : undefined }}>{it.title}</span>
           {ck && (
@@ -284,6 +321,15 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
             <span className="muted" style={{ fontSize: 12, color: "#e0af68" }} title={it.userNote}>📋 {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
           )}
         </div>
+        {dateEdit === it.id && (
+          <div style={{ margin: "2px 0 6px 26px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
+            <label>due <input type="date" value={dateVal} onChange={(e) => setDateVal(e.target.value)} style={{ fontSize: 12 }} /></label>
+            <label className="muted">start by <input type="date" value={startByVal} onChange={(e) => setStartByVal(e.target.value)} style={{ fontSize: 12 }} /></label>
+            <button onClick={() => void saveDates(it)}>Save</button>
+            <button onClick={() => setDateEdit(null)} style={{ fontSize: 12 }}>Cancel</button>
+            {it.dueManual && <button onClick={() => void revertDate(it)} title="drop the manual override; next rebuild re-extracts from course docs" style={{ fontSize: 12 }}>revert to auto</button>}
+          </div>
+        )}
         {noteEdit === it.id && (
           <div style={{ margin: "2px 0 6px 26px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
             <textarea

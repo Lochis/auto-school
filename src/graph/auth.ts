@@ -46,7 +46,7 @@ async function tokenRequest(body: Record<string, string>): Promise<TokenCache> {
 
 function save(t: TokenCache) {
   mkdirSync(dirname(tokenPath), { recursive: true });
-  writeFileSync(tokenPath, JSON.stringify(t, { spaces: 2 }));
+  writeFileSync(tokenPath, JSON.stringify(t, null, 2));
 }
 
 /** Get a valid access token: cached -> refresh -> device-code interactive. */

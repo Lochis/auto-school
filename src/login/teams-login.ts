@@ -17,9 +17,11 @@ import {
   handleEmail,
   handlePassword,
   handleAccountPicker,
+  handleMfaChooser,
   handleMfaPush,
   handleMfaTotp,
   handleKmsi,
+  handleReAuth,
   handleSecurityWizard,
   handlePasswordExpired,
   handleSsoLogin,
@@ -104,9 +106,10 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
   const totpSecret = config.totpSecret;
   const mfaDeadline = Date.now() + config.mfaWaitMs;
   const started = Date.now();
-  let mfaPushNotified = false;
+  let mfaPushNotified = { current: false };
   let lastState: AuthState = "unknown";
   let sameStateCount = 0;
+  let sameAuthFailures = 0;
   let sawLoginUrl = false;
   let firstTeamsTs: number | undefined; // continuous Teams-presence tracker (session heuristic)
   let stuckPinged = false;
@@ -126,10 +129,25 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     // detect current state
     const state = await detectState(page);
 
+    // track auth-failure loops (account-picker → auth-failure → re-navigate → unknown → repeat)
+    // "unknown" and "account-picker" appear between auth-failures during redirects — don't reset
+    // the counter on those transitional states, only on genuinely different login states.
+    if (state === "auth-failure") {
+      sameAuthFailures++;
+      if (sameAuthFailures >= 5) {
+        const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
+        await notify(`🚨 **Teams login failing repeatedly** — ${sameAuthFailures} consecutive SSO auth failures. Password may be wrong/expired.`, shot).catch(() => {});
+        await ctx.close();
+        return { ok: false, method: "fresh", detail: `SSO auth failed ${sameAuthFailures} times in a row` };
+      }
+    } else if (state !== "unknown" && state !== "account-picker" && state !== "processing") {
+      sameAuthFailures = 0;
+    }
+
     // track stuck states
     if (state === lastState) {
       sameStateCount++;
-      if (sameStateCount > 30 && state !== "processing" && state !== "mfa-push") {
+      if (sameStateCount > 30 && state !== "processing" && state !== "mfa-push" && state !== "mfa-chooser" && state !== "password-expired") {
         await page.screenshot({ path: outPath("login-stuck.png") }).catch(() => {});
         const txt = await page.evaluate(() => document.body?.innerText?.slice(0, 4_000) ?? "").catch(() => "");
         if (txt) writeFileSync(outPath("login-stuck.txt"), txt);
@@ -153,7 +171,9 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     //    Covers new-Teams DOMs whose app shell doesn't match SEL.teamsApp. ──
     const onTeams = url.startsWith("https://teams.microsoft.com") || url.startsWith("https://teams.cloud.microsoft");
     if (onTeams && state !== "teams-ready") {
-      const signInUi = await page.getByText("sign in", { exact: false }).first().isVisible({ timeout: 300 }).catch(() => false);
+      // Check for the "We need you to sign in again" banner — if present, the
+      // session is expired even though the shell loaded. Don't declare logged in.
+      const signInUi = await page.evaluate(() => /sign in/i.test(document.body?.innerText ?? "")).catch(() => false);
       const loginForm = await page.locator('input[type="email"], input[type="password"]').first().isVisible({ timeout: 300 }).catch(() => false);
       if (!signInUi && !loginForm) {
         firstTeamsTs ??= Date.now();
@@ -201,16 +221,22 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
         else { await ctx.close(); return { ok: false, method: "fresh", detail: "no password configured" }; }
         break;
       case "account-picker":
-        await handleAccountPicker(page);
+        await handleAccountPicker(page, email);
         break;
       case "mfa-push":
         await handleMfaPush(page, mfaPushNotified);
         break;
+      case "mfa-chooser":
+        await handleMfaChooser(page, totpSecret, mfaPushNotified);
+        break;
       case "mfa-totp":
-        await handleMfaTotp(page, totpSecret);
+        await handleMfaTotp(page, totpSecret, mfaPushNotified); // same once-only ping guard
         break;
       case "kmsi":
         await handleKmsi(page);
+        break;
+      case "re-auth":
+        await handleReAuth(page);
         break;
       case "security-wizard":
         await handleSecurityWizard(page);
@@ -223,7 +249,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
         else { await ctx.close(); return { ok: false, method: "fresh", detail: "SSO login page but no credentials configured" }; }
         break;
       case "auth-failure":
-        await handleAuthFailure(page);
+        await handleAuthFailure(page, email, password);
         break;
       case "processing":
         await handleProcessing(page);

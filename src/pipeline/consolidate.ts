@@ -18,7 +18,7 @@ function run(cmd: string, args: string[]): Promise<{ code: number; err: string }
     const p = spawn(cmd, args);
     let err = "";
     p.stderr.on("data", (d) => (err += d));
-    p.on("close", (code) => res({ code, err: err.slice(-500) }));
+    p.on("close", (code) => res({ code: code ?? -1, err: err.slice(-500) }));
     p.on("error", (e) => res({ code: -1, err: String(e) }));
   });
 }

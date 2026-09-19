@@ -22,7 +22,10 @@ const run = (cmd: string, args: string[]): Promise<{ code: number | null; out: s
     p.on("error", (e) => res({ code: -1, out, err: String(e) }));
   });
 
-const TEXTUAL = new Set([".md", ".txt", ".csv", ".json", ".ts", ".js", ".py", ".sql", ".xml", ".yml", ".yaml", ".log"]);
+const TEXTUAL = new Set([".md", ".txt", ".csv", ".json", ".ts", ".tsx", ".js", ".jsx", ".py", ".sql", ".xml", ".yml", ".yaml", ".log",
+  // config + C# project files (COMP306 example projects etc.)
+  ".config", ".cs", ".cshtml", ".razor", ".csproj", ".sln", ".props", ".targets", ".resx",
+  ".ini", ".toml", ".env", ".sh", ".ps1", ".html", ".htm", ".css", ".java", ".cpp", ".cc", ".h", ".hpp", ".go", ".rs", ".rb", ".php"]);
 const SHEETLY = new Set([".xlsx", ".xls"]);
 const pageNum = (f: string): number => Number(f.match(/page-(\d+)\.txt$/)?.[1] ?? 0);
 

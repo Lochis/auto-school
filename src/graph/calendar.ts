@@ -29,7 +29,7 @@ function parseTime(v: { DateTime: string; TimeZone?: string } | string): number 
  * clicks. When a GetCalendarEvent response arrives, scan its HTML Body for
  * Teams meetup-join URLs. We don't make any calls — just read what OWA fetched.
  */
-export function startNetworkHarvest(page: Page): () => CalendarEvent[] {
+export function startNetworkHarvest(page: Page): () => Promise<CalendarEvent[]> {
   const captured: unknown[] = [];
 
   page.on("response", async (resp) => {
