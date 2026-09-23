@@ -99,6 +99,7 @@ spec:
           imagePullPolicy: Always # mutable tag — always re-check on pod start
           env:
             - { name: TZ, value: America/Toronto } # school-day logic is date-scoped
+            - { name: REBUILD_AT, value: "07:00,19:00" } # calendar rebuild wall-clock anchors (local TZ); unset → interval mode
           envFrom:
             - secretRef: { name: auto-school-env }
           ports:

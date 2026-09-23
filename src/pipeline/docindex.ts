@@ -6,7 +6,7 @@
  * uploads stay instant and untouched docs never burn CPU/vision quota.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { MATERIALS_DIR } from "./materials.ts";
 import { listSessions } from "./sessions.ts";
@@ -86,16 +86,34 @@ async function docxToPdf(src: string, dir: string): Promise<string | null> {
   }
 }
 
+/** Source fingerprint — mtime+size. A mismatch (file replaced/re-uploaded)
+ *  invalidates the bundle; the next read rebuilds it lazily. */
+const srcStamp = (src: string): string => {
+  try { const st = statSync(src); return `${st.mtimeMs}:${st.size}`; } catch { return "gone"; }
+};
 /** Build the bundle if missing. Returns page count, or 0 when unsupported. */
 export async function ensureIndex(course: string, rel: string): Promise<number> {
   if (!supportsIndex(rel)) return 0;
   const dir = indexDir(course, rel);
   const src = join(MATERIALS_DIR(course), rel);
   if (!existsSync(src)) return 0;
+  // stale check: source changed under an existing bundle ⇒ wipe, rebuild lazily
+  let fresh = false;
+  try { fresh = readFileSync(join(dir, ".src"), "utf8") === srcStamp(src); } catch { /* no marker */ }
+  if (!fresh && (pagesOnDisk(dir) > 0 || existsSync(join(dir, ".textonly")))) {
+    console.log(`[docindex] source changed — rebuilding index for ${rel}`);
+    rmSync(dir, { recursive: true, force: true });
+  }
   const deferred = existsSync(join(dir, ".textonly")); // text-only fallback — upgrade when possible
   const existing = pagesOnDisk(dir);
-  if (existing > 0 && !deferred) return existing;
+  if (existing > 0 && !deferred && fresh) return existing;
   mkdirSync(dir, { recursive: true });
+  const built = await buildBundle(src, dir, rel);
+  if (built > 0) writeFileSync(join(dir, ".src"), srcStamp(src)); // stamp AFTER build: a crash mid-build leaves no marker → retry next read
+  return built;
+}
+
+async function buildBundle(src: string, dir: string, rel: string): Promise<number> {
   const ext = extname(rel).toLowerCase();
 
   if (ext === ".pdf") {
@@ -144,6 +162,13 @@ export async function ensureIndex(course: string, rel: string): Promise<number> 
   writeFileSync(join(dir, "page-1.txt"), readFileSync(src, "utf8"));
   return 1;
 }
+
+/** True when an existing bundle matches the current source fingerprint.
+ *  Used by the docx-twin pass to skip docs whose twin is already current. */
+export const bundleFresh = (course: string, rel: string): boolean => {
+  try { return readFileSync(join(indexDir(course, rel), ".src"), "utf8") === srcStamp(join(MATERIALS_DIR(course), rel)); }
+  catch { return false; }
+};
 
 const pagesOnDisk = (dir: string): number => {
   try { return readdirSync(dir).filter((f) => /^page-\d+\.txt$/.test(f)).length; } catch { return 0; }

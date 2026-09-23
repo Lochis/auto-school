@@ -9,6 +9,7 @@ export interface Status {
   online?: boolean;
   state?: string;
   activity?: string;
+  joinPaused?: boolean;
   detail?: Record<string, string | number>;
   events?: { ts: string; msg: string }[];
   sessions?: { stem: string; title: string; stage: string; stageNote?: string; segCount?: number; mp4?: string; sizeMB?: number; updatedAt: number }[];

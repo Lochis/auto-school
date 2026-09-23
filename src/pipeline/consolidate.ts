@@ -109,7 +109,12 @@ export async function consolidateSession(
   // (individual webm segments report bogus durations, but the concatenated
   // container carries an accurate one)
   const got = await durationSec(out);
-  if (expectedSec && Math.abs(got - expectedSec) > 5) {
+  // PROPORTIONAL tolerance: each 5-min rotation loses ~0.3s to the
+  // MediaRecorder stop/start gap (measured: 23 segs / 111 min = 8s drift), so
+  // an absolute ±5s fails every class longer than ~85 min. 0.2% (min 5s)
+  // passes healthy drift while catastrophic loss (half a class) still fails.
+  const tolerance = Math.max(5, (expectedSec ?? 0) * 0.002);
+  if (expectedSec && Math.abs(got - expectedSec) > tolerance) {
     console.warn(`[consolidate] ! duration mismatch (wall-clock ${expectedSec.toFixed(0)}s vs webm ${got.toFixed(0)}s) — raw segments kept`);
     await notify(`⚠️ Consolidation duration mismatch for **${paths.course.name}** — raw segments kept`);
     return null;

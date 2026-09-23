@@ -27,6 +27,9 @@ export interface Settings {
   geminiModels: string;
   /** join this many minutes before class start */
   joinEarlyMinutes: number;
+  /** suppress auto-join entirely (told professors you'll be absent) — scan
+   *  and schedule building continue, join windows are skipped */
+  joinPaused: boolean;
 }
 
 /** clamped integer from env, or a default */
@@ -45,6 +48,7 @@ export function defaultSettings(): Settings {
     geminiModels: (process.env.GEMINI_MODELS ?? "gemini-3.6-flash,gemini-3-flash-preview,gemini-2.5-flash")
       .split(",").map((m) => m.trim()).filter(Boolean).join(","),
     joinEarlyMinutes: envNum("JOIN_EARLY_MINUTES", 3, 0, 30),
+    joinPaused: false,
   };
 }
 
@@ -226,6 +230,7 @@ export function applySettingsPatch(body: Record<string, unknown>): { prev: Setti
     ...(num(body.batchSegments, 1, 6) !== undefined ? { batchSegments: num(body.batchSegments, 1, 6)! } : {}),
     ...(num(body.transcribeBatch, 1, 9) !== undefined ? { transcribeBatch: num(body.transcribeBatch, 1, 9)! } : {}),
     ...(num(body.joinEarlyMinutes, 0, 30) !== undefined ? { joinEarlyMinutes: num(body.joinEarlyMinutes, 0, 30)! } : {}),
+    ...("joinPaused" in body ? { joinPaused: !!body.joinPaused } : {}),
     ...(chain ? { geminiModels: chain } : {}), // commas-only input can't wipe the chain
     ...(gk !== undefined ? { geminiApiKey: gk } : {}), // "" clears the override → env
     ...(lk !== undefined ? { glmApiKey: lk } : {}),

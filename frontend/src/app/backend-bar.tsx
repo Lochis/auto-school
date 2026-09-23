@@ -46,6 +46,22 @@ export default function BackendBar() {
 
   const refresh = () => tick();
 
+  const setPaused = async (paused: boolean) => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fetch("/api/backend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused }),
+      });
+      setMsg((await r.json()).note ?? null);
+      refresh();
+    } catch {
+      setMsg("backend unreachable");
+    }
+    setBusy(false);
+  };
+
   const scan = async (reset: boolean) => {
     setBusy(true); setMsg(null);
     try {
@@ -73,8 +89,21 @@ export default function BackendBar() {
         <span style={{ fontWeight: 700, fontSize: "1.05rem" }}>
           {online ? `● ${status?.activity ?? status?.state ?? "…"}` : "○ backend offline"}
         </span>
+        {status?.joinPaused && (
+          <span style={{ padding: "2px 10px", borderRadius: 999, background: "rgba(255,120,120,0.12)", border: "1px solid rgba(255,120,120,0.35)", color: "#ff9a9a", fontWeight: 600, fontSize: 13 }}>
+            ⛔ auto-join paused
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         {status?.lastScan && <span className="muted">scanned {clock(status.lastScan!)}</span>}
+        <button
+          onClick={() => setPaused(!status?.joinPaused)}
+          disabled={busy}
+          style={status?.joinPaused ? { borderColor: "rgba(255,120,120,0.5)" } : undefined}
+          title={status?.joinPaused ? "Resume automatic joining" : "Pause joining — daemon will NOT enter meetings (absence mode)"}
+        >
+          {status?.joinPaused ? "▶ Resume joining" : "⏸ Pause joining"}
+        </button>
         <button onClick={() => scan(true)} disabled={busy} title="Rescan now AND re-attend already-handled titles">Scan (reset)</button>
         <button onClick={() => scan(false)} disabled={busy} title="Rescan now, skip handled titles">Scan</button>
       </div>

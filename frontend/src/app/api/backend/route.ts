@@ -1,8 +1,9 @@
 /** Proxy to the backend daemon's controller (same pod → 127.0.0.1).
  *  GET → /status   (may answer {online:false} if the daemon is down/restarting)
- *  POST → /scan    body {reset?, leave?, join?, authGraph?} — rescan now;
+ *  POST → /scan    body {reset?, leave?, join?, authGraph?, paused?} — rescan now;
  *                 reset re-attends same-titled meetings (test workflow);
- *                 authGraph starts the one-time Graph device-code approval. */
+ *                 authGraph starts the one-time Graph device-code approval;
+ *                 paused toggles auto-join suppression (absence mode). */
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +20,17 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { reset?: boolean; leave?: boolean; join?: string; authGraph?: boolean };
+  const body = (await req.json().catch(() => ({}))) as { reset?: boolean; leave?: boolean; join?: string; authGraph?: boolean; paused?: boolean };
   try {
+    if (typeof body.paused === "boolean") {
+      const res = await fetch(`${BASE}/pause`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused: body.paused }),
+        signal: AbortSignal.timeout(3000),
+      });
+      return NextResponse.json(await res.json());
+    }
     if (body.authGraph) {
       const res = await fetch(`${BASE}/auth/graph`, { method: "POST", signal: AbortSignal.timeout(3000) });
       return NextResponse.json(await res.json(), { status: res.status });

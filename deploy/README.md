@@ -81,7 +81,9 @@ instead of orphaning the session.)
 | `USER_DATA_DIR` | `/data/user-data` | Chromium profile (MFA state) |
 | `CHROMIUM_SANDBOX` | `0` | no unprivileged userns in default seccomp |
 | `TZ` | `America/Toronto` | dated filenames use local dates |
-| `POLL_MINUTES` | `2` | daemon calendar poll cadence |
+| `POLL_MINUTES` | `2` | legacy poll cadence (schedule-driven mode ignores it) |
+| `REBUILD_AT` | `07:00,19:00` | wall-clock rebuild anchors (pod TZ, comma-separated `HH:MM`) — wins over interval mode |
+| `REBUILD_MINUTES` | `720` | interval between rebuilds when `REBUILD_AT` is unset (12h default) |
 | `CONTROLLER_PORT` | `7800` | daemon HTTP control: `/healthz`, `/status`, `POST /scan?reset=1`, `POST /leave`, `GET/PUT /settings`, `POST /auth/graph` (same-pod localhost; the frontend proxies it at `/api/backend`) |
 | `DISCOVERY_SECONDS` | `60` | Graph polling cadence — cheap HTTP, no browser |
 | `JOIN_EARLY_MINUTES` | `3` | join this long before a meeting starts |

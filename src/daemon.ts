@@ -32,7 +32,7 @@ import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } f
 import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
 import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
-import { ensureIndex, indexDir } from "./pipeline/docindex.ts";
+import { ensureIndex, indexDir, bundleFresh } from "./pipeline/docindex.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
@@ -176,7 +176,26 @@ function attendedToday(): string[] {
 
 let schedule: Sched[] = [];
 let scheduleBuiltAt = 0;
-const REBUILD_MS = (Number(process.env.REBUILD_MINUTES ?? 360) || 360) * 60_000;
+/** Rebuild policy: REBUILD_AT="HH:MM[,HH:MM]" (local wall-clock anchors, e.g.
+ *  "07:00,19:00") wins; otherwise interval every REBUILD_MINUTES (default
+ *  360) since the last build. Anchors use the pod's TZ (America/Toronto). */
+function nextRebuildAt(): number {
+  const anchors = (process.env.REBUILD_AT ?? "")
+    .split(",").map((s) => s.trim()).filter((s) => /^\d{1,2}:\d{2}$/.test(s))
+    .map((s) => { const [h, m] = s.split(":").map(Number); return { h: Math.min(h, 23), m: Math.min(m, 59) }; });
+  const now = new Date();
+  const today = (h: number, m: number): number => new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m).getTime();
+  for (const a of anchors.sort((x, y) => x.h * 60 + x.m - (y.h * 60 + y.m))) {
+    const t = today(a.h, a.m);
+    if (t > scheduleBuiltAt && t > Date.now() - 5 * 60_000) return t; // next anchor still ahead today
+  }
+  if (anchors.length) return today(anchors[0].h, anchors[0].m) + 24 * 3_600_000; // tomorrow's first anchor
+  return scheduleBuiltAt + (Number(process.env.REBUILD_MINUTES ?? 720) || 720) * 60_000; // interval default: 12h
+}
+/** interval-mode gap in minutes, for the startup log line */
+function nextRebuildGapMin(): number {
+  return Number(process.env.REBUILD_MINUTES ?? 720) || 720;
+}
 
 /** Write calendar-events.txt so the frontend calendar works in Graph mode too. */
 function writeCalendarDump(evs: Sched[]): void {
@@ -316,7 +335,10 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
         // heavy post-processing runs in the background (no page needed)
         const { result: done, postProcess } = handle;
         void postProcess().then(() => {
-          setActivity("idle — post-processing complete", { meeting: title });
+          // a background completion must never clobber a NEWER live session's
+          // activity (back-to-back classes: this fires while the next class is
+          // already recording) — only speak up when idle or still on this one
+          if (!active || active.title === title) setActivity("idle — post-processing complete", { meeting: title });
           console.log(`[daemon] recording done: ${done.segments.length} segment(s), ${(done.bytes / 1e6).toFixed(0)} MB, ${Math.round(done.ms / 60000)} min`);
           notify(`⏹️ Recording ended: **${title}** — ${done.segments.length} segment(s), ${Math.round(done.ms / 60000)} min`).catch(() => {});
         }).catch((e) => {
@@ -424,6 +446,7 @@ function startController(): void {
     if (req.method === "GET" && url.pathname === "/status") {
       return send(200, {
           state, lastScan, seen: lastSeen, handled: [...handled],
+          joinPaused: getSettings().joinPaused,
           graph: hasGraphToken(),
           graphCode: lastDeviceCode && Date.now() - lastDeviceCode.at < 15 * 60_000 ? lastDeviceCode : null,
           attended: attendedToday(),
@@ -444,6 +467,15 @@ function startController(): void {
       }
       waker?.(); // wake the poll loop now (no-op if currently attending)
       return send(200, { ok: true, state, note: state.startsWith("attending") ? "busy — scan queued" : "scanning now" });
+    }
+    if (req.method === "POST" && url.pathname === "/pause") {
+      const body = await new Promise<Record<string, unknown>>((res) => {
+        let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
+      });
+      const paused = typeof body.paused === "boolean" ? body.paused : !getSettings().joinPaused; // bare POST toggles
+      applySettingsPatch({ joinPaused: paused });
+      waker?.(); // wake loop so the new state takes effect immediately
+      return send(200, { ok: true, joinPaused: paused, note: paused ? "auto-join PAUSED — daemon will not enter meetings" : "auto-join resumed" });
     }
     if (req.method === "POST" && url.pathname === "/auth/graph") {
       if (hasGraphToken()) return send(200, { ok: true, note: "token already present" });
@@ -702,6 +734,7 @@ function startController(): void {
         if (prev.batchSegments !== s.batchSegments) changes.push(`live batch ${s.batchSegments}/req`);
         if (prev.transcribeBatch !== s.transcribeBatch) changes.push(`asr batch ${s.transcribeBatch}/req`);
         if (prev.joinEarlyMinutes !== s.joinEarlyMinutes) changes.push(`join early ${s.joinEarlyMinutes}min`);
+        if (prev.joinPaused !== s.joinPaused) changes.push(s.joinPaused ? "⛔ auto-join PAUSED" : "▶️ auto-join resumed");
         if (prev.geminiModels !== s.geminiModels) changes.push(`model chain → ${s.geminiModels}`);
         if (prev.geminiApiKey !== s.geminiApiKey) changes.push(`Gemini key ${s.geminiApiKey ? "updated (settings)" : "cleared → env"}`);
         if (prev.glmApiKey !== s.glmApiKey) changes.push(`GLM key ${s.glmApiKey ? "updated (settings)" : "cleared → env"}`);
@@ -1653,7 +1686,7 @@ export async function daemon(): Promise<void> {
         for (const m of listMaterials(c)) {
           if (!m.path.toLowerCase().endsWith(".docx")) continue;
           const dir = indexDir(c, m.path);
-          if (existsSync(join(dir, "source.pdf")) && !existsSync(join(dir, ".textonly"))) continue; // twin done
+          if (existsSync(join(dir, "source.pdf")) && !existsSync(join(dir, ".textonly")) && bundleFresh(c, m.path)) continue; // twin done + source unchanged
           pushEvent(`docx twin: converting ${m.filename}`);
           await ensureIndex(c, m.path);
         }
@@ -1665,13 +1698,14 @@ export async function daemon(): Promise<void> {
   // DOCX→PDF twin pass: every .docx gets a viewable PDF twin in its bundle
   // (source.pdf). ensureIndex has the recording guard — during class it defers
   void docxTwinPass();
-  setInterval(() => void docxTwinPass(), REBUILD_MS);
-console.log(`[daemon] schedule-driven: morning pull, sleep until join windows (join ${joinEarlyMs() / 60_000} min early, rebuild every ${REBUILD_MS / 60_000} min)`);
+  setInterval(() => void docxTwinPass(), 12 * 3_600_000); // docx twins: twice daily is plenty
+console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock rebuilds at ${process.env.REBUILD_AT}` : `rebuild every ${nextRebuildGapMin()} min`}, sleep until join windows (join ${joinEarlyMs() / 60_000} min early)`);
   for (;;) {
     try {
       // stale check only — never force-rebuild just because schedule is empty,
       // that creates a login loop on every 800ms tick
-      const backoffMs = schedule.length ? REBUILD_MS : 5 * 60_000;
+      const due = nextRebuildAt();
+      const backoffMs = schedule.length ? Math.max(due - Date.now(), 60_000) : 5 * 60_000;
       if (Date.now() - scheduleBuiltAt > backoffMs) {
         setActivity(hasGraphToken() ? "building today's schedule (Graph)" : "building today's schedule (browser)", {});
         await buildSchedule();
@@ -1679,13 +1713,14 @@ console.log(`[daemon] schedule-driven: morning pull, sleep until join windows (j
       }
       const next = nextActionable();
       if (next) {
-        // re-pull right before joining to catch changes/cancellations
-        setActivity("refreshing schedule before join", { meeting: next.title });
-        await buildSchedule();
-        const re = nextActionable();
-        if (re) {
-          state = `attending: ${re.title}`;
-          const ok = await joinScheduled(re);
+        if (getSettings().joinPaused) {
+          // attendance suppressed (told the professor you won't make it) — mark
+          // handled so it's not retried every wake, push an event, keep sleeping
+          handled.add(next.title);
+          pushEvent(`join paused — skipped ${next.title}`);
+        } else {
+          state = `attending: ${next.title}`;
+          const ok = await joinScheduled(next);
           state = "idle";
           if (ok) continue; // back-to-back classes
         }
@@ -1694,7 +1729,7 @@ console.log(`[daemon] schedule-driven: morning pull, sleep until join windows (j
       const now = Date.now();
       const upcoming = schedule.filter((e) => e.start - joinEarlyMs() > now && !attendedToday().includes(e.title));
       const nextAt = upcoming[0]?.start - joinEarlyMs();
-      const wakeAt = Math.min(nextAt ?? Infinity, scheduleBuiltAt + REBUILD_MS);
+      const wakeAt = Math.min(nextAt ?? Infinity, nextRebuildAt());
       const sleepMs = Math.max(5_000, Math.min(wakeAt - now, 60 * 60_000));
       state = "idle";
       const rescueBusy = scheduleBuiltAt === 0; // rescue may still be pre-schedule
