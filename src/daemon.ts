@@ -262,14 +262,9 @@ async function buildSchedule(): Promise<Sched[]> {
               if (idx >= 0) { evs[idx].joinUrl = ae.joinUrl; evs[idx].title = ae.title; used.add(idx); }
               else evs.push({ title: ae.title, start: ae.start, end: ae.end, joinUrl: ae.joinUrl });
             }
-            // recurring-series propagation: occurrences of the same course
-            // title share one join URL (Teams recurring meetings) — fill
-            // URL-less events from same-titled events that have one
-            for (const e of evs) {
-              if (e.joinUrl) continue;
-              const donor = evs.find((d) => d.joinUrl && d.title.toLowerCase() === e.title.toLowerCase());
-              if (donor) e.joinUrl = donor.joinUrl;
-            }
+            // NOTE: no cross-day URL propagation — weekly-recurring classes
+            // rotate meeting links per occurrence, so a URL-less event stays
+            // URL-less; joinScheduled falls back to the DOM card click
             console.log(`[daemon] API enriched: ${apiEvts.filter((e) => e.joinUrl).length} event(s) with join URLs`);
           }
         } catch (e) {
@@ -1702,11 +1697,11 @@ export async function daemon(): Promise<void> {
 console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock rebuilds at ${process.env.REBUILD_AT}` : `rebuild every ${nextRebuildGapMin()} min`}, sleep until join windows (join ${joinEarlyMs() / 60_000} min early)`);
   for (;;) {
     try {
-      // stale check only — never force-rebuild just because schedule is empty,
-      // that creates a login loop on every 800ms tick
-      const due = nextRebuildAt();
-      const backoffMs = schedule.length ? Math.max(due - Date.now(), 60_000) : 5 * 60_000;
-      if (Date.now() - scheduleBuiltAt > backoffMs) {
+      // rebuild only when an anchor has actually PASSED since the last
+      // build (empty schedule → 5-min retry). Comparing elapsed-since-build
+      // against remaining-to-anchor rebuilds at every midpoint — a halving
+      // login+scrape spam converging on each anchor.
+      if (!schedule.length || Date.now() >= nextRebuildAt()) {
         setActivity(hasGraphToken() ? "building today's schedule (Graph)" : "building today's schedule (browser)", {});
         await buildSchedule();
         pushEvent(`schedule built: ${schedule.length} event(s)${hasGraphToken() ? " via Graph" : " via browser"}`);
@@ -1754,19 +1749,31 @@ async function joinScheduled(ev: Sched): Promise<boolean> {
     await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
     setActivity("joining meeting", { meeting: ev.title });
     let page: import("playwright").Page | null = null;
-    if (ev.joinUrl) {
+    // DOM-FIRST: today's calendar card is occurrence-exact — weekly-recurring
+    // classes rotate meeting links, so a stored/harvested URL can be stale or
+    // point at the week's OTHER occurrence. Prefer today's freshly-scraped
+    // data (popover URL, else the card click itself); stored ev.joinUrl is a
+    // last resort only.
+    const nKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const sameTitle = (a: string, b: string): boolean => {
+      if (a === b) return true;
+      const x = nKey(a), y = nKey(b);
+      return x.length >= 10 && y.length >= 10 && (x.startsWith(y) || y.startsWith(x) || x.includes(y) || y.includes(x));
+    };
+    const early = joinEarlyMs() + 60_000; // match the card slightly before its window opens
+    const meetings = await listMeetings(r.page!);
+    const m = meetings.find((x) => sameTitle(x.title, ev.title)
+      && Date.now() >= x.start.getTime() - early && Date.now() < x.end.getTime());
+    if (m?.joinUrl) {
+      page = await joinMeetingByUrl(r.ctx, m.title, m.joinUrl); // fresh per-occurrence URL
+    } else if (m) {
+      page = await joinMeeting(r.ctx, m); // event card click — no URL involved
+    } else if (ev.joinUrl) {
+      console.log("[join] no calendar card matched — falling back to stored URL");
       page = await joinMeetingByUrl(r.ctx, ev.title, ev.joinUrl);
-    } else {
-      // fallback: find it live on the calendar and join via the DOM flow
-      const meetings = await listMeetings(r.page!);
-      const m = meetings.find((x) => x.title === ev.title && x.joinableNow);
-      if (!m) { pushEvent(`"${ev.title}" not joinable at join time — skipping`); return false; }
-      page = m.joinUrl
-        ? await joinMeetingByUrl(r.ctx, m.title, m.joinUrl)
-        : await joinMeeting(r.ctx, m);
     }
-    if (!page) return false;
-    await attendAndRecord(page, ev.title, ev.joinUrl);
+    if (!page) { pushEvent(`"${ev.title}" not joinable at join time — skipping`); return false; }
+    await attendAndRecord(page, ev.title, m?.joinUrl ?? ev.joinUrl);
     return true;
   } finally {
     await r.ctx.close().catch(() => {});

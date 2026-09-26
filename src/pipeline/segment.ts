@@ -10,6 +10,7 @@ import { geminiCall } from "./llm.ts";
 import { ffSerial } from "./fflock.ts";
 import { outPath } from "../paths.ts";
 import { pushEvent } from "../status.ts";
+import { notify } from "../notify.ts";
 
 export interface TimelineEntry {
   meeting: string;
@@ -132,5 +133,13 @@ export async function processSegments(
   });
   entries.forEach((e) => onDone?.(e));
   pushEvent(`Gemini ✓ segments [${items.map((i) => i.idx).join(",")}] — ${entries.reduce((a, e) => a + e.transcript.split(/\s+/).filter(Boolean).length, 0)} words, ${entries.reduce((a, e) => a + e.visualNotes.length, 0)} visual notes`);
+  // dead-room tripwire: a batch containing segment 0 covers the meeting's
+  // opening minutes — near-silence there means we're likely alone in a
+  // wrong/stale room (rotated occurrence link), not a quiet lecture
+  if (items.some((i) => i.idx === 0)) {
+    const words = entries.reduce((a, e) => a + e.transcript.split(/\s+/).filter(Boolean).length, 0);
+    if (words < 10)
+      void notify(`⚠️ **${meetingTitle}**: first ${Math.round((items.length * SEG_SEC) / 60)} min recorded almost no speech (${words} words) — room looks dead (wrong occurrence?). Check the join / re-join manually.`);
+  }
   return entries;
 }
