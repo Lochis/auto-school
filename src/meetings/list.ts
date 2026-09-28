@@ -225,6 +225,23 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
           if (t < maxDay) await step(1);
         }
         await calFrame.waitForTimeout(2_000); // tail responses
+        // restore the week view — the day walk leaves the calendar parked on
+        // the LAST visited day, and joinMeeting needs today's card visible
+        try {
+          // the switcher shows the CURRENT view's name ("Day ▾" in day view) —
+          // match it loosely, then pick "Work week"/"Week" from the menu
+          const wkBtn = calFrame.getByRole("button", { name: /(work week|week|month|day)/i }).first();
+          if (await wkBtn.isVisible({ timeout: 1_500 }).catch(() => false)) {
+            await wkBtn.click({ timeout: 2_000 }).catch(() => {});
+            await calFrame.waitForTimeout(800);
+            const mi = calFrame.getByRole("menuitem", { name: /^work week$/i }).first();
+            if (await mi.isVisible({ timeout: 1_200 }).catch(() => false)) {
+              await mi.click({ timeout: 2_000 }).catch(() => {});
+              await calFrame.waitForTimeout(1_500);
+            }
+            console.log("[meetings] restored week view");
+          }
+        } catch { /* best effort */ }
       } catch (e) {
         console.warn(`[meetings] day-view pass failed: ${String(e).slice(0, 100)}`);
       }

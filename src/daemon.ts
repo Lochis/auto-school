@@ -1718,6 +1718,11 @@ console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock re
           const ok = await joinScheduled(next);
           state = "idle";
           if (ok) continue; // back-to-back classes
+          // join failed (not started yet? view glitch?) — retry every 2 min
+          // for the rest of the window instead of sleeping to the next event
+          // (in-window events are excluded from `upcoming` below)
+          await nap(2 * 60_000);
+          continue;
         }
       }
       // sleep until the NEXT join window (or next rebuild), interruptible by /scan
@@ -1748,12 +1753,9 @@ async function joinScheduled(ev: Sched): Promise<boolean> {
   try {
     await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
     setActivity("joining meeting", { meeting: ev.title });
-    let page: import("playwright").Page | null = null;
-    // DOM-FIRST: today's calendar card is occurrence-exact — weekly-recurring
-    // classes rotate meeting links, so a stored/harvested URL can be stale or
-    // point at the week's OTHER occurrence. Prefer today's freshly-scraped
-    // data (popover URL, else the card click itself); stored ev.joinUrl is a
-    // last resort only.
+    // per-occurrence URLs: donor propagation is gone, so enriched URLs are
+    // same-day-scoped and trustworthy. nKey/sameTitle below handle truncated
+    // calendar-chip titles when the card fallback is needed
     const nKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
     const sameTitle = (a: string, b: string): boolean => {
       if (a === b) return true;
@@ -1761,19 +1763,24 @@ async function joinScheduled(ev: Sched): Promise<boolean> {
       return x.length >= 10 && y.length >= 10 && (x.startsWith(y) || y.startsWith(x) || x.includes(y) || y.includes(x));
     };
     const early = joinEarlyMs() + 60_000; // match the card slightly before its window opens
-    const meetings = await listMeetings(r.page!);
-    const m = meetings.find((x) => sameTitle(x.title, ev.title)
-      && Date.now() >= x.start.getTime() - early && Date.now() < x.end.getTime());
-    if (m?.joinUrl) {
-      page = await joinMeetingByUrl(r.ctx, m.title, m.joinUrl); // fresh per-occurrence URL
-    } else if (m) {
-      page = await joinMeeting(r.ctx, m); // event card click — no URL involved
-    } else if (ev.joinUrl) {
-      console.log("[join] no calendar card matched — falling back to stored URL");
-      page = await joinMeetingByUrl(r.ctx, ev.title, ev.joinUrl);
+    // URL-first (works regardless of calendar view), then the calendar card
+    // click as fallback (the day-view walk can leave the calendar parked on
+    // another day, which makes today's card invisible)
+    let page: import("playwright").Page | null = ev.joinUrl
+      ? await joinMeetingByUrl(r.ctx, ev.title, ev.joinUrl)
+      : null;
+    if (!page) {
+      const meetings = await listMeetings(r.page!);
+      const m = meetings.find((x) => sameTitle(x.title, ev.title)
+        && Date.now() >= x.start.getTime() - early && Date.now() < x.end.getTime());
+      if (m?.joinUrl) {
+        page = await joinMeetingByUrl(r.ctx, m.title, m.joinUrl); // fresh per-occurrence URL
+      } else if (m) {
+        page = await joinMeeting(r.ctx, m); // event card click — no URL involved
+      }
     }
     if (!page) { pushEvent(`"${ev.title}" not joinable at join time — skipping`); return false; }
-    await attendAndRecord(page, ev.title, m?.joinUrl ?? ev.joinUrl);
+    await attendAndRecord(page, ev.title, ev.joinUrl);
     return true;
   } finally {
     await r.ctx.close().catch(() => {});

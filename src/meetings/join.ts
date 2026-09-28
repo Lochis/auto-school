@@ -159,8 +159,9 @@ export async function joinMeeting(
   await notify(`🎬 auto-school is **joining**: ${meeting.title}`);
 
   // 1. click the event card in the OWA frame -> details popover
-  const card = meeting.frame.locator(`[aria-label*="${meeting.title.slice(0, 40)}"]`).first();
-  if (await card.isVisible({ timeout: 3_000 }).catch(() => false)) {
+  const safe = meeting.title.slice(0, 40).replace(/"/g, '\\"');
+  const card = meeting.frame.locator(`[aria-label*="${safe}"]`).first();
+  if (await card.waitFor({ state: "visible", timeout: 5_000 }).catch(() => false)) {
     await card.click();
     console.log("[join] event card clicked");
     await meeting.frame.waitForTimeout(1_500);
