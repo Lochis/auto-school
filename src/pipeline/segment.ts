@@ -70,6 +70,8 @@ async function compact(input: string, base: string, audio?: { file: string; offs
 
 // keep segment-relative timestamps in sync with recorder SEGMENT_MS (tests)
 const SEG_SEC = Math.round((Number(process.env.SEGMENT_MS) || 300_000) / 1000);
+// dead-room tripwire dedupe — one Discord ping per title per process
+const deadRoomWarned = new Set<string>();
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 /** Analyze a batch of finalized segments in ONE Gemini request. */
@@ -135,11 +137,15 @@ export async function processSegments(
   pushEvent(`Gemini ✓ segments [${items.map((i) => i.idx).join(",")}] — ${entries.reduce((a, e) => a + e.transcript.split(/\s+/).filter(Boolean).length, 0)} words, ${entries.reduce((a, e) => a + e.visualNotes.length, 0)} visual notes`);
   // dead-room tripwire: a batch containing segment 0 covers the meeting's
   // opening minutes — near-silence there means we're likely alone in a
-  // wrong/stale room (rotated occurrence link), not a quiet lecture
+  // wrong/stale room (rotated occurrence link), not a quiet lecture.
+  // Warn ONCE per title per process — the rejoin loop may re-enter a room
+  // during a professor break several times before giving up at window end.
   if (items.some((i) => i.idx === 0)) {
     const words = entries.reduce((a, e) => a + e.transcript.split(/\s+/).filter(Boolean).length, 0);
-    if (words < 10)
+    if (words < 10 && !deadRoomWarned.has(meetingTitle)) {
+      deadRoomWarned.add(meetingTitle);
       void notify(`⚠️ **${meetingTitle}**: first ${Math.round((items.length * SEG_SEC) / 60)} min recorded almost no speech (${words} words) — room looks dead (wrong occurrence?). Check the join / re-join manually.`);
+    }
   }
   return entries;
 }

@@ -282,7 +282,12 @@ async function buildSchedule(): Promise<Sched[]> {
 function nextActionable(): Sched | null {
   const now = Date.now();
   return schedule.find((e) =>
-    now >= e.start - joinEarlyMs() && now < e.end && !handled.has(e.title) && !attendedToday().includes(e.title)) ?? null;
+    now >= e.start - joinEarlyMs() && now < e.end && !handled.has(e.title)
+    // NOTE: no attendedToday() check — a meeting that ENDED mid-window (prof
+    // break, call drop, leave-marker glitch) must be REJOINED until the
+    // scheduled end; attendance-in-window is the actionable state. `handled`
+    // (user /leave via recordLeftToday) still suppresses for the day.
+  ) ?? null;
 }
 
 /** Record + watch + stop for an already-joined meeting (both join paths). */
@@ -318,6 +323,7 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
       pushEvent(`leave requested — wrapping up ${title}`);
       console.log("[daemon] leave requested via UI");
       recordLeftToday(title); // persist: no auto re-join for the rest of today
+      handled.add(title); // explicit user leave — rejoin loop must not fire
       leaveRequested = false;
     }
     try {
@@ -349,9 +355,12 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
   // Leave hit before/without recording (flag not consumed by the watch loop)
   if (leaveRequested) {
     recordLeftToday(title);
+    handled.add(title); // explicit user leave — no rejoin
     leaveRequested = false;
   }
-  handled.add(title);
+  // no handled.add here: a natural meeting end mid-window re-triggers the
+  // join loop (rejoin on break/call-drop) until e.end passes; handled is
+  // reserved for explicit user leaves (recordLeftToday → handled at startup)
   journalEntry(title, { leftAt: Date.now() });
   active = null;
 }
