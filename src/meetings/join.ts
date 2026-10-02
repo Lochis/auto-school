@@ -132,6 +132,15 @@ async function finishJoin(ctx: BrowserContext, target: Page, title: string): Pro
   return target;
 }
 
+/** helper: close every page this join attempt opened (snapshot diff).
+ *  With the persistent browser these tabs would otherwise live forever and
+ *  zombie /meet/ tabs would poison the join-target heuristic. */
+function reapNewPages(ctx: import("playwright").BrowserContext, before: import("playwright").Page[]): void {
+  for (const p of ctx.pages()) {
+    if (!before.includes(p)) p.close().catch(() => {});
+  }
+}
+
 /** Join directly by the meeting URL (Graph-discovered events) — no calendar
  *  DOM clicking needed. Same settle/mute/notify guarantees as joinMeeting. */
 export async function joinMeetingByUrl(
@@ -139,15 +148,17 @@ export async function joinMeetingByUrl(
   title: string,
   joinUrl: string,
 ): Promise<Page | null> {
-  console.log(`[join] joining by URL: ${title}`);
-  await notify(`🎬 auto-school is **joining**: ${title}`);
+  console.log(`[join] joining by URL: ${title}`); // Discord pings only on SUCCESS (finishJoin) — per-attempt pings spam during retries
+  const before = ctx.pages(); // pages that existed before this attempt
   const page = await ctx.newPage();
   await page.goto(joinUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await page.waitForTimeout(3_000);
   // the meeting UI may end up on this page or spin up in another one
   const onThis = await page.locator(JOIN_SEL.joinNow).first().isVisible({ timeout: 3_000 }).catch(() => false);
   const target = onThis ? page : ctx.pages().find((p) => p.url().includes("/meet/")) ?? page;
-  return finishJoin(ctx, target, title);
+  const out = await finishJoin(ctx, target, title);
+  if (!out) reapNewPages(ctx, before); // failed attempt — close what we opened
+  return out;
 }
 
 /** Join `meeting` (calendar-scrape path). Returns the call page or null. */
@@ -155,8 +166,8 @@ export async function joinMeeting(
   ctx: BrowserContext,
   meeting: Meeting,
 ): Promise<Page | null> {
-  console.log(`[join] joining: ${meeting.title}`);
-  await notify(`🎬 auto-school is **joining**: ${meeting.title}`);
+  console.log(`[join] joining: ${meeting.title}`); // Discord pings only on SUCCESS (finishJoin)
+  const before = ctx.pages(); // pages that existed before this attempt
 
   // 1. click the event card in the OWA frame -> details popover
   const safe = meeting.title.slice(0, 40).replace(/"/g, '\\"');
@@ -185,7 +196,7 @@ export async function joinMeeting(
   }
   if (!clicked) {
     console.log("[join] ! no Join button found — not joinable yet (meeting not started?)");
-    return null;
+    return null; // no new pages were opened — nothing to reap
   }
 
   // 3. the Join button opens a Teams link in a NEW tab/popup — wait for it
@@ -208,9 +219,12 @@ export async function joinMeeting(
   }
   if (!target) {
     console.log("[join] ! meeting page never appeared");
+    reapNewPages(ctx, before);
     return null;
   }
 
   // 4-6: shared settle/mute/notify tail
-  return finishJoin(ctx, target, meeting.title);
+  const out = await finishJoin(ctx, target, meeting.title);
+  if (!out) reapNewPages(ctx, before); // failed attempt — close what we opened
+  return out;
 }

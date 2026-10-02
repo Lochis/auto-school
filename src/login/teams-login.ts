@@ -178,8 +178,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
       if (!signInUi && !loginForm) {
         firstTeamsTs ??= Date.now();
         if (Date.now() - firstTeamsTs > 20_000) {
-          console.log("[login] ✓ logged in (heuristic: 20s on Teams, no sign-in UI)");
-          await notify("✅ Teams login **succeeded** (session heuristic)").catch(() => {});
+          console.log("[login] ✓ logged in (heuristic: 20s on Teams, no sign-in UI)"); // Discord: login success is routine — console only (stuck/auth-fail still ping)
           if (keepOpen) return { ok: true, method: "session", detail: "session-heuristic", page, ctx };
           await ctx.close();
           return { ok: true, method: "session", detail: "session-heuristic" };

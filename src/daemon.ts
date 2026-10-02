@@ -15,7 +15,7 @@ import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { loginTeams } from "./login/teams-login.ts";
+import { getBrowser, invalidateBrowser, closeBrowser, authAlive, lastLoginFailedAt } from "./meetings/browser.ts";
 import { listMeetings } from "./meetings/list.ts";
 import { joinMeeting, joinMeetingByUrl } from "./meetings/join.ts";
 import { listTodayMeetings } from "./graph/meetings.ts";
@@ -65,6 +65,14 @@ let transcribeJob: string | null = null;
 /** the active meeting's page, for graceful shutdown */
 let active: { page: import("playwright").Page; title: string } | null = null;
 
+/** true while the loop's schedule build is walking the shared calendar page —
+ *  /join must not walk the SAME page concurrently (old code was serialized
+ *  by the profile lock; the singleton needs an explicit flag) */
+let buildBusy = false;
+/** one "session expired" Discord ping per process (login MFA pushes still
+ *  ping per attempt — that's the actionable ask) */
+let authExpiredPinged = false;
+
 /** Graceful shutdown on SIGTERM/SIGINT (docker stop / compose recreate):
  *  stop the recorder (remux + notes + consolidate) BEFORE dying, so a
  *  redeploy never orphans a session again. Docker gives us the grace period. */
@@ -83,6 +91,7 @@ async function shutdown(sig: string): Promise<void> {
       console.warn(`[daemon] graceful stop failed: ${String(e).slice(0, 150)} — segments left for orphan rescue`);
     }
   }
+  await closeBrowser(); // release the persistent profile cleanly
   process.exit(0);
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
@@ -222,23 +231,22 @@ async function buildSchedule(): Promise<Sched[]> {
     }
   }
   if (!evs.length && !hasGraphToken()) {
-    // one browser session per rebuild (morning / manual / join-window verify)
-    const r = await loginTeams({ keepOpen: true });
-    if (r.ok && r.ctx && r.page) {
+    // shared persistent browser (singleton) — no login per rebuild
+    const b = await getBrowser();
+    if (b) {
       try {
-        await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
         // Start intercepting Bearer tokens from Teams' own Graph API calls.
         // This MUST happen before listMeetings navigates to the calendar —
         // Teams makes graph.microsoft.com requests during calendar load.
-        const drainNetwork = startNetworkHarvest(r.page);
-        const ms = await listMeetings(r.page);
+        const drainNetwork = startNetworkHarvest(b.page);
+        const ms = await listMeetings(b.page);
         lastScan = new Date().toISOString();
         lastSeen = ms.length;
         for (const m of ms) evs.push({ title: m.title, start: m.start.getTime(), end: m.end.getTime(), ...(m.joinUrl ? { joinUrl: m.joinUrl } : {}) });
         // PREFERRED: call Outlook REST API from the OWA frame (cookie-based)
         // or Graph API with a captured token — both give real join URLs.
         try {
-          const apiEvts = await harvestCalendarEvents(r.page, drainNetwork);
+          const apiEvts = await harvestCalendarEvents(b.page, drainNetwork);
           if (apiEvts.length) {
             // match by title + same calendar day (titles recur across days)
             const sameDay = (a: number, b: number): boolean =>
@@ -270,7 +278,36 @@ async function buildSchedule(): Promise<Sched[]> {
         } catch (e) {
           console.warn(`[daemon] Calendar API pull failed: ${String(e).slice(0, 120)} — using OWA scrape data`);
         }
-      } finally { await r.ctx.close().catch(() => {}); }
+      } catch (e) {
+        if (/Target closed|Browser.*(closed|crashed)|context destroyed/i.test(String(e))) invalidateBrowser();
+        console.warn(`[daemon] schedule scrape failed: ${String(e).slice(0, 120)}`);
+      }
+      // shared browser stays open — no close
+    }
+    // SILENT-DEATH GUARD: an empty scrape on a logged-OUT page means the
+    // Teams session expired mid-pod-life. Recover NOW (fresh login, MFA
+    // push waits up to 10 min) instead of discovering it at class time.
+    // Never recycle while a meeting is live (active session shares the ctx).
+    if (!evs.length && !hasGraphToken() && !active) {
+      const b2 = await getBrowser();
+      if (b2 && !(await authAlive(b2.page))) {
+        if (!authExpiredPinged) {
+          authExpiredPinged = true;
+          void notify("🔑 **Teams session expired** — re-authenticating now (approve the MFA push if your phone buzzes; hourly retries until approved)").catch(() => {});
+        }
+        pushEvent("Teams session expired — recycling browser for fresh login");
+        invalidateBrowser();
+        const b3 = await getBrowser(); // fresh login — full auth state machine
+        if (b3 && (await authAlive(b3.page).catch(() => true))) authExpiredPinged = false; // recovered — a future expiry pings again
+        if (b3) {
+          try {
+            const ms = await listMeetings(b3.page);
+            lastScan = new Date().toISOString();
+            lastSeen = ms.length;
+            for (const m of ms) evs.push({ title: m.title, start: m.start.getTime(), end: m.end.getTime(), ...(m.joinUrl ? { joinUrl: m.joinUrl } : {}) });
+          } catch { /* empty is fine — retry cadence covers it */ }
+        }
+      }
     }
   }
   schedule = evs.sort((a, b) => a.start - b.start);
@@ -283,15 +320,15 @@ function nextActionable(): Sched | null {
   const now = Date.now();
   return schedule.find((e) =>
     now >= e.start - joinEarlyMs() && now < e.end && !handled.has(e.title)
-    // NOTE: no attendedToday() check — a meeting that ENDED mid-window (prof
-    // break, call drop, leave-marker glitch) must be REJOINED until the
-    // scheduled end; attendance-in-window is the actionable state. `handled`
-    // (user /leave via recordLeftToday) still suppresses for the day.
+    && !attendedToday().includes(e.title) // one session per title per day — no auto-rejoin (manual /join recovers)
   ) ?? null;
 }
 
-/** Record + watch + stop for an already-joined meeting (both join paths). */
-async function attendAndRecord(page: import("playwright").Page, title: string, joinUrl?: string): Promise<void> {
+/** Record + watch + stop for an already-joined meeting (both join paths).
+ *  hardEndMs: scheduled end — the watch loop also exits at end+15min (safety
+ *  cap for a meeting whose UI never dies), but never sooner than 10min in
+ *  (a manual join right at/after the listed end still gets a real session). */
+async function attendAndRecord(page: import("playwright").Page, title: string, joinUrl?: string, endMs?: number): Promise<void> {
   active = { page, title };
   journalEntry(title, {}); // persistent attendance — survives restarts
   setActivity("in meeting — starting recorder", { meeting: title });
@@ -312,19 +349,28 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
 
   if (rec) {
     setActivity("recording", { meeting: title });
+    // safety cap: leave-marker death (60s) is the normal class-end signal;
+    // the cap only fires when the meeting UI refuses to die (runaway guard)
+    const hardEnd = endMs
+      ? Math.max(endMs + 15 * 60_000, Date.now() + 10 * 60_000)
+      : Date.now() + 8 * 3_600_000;
     // call-end watch: leave-marker gone for >60s → meeting over (or /leave)
     let misses = 0;
-    while (misses < 30 && !leaveRequested) {
+    while (misses < 30 && !leaveRequested && Date.now() < hardEnd) {
       await new Promise((res) => setTimeout(res, 2_000));
       if (await stillInMeeting(page)) misses = 0;
       else misses++;
     }
+    const capped = !leaveRequested && Date.now() >= hardEnd; // hit the runaway cap
+    const leftRequested = leaveRequested; // capture why this session ended (manual vs natural)
     if (leaveRequested) {
       pushEvent(`leave requested — wrapping up ${title}`);
       console.log("[daemon] leave requested via UI");
       recordLeftToday(title); // persist: no auto re-join for the rest of today
-      handled.add(title); // explicit user leave — rejoin loop must not fire
+      handled.add(title);
       leaveRequested = false;
+      // immediate webhook — consolidation/transcription continue in background
+      void notify(`🚪 Left **${title}** (manual leave) — consolidating & transcribing in background`).catch(() => {});
     }
     try {
       // quick stop (~2s): stops MediaRecorder + flushes audio, then LEAVE immediately
@@ -341,7 +387,7 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
           // already recording) — only speak up when idle or still on this one
           if (!active || active.title === title) setActivity("idle — post-processing complete", { meeting: title });
           console.log(`[daemon] recording done: ${done.segments.length} segment(s), ${(done.bytes / 1e6).toFixed(0)} MB, ${Math.round(done.ms / 60000)} min`);
-          notify(`⏹️ Recording ended: **${title}** — ${done.segments.length} segment(s), ${Math.round(done.ms / 60000)} min`).catch(() => {});
+          notify(`⏹️ Recording ended: **${title}** — ${done.segments.length} segment(s), ${Math.round(done.ms / 60000)} min (${leftRequested ? "manual leave" : capped ? "runaway cap — meeting outlived its slot by 15+ min" : "meeting ended"})`).catch(() => {});
         }).catch((e) => {
           console.error(`[rec] post-process failed: ${e}`);
           notify(`⚠️ Post-processing failed for **${title}**: \`${String(e).slice(0, 120)}\``).catch(() => {});
@@ -355,85 +401,18 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
   // Leave hit before/without recording (flag not consumed by the watch loop)
   if (leaveRequested) {
     recordLeftToday(title);
-    handled.add(title); // explicit user leave — no rejoin
+    handled.add(title);
     leaveRequested = false;
   }
-  // no handled.add here: a natural meeting end mid-window re-triggers the
-  // join loop (rejoin on break/call-drop) until e.end passes; handled is
-  // reserved for explicit user leaves (recordLeftToday → handled at startup)
+  // session complete — terminal for the day (no auto-rejoin; manual /join
+  // or the next schedule window is the recovery path)
+  handled.add(title);
   journalEntry(title, { leftAt: Date.now() });
   active = null;
-}
-
-/** Graph discovery: cheap HTTP — no browser. Only called with a cached token. */
-async function graphJoinable(): Promise<{ title: string; joinUrl: string } | null | "error"> {
-  try {
-    const evs = await listTodayMeetings();
-    lastScan = new Date().toISOString();
-    lastSeen = evs.length;
-    const now = Date.now();
-    for (const e of evs) {
-      if (!e.isOnline || !e.joinUrl || handled.has(e.subject)) continue;
-      const s = new Date(e.start).getTime();
-      const en = new Date(e.end).getTime();
-      if (now >= s - joinEarlyMs() && now < en) return { title: e.subject, joinUrl: e.joinUrl };
-    }
-    return null;
-  } catch (e) {
-    console.warn(`[daemon] Graph poll failed: ${String(e).slice(0, 120)} — browser scan this cycle`);
-    return "error";
-  }
-}
-
-/** Graph path: the browser launches ONLY when a meeting is actually joinable. */
-async function attendViaGraph(): Promise<boolean | "error" | null> {
-  const g = await graphJoinable();
-  if (g && g !== "error") {
-    console.log(`[daemon] (graph) joinable now: ${g.title}`);
-    const r = await loginTeams({ keepOpen: true });
-    if (!r.ok || !r.ctx) return false;
-    try {
-      await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
-      state = `attending: ${g.title}`;
-      setActivity("joining meeting", { meeting: g.title });
-      const page = await joinMeetingByUrl(r.ctx, g.title, g.joinUrl);
-      if (!page) return false;
-      await attendAndRecord(page, g.title, g.joinUrl);
-      return true;
-    } finally {
-      state = "idle";
-      await r.ctx.close().catch(() => {});
-    }
-  }
-  return g; // null = nothing joinable, "error" = Graph unavailable
-}
-
-/** Browser-scrape path (fallback until Graph is approved once). */
-async function attendViaScrape(): Promise<boolean> {
-  const r = await loginTeams({ keepOpen: true });
-  if (!r.ok || !r.ctx || !r.page) return false;
-  try {
-    await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
-    const meetings = await listMeetings(r.page);
-    lastScan = new Date().toISOString();
-    lastSeen = meetings.length;
-    const live = meetings.filter((m) => m.joinableNow && !handled.has(m.title));
-    if (!live.length) return false;
-
-    const m = live[0];
-    state = `attending: ${m.title}`;
-    setActivity("joining meeting", { meeting: m.title });
-    console.log(`[daemon] live meeting found: ${m.title}`);
-    const page = m.joinUrl
-      ? await joinMeetingByUrl(r.ctx, m.title, m.joinUrl)
-      : await joinMeeting(r.ctx, m);
-    if (!page) return false;
-    await attendAndRecord(page, m.title, m.joinUrl);
-    return true; // re-poll immediately — another class may be live too
-  } finally {
-    state = "idle";
-    await r.ctx.close().catch(() => {});
-  }
+  // persistent browser: this flow OWNS the meeting page — always close it
+  // (covers recording-never-started and stop-failed paths; the success path
+  // already closed it and the double-close is swallowed)
+  await page.close().catch(() => {});
 }
 
 function startController(): void {
@@ -590,45 +569,53 @@ function startController(): void {
     if (req.method === "POST" && url.pathname === "/join") {
       // manual join by title (UI "Join" button) — bypasses joinableNow/handled
       if (state.startsWith("attending")) return send(409, { ok: false, note: `busy attending: ${state}` });
+      if (buildBusy) return send(409, { ok: false, note: "busy building schedule — retry in ~a minute" });
       let body: Record<string, unknown> = {};
       try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
       const want = String(body.title ?? "").toLowerCase().trim();
       if (!want) return send(400, { error: "title required" });
-      handled.delete(body.title as string); // re-join allowed
+      // NOTE: no handled.delete — manual join is a one-shot; suppression from
+      // an earlier give-up/user-leave stays so the loop can't re-arm the title
       void (async () => {
         try {
           state = "attending (manual join)";
           setActivity("joining meeting (manual)", { meeting: String(body.title) });
-          const r = await loginTeams({ keepOpen: true });
-          if (!r.ok || !r.ctx || !r.page) throw new Error("login failed");
+          const b = await getBrowser();
+          if (!b) throw new Error("browser unavailable");
           try {
-            await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
-            const meetings = await listMeetings(r.page);
+            const meetings = await listMeetings(b.page);
             lastScan = new Date().toISOString();
             lastSeen = meetings.length;
             const m = meetings.find((x) => x.title.toLowerCase().includes(want));
             if (!m) throw new Error(`"${body.title}" not on the calendar`);
             const page = m.joinUrl
-              ? await joinMeetingByUrl(r.ctx, m.title, m.joinUrl)
-              : await joinMeeting(r.ctx, m);
+              ? await joinMeetingByUrl(b.ctx, m.title, m.joinUrl)
+              : await joinMeeting(b.ctx, m);
             if (!page) throw new Error("join flow failed (not started yet?)");
-            await attendAndRecord(page, m.title, m.joinUrl);
+            await attendAndRecord(page, m.title, m.joinUrl, m.end.getTime());
           } finally {
             state = "idle";
-            await r.ctx.close().catch(() => {});
+            // shared browser stays open — only this flow's pages are done
           }
         } catch (e) {
           state = "idle";
+          leaveRequested = false; // void any leave pressed mid-join — no session to leave
           pushEvent(`manual join failed: ${String(e).slice(0, 120)}`);
           console.warn(`[daemon] manual join failed: ${String(e).slice(0, 200)}`);
+          // if the session died, recycle so the user's NEXT Join click logs in fresh
+          const bb = await getBrowser().catch(() => null);
+          if (bb && !active && !(await authAlive(bb.page).catch(() => true))) {
+            pushEvent("session expired — browser recycled; retry Join to re-login");
+            invalidateBrowser();
+          }
         }
       })();
       return send(202, { ok: true, note: `joining "${body.title}" — watch status` });
     }
     if (req.method === "POST" && url.pathname === "/leave") {
-      if (!state.startsWith("attending")) return send(200, { ok: true, note: "not in a meeting" });
-      leaveRequested = true;
-      return send(200, { ok: true, note: "leaving — stopping recorder + consolidating first (won't re-join today)" });
+      if (!active && !state.startsWith("attending")) return send(200, { ok: true, note: "not in a meeting" });
+      leaveRequested = true; // consumed by the watch loop within ~2s; consolidation + transcription continue
+      return send(200, { ok: true, note: "leaving now — webhook will confirm; consolidating & transcribing in background" });
     }
     if (req.method === "POST" && url.pathname === "/transcribe") {
       const course = url.searchParams.get("course")?.replace(/[^\w -]/g, "");
@@ -744,6 +731,7 @@ function startController(): void {
         if (prev.glmApiKey !== s.glmApiKey) changes.push(`GLM key ${s.glmApiKey ? "updated (settings)" : "cleared → env"}`);
         if (prev.glmBase !== s.glmBase) changes.push(`GLM base ${s.glmBase ? "updated" : "cleared → default"}`);
         if (changes.length) pushEvent(`settings: ${changes.join(" · ")}`);
+        if (prev.joinPaused !== s.joinPaused) waker?.(); // take effect immediately (esp. UNpause — loop may be sleeping)
         return send(200, maskedSettings(s));
       }
     }
@@ -1699,6 +1687,10 @@ export async function daemon(): Promise<void> {
       pushEvent(`docx twin pass failed: ${String(e).slice(0, 90)}`);
     } finally { twinBusy = false; }
   };
+  // consecutive join failures per title — 3 strikes then give up loudly.
+  // Day-keyed: strikes must NOT survive to next week's occurrence of the
+  // same recurring title (a long-lived pod would otherwise 1-strike it)
+  const joinFails = new Map<string, { n: number; day: string }>();
   // DOCX→PDF twin pass: every .docx gets a viewable PDF twin in its bundle
   // (source.pdf). ensureIndex has the recording guard — during class it defers
   void docxTwinPass();
@@ -1706,31 +1698,46 @@ export async function daemon(): Promise<void> {
 console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock rebuilds at ${process.env.REBUILD_AT}` : `rebuild every ${nextRebuildGapMin()} min`}, sleep until join windows (join ${joinEarlyMs() / 60_000} min early)`);
   for (;;) {
     try {
+      // manual join (/join) owns the shared browser while it runs — the old
+      // per-action logins were serialized by the profile lock; the singleton
+      // needs an explicit guard against concurrent calendar walks on one page
+      if (active || state.startsWith("attending")) { await nap(30_000); continue; }
       // rebuild only when an anchor has actually PASSED since the last
-      // build (empty schedule → 5-min retry). Comparing elapsed-since-build
+      // build (empty schedule → 10-min retry; 60-min when the LOGIN itself
+      // is failing, so unattended MFA waits don't buzz every 10 minutes).
       // against remaining-to-anchor rebuilds at every midpoint — a halving
       // login+scrape spam converging on each anchor.
       if (!schedule.length || Date.now() >= nextRebuildAt()) {
         setActivity(hasGraphToken() ? "building today's schedule (Graph)" : "building today's schedule (browser)", {});
-        await buildSchedule();
-        pushEvent(`schedule built: ${schedule.length} event(s)${hasGraphToken() ? " via Graph" : " via browser"}`);
+        buildBusy = true;
+        try {
+          await buildSchedule();
+          pushEvent(`schedule built: ${schedule.length} event(s)${hasGraphToken() ? " via Graph" : " via browser"}`);
+        } finally { buildBusy = false; }
       }
       const next = nextActionable();
       if (next) {
         if (getSettings().joinPaused) {
-          // attendance suppressed (told the professor you won't make it) — mark
-          // handled so it's not retried every wake, push an event, keep sleeping
-          handled.add(next.title);
-          pushEvent(`join paused — skipped ${next.title}`);
+          // pause is a PURE GATE — never mutates event state, so unpausing
+          // restores exactly what was pending. Console-only: no event spam.
+          console.log(`[daemon] join paused — ${next.title} stays pending`);
         } else {
           state = `attending: ${next.title}`;
           const ok = await joinScheduled(next);
           state = "idle";
-          if (ok) continue; // back-to-back classes
-          // join failed (not started yet? view glitch?) — retry every 2 min
-          // for the rest of the window instead of sleeping to the next event
-          // (in-window events are excluded from `upcoming` below)
-          await nap(2 * 60_000);
+          if (ok) { joinFails.delete(next.title); continue; } // back-to-back classes
+          // bounded retry: 3 attempts 2 min apart, then give up loudly
+          const today = new Date().toDateString();
+          const prevFails = joinFails.get(next.title);
+          const fails = prevFails?.day === today ? prevFails.n + 1 : 1;
+          joinFails.set(next.title, { n: fails, day: today });
+          if (fails >= 3) {
+            handled.add(next.title);
+            pushEvent(`gave up joining "${next.title}" after ${fails} attempts`);
+            void notify(`⚠️ Gave up joining **${next.title}** after ${fails} attempts — manual Join is available`).catch(() => {});
+          } else {
+            await nap(2 * 60_000);
+          }
           continue;
         }
       }
@@ -1739,7 +1746,11 @@ console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock re
       const upcoming = schedule.filter((e) => e.start - joinEarlyMs() > now && !attendedToday().includes(e.title));
       const nextAt = upcoming[0]?.start - joinEarlyMs();
       const wakeAt = Math.min(nextAt ?? Infinity, nextRebuildAt());
-      const sleepMs = Math.max(5_000, Math.min(wakeAt - now, 60 * 60_000));
+      // empty schedule = build failed. Browser/login down: retry 10 min —
+      // unless the LOGIN itself failed (MFA unapproved), then stretch to 60
+      // so unattended mornings don't spam MFA pushes every 10 minutes.
+      const loginDown = lastLoginFailedAt > 0 && Date.now() - lastLoginFailedAt < 15 * 60_000;
+      const sleepMs = Math.max(5_000, Math.min(wakeAt - now, schedule.length ? 60 * 60_000 : loginDown ? 60 * 60_000 : 10 * 60_000));
       state = "idle";
       const rescueBusy = scheduleBuiltAt === 0; // rescue may still be pre-schedule
       const t12 = (d: number) => new Date(d).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });
@@ -1757,10 +1768,10 @@ console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock re
 
 /** Join one scheduled event — by URL (Graph) or by scrape+DOM (fallback). */
 async function joinScheduled(ev: Sched): Promise<boolean> {
-  const r = await loginTeams({ keepOpen: true });
-  if (!r.ok || !r.ctx) return false;
+  const b = await getBrowser();
+  if (!b) { pushEvent("browser unavailable — cannot join"); leaveRequested = false; return false; } // void any leave pressed mid-join — no session to leave
+  const { ctx, page: home } = b;
   try {
-    await r.ctx.grantPermissions(["microphone", "camera"]).catch(() => {});
     setActivity("joining meeting", { meeting: ev.title });
     // per-occurrence URLs: donor propagation is gone, so enriched URLs are
     // same-day-scoped and trustworthy. nKey/sameTitle below handle truncated
@@ -1776,22 +1787,36 @@ async function joinScheduled(ev: Sched): Promise<boolean> {
     // click as fallback (the day-view walk can leave the calendar parked on
     // another day, which makes today's card invisible)
     let page: import("playwright").Page | null = ev.joinUrl
-      ? await joinMeetingByUrl(r.ctx, ev.title, ev.joinUrl)
+      ? await joinMeetingByUrl(ctx, ev.title, ev.joinUrl)
       : null;
     if (!page) {
-      const meetings = await listMeetings(r.page!);
+      const meetings = await listMeetings(home);
       const m = meetings.find((x) => sameTitle(x.title, ev.title)
         && Date.now() >= x.start.getTime() - early && Date.now() < x.end.getTime());
       if (m?.joinUrl) {
-        page = await joinMeetingByUrl(r.ctx, m.title, m.joinUrl); // fresh per-occurrence URL
+        page = await joinMeetingByUrl(ctx, m.title, m.joinUrl); // fresh per-occurrence URL
       } else if (m) {
-        page = await joinMeeting(r.ctx, m); // event card click — no URL involved
+        page = await joinMeeting(ctx, m); // event card click — no URL involved
       }
     }
-    if (!page) { pushEvent(`"${ev.title}" not joinable at join time — skipping`); return false; }
-    await attendAndRecord(page, ev.title, ev.joinUrl);
+    if (!page) {
+      // session can die between morning build and class time — detect it on
+      // the home page so strike 2 logs in fresh instead of burning all 3
+      if (!active && !(await authAlive(home).catch(() => true))) {
+        pushEvent(`session expired at join time (${ev.title}) — recycling browser; next attempt re-logins`);
+        invalidateBrowser();
+      }
+      pushEvent(`"${ev.title}" not joinable at join time — skipping`);
+      leaveRequested = false; // void any leave pressed mid-join — no session to leave (else NEXT class insta-leaves)
+      return false;
+    }
+    await attendAndRecord(page, ev.title, ev.joinUrl, ev.end);
     return true;
-  } finally {
-    await r.ctx.close().catch(() => {});
+  } catch (e) {
+    // browser-level failure → recycle the shared context for the next attempt
+    if (/Target closed|Browser.*(closed|crashed)|context destroyed/i.test(String(e))) invalidateBrowser();
+    console.warn(`[join] attempt failed: ${String(e).slice(0, 150)}`);
+    leaveRequested = false; // void any leave pressed mid-join — no session to leave
+    return false;
   }
 }

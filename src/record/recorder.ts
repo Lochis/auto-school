@@ -297,7 +297,7 @@ export async function startRecording(page: Page, meetingTitle: string, joinUrl?:
   };
   (page as any).__recStop = quickStop;
 
-  await notify(`🔴 Recording (tab-only): **${meetingTitle}**`);
+  console.log(`[rec] recording started (tab-only): ${meetingTitle}`); // Discord: "In meeting" ping already covers session start
   return state;
 }
 

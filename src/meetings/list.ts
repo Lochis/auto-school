@@ -6,7 +6,6 @@
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import type { Page, Frame } from "playwright";
 import { parseCalendar, markInProgress, type Meeting } from "./parse.ts";
-import { notify } from "../notify.ts";
 import { OUT_DIR, outPath } from "../paths.ts";
 import { dismissConsent } from "../login/auth-state.ts";
 
@@ -22,7 +21,7 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
   // the selector fires first on a fresh Teams shell and we need evidence
   await page.screenshot({ path: outPath("pre-calendar.png") }).catch(() => {});
   const preShot = await page.screenshot({ type: "png" }).catch(() => undefined);
-  await notify("📸 pre-calendar click", preShot).catch(() => {});
+  console.log(`[meetings] pre-calendar screenshot: ${preShot?.length ?? 0} bytes`); // Discord: per-scan pings are spam — console only
   // PATIENT rail wait: the login heuristic (URL-based) can pass while the
   // app shell is still booting on a throttled pod — the rail may not exist
   // for another 30-60s. Poll for it instead of a hard 5s click that throws
@@ -73,7 +72,7 @@ export async function listMeetings(page: Page): Promise<Meeting[]> {
     await page.waitForTimeout(2_000);
   }
   const postShot = await page.screenshot({ type: "png" }).catch(() => undefined);
-  await notify("📸 after Calendar click", postShot).catch(() => {});
+  console.log(`[meetings] post-calendar-click screenshot: ${postShot?.length ?? 0} bytes`); // console only
   if (!calFrame || !await calFrame.evaluate(() => document.body?.innerText ?? "").catch(() => "").then((t) => t.length > 50)) {
     console.log("[meetings] ! OWA calendar frame never rendered events — dumping evidence");
     return [];

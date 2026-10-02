@@ -29,10 +29,14 @@ function parseTime(v: { DateTime: string; TimeZone?: string } | string): number 
  * clicks. When a GetCalendarEvent response arrives, scan its HTML Body for
  * Teams meetup-join URLs. We don't make any calls — just read what OWA fetched.
  */
+// one live harvest listener per page — the browser is now PERSISTENT, so a
+// rebuild must never stack a second listener (duplicate captures + leak)
+const activeHarvest = new WeakMap<Page, (resp: import("playwright").Response) => void>();
+
 export function startNetworkHarvest(page: Page): () => Promise<CalendarEvent[]> {
   const captured: unknown[] = [];
 
-  page.on("response", async (resp) => {
+  const onResponse = async (resp: import("playwright").Response): Promise<void> => {
     const url = resp.url();
     if (!url.includes("outlook.office") && !url.includes("graph.microsoft.com")) return;
     const ct = resp.headers()["content-type"] ?? "";
@@ -52,10 +56,18 @@ export function startNetworkHarvest(page: Page): () => Promise<CalendarEvent[]> 
         }
       }
     } catch { /* not JSON or body unavailable */ }
-  });
+  };
+
+  // drop any stale listener from a previous build on this same page
+  const prev = activeHarvest.get(page);
+  if (prev) page.off("response", prev);
+  page.on("response", onResponse);
+  activeHarvest.set(page, onResponse);
 
   let lastCount = -1;
   return async () => {
+    page.off("response", onResponse); // detach on first drain — the harvest window is over
+    if (activeHarvest.get(page) === onResponse) activeHarvest.delete(page);
     // wait for in-flight response bodies to finish (poll until stable)
     for (let i = 0; i < 16; i++) {
       if (captured.length === lastCount && lastCount > 0) break;
@@ -124,6 +136,8 @@ function extractEventsDeep(node: unknown, out: CalendarEvent[]): void {
   for (const v of Object.values(obj)) extractEventsDeep(v, out);
 }
 
+let noUrlPinged = false; // one harvest-dead Discord ping per process
+
 // ─── Combined harvest with fallback ─────────────────────────────────────
 
 export async function harvestCalendarEvents(
@@ -155,8 +169,12 @@ export async function harvestCalendarEvents(
     return unique;
   }
 
-  // nothing captured — take screenshot for diagnosis
+  // nothing captured — take screenshot for diagnosis (ping at most once per
+  // process: harvest deadness persists for hours and every build would ping)
   const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
-  await notify("⚠️ Calendar API: no join URLs captured from OWA responses — using DOM scrape only", shot).catch(() => {});
+  if (!noUrlPinged) {
+    noUrlPinged = true;
+    await notify("⚠️ Calendar API: no join URLs captured from OWA responses — using DOM scrape only (pinging once; will stay quiet until restart)", shot).catch(() => {});
+  }
   throw new Error("no join URLs from network harvest");
 }
