@@ -36,8 +36,10 @@ export default function CoursesPage() {
       {list.length === 0 && (
         <div className="card" style={{ marginTop: 12 }}>No courses yet — create one above or let the backend record a session.</div>
       )}
+      {list.length > 0 && (
+      <div className="courses-grid">
       {list.map(({ course, ss, start }) => (
-        <details className="card" key={course} style={{ marginTop: 10 }} open={ss.length <= 3}>
+        <details className="card" key={course} open={ss.length <= 3}>
           <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <CourseLink href={`/course/${encodeURIComponent(course)}`} label={course.replace(/_/g, " ")} />
             <CourseRename course={course} />
@@ -67,6 +69,8 @@ export default function CoursesPage() {
           )}
         </details>
       ))}
+      </div>
+      )}
     </main>
   );
 }

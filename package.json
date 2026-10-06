@@ -15,12 +15,14 @@
     "install-browser": "npx playwright install chromium"
   },
   "dependencies": {
+    "archiver": "^7.0.1",
     "mammoth": "^1.12.2",
     "otpauth": "^9.5.2",
     "playwright": "^1.63.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/archiver": "^6.0.4",
     "@types/bun": "latest"
   }
 }

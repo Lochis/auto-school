@@ -62,7 +62,7 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
       </h1>
 
       {/* tab bar */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <div className="tabs" style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         {tabBtn(`/course/${slug}`, `Sessions (${list.length})`, !showMaterials && !showAsk)}
         {tabBtn(`/course/${slug}?tab=materials`, "Materials", showMaterials)}
         {tabBtn(`/course/${slug}?tab=ask`, "Ask", showAsk)}
@@ -79,6 +79,7 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
           {weeks.map((w) => (
             <div key={w} style={{ marginBottom: 20 }}>
               {start && <h2 style={{ fontSize: 17, margin: "0 0 8px" }}>Week {w}</h2>}
+              <div className="sessions-grid">
               {(groups.get(w) ?? []).map((s) => {
                 const hasText = Boolean(s.transcript || s.timeline);
                 return (
@@ -89,6 +90,7 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
                   </div>
                 );
               })}
+              </div>
             </div>
           ))}
         </>

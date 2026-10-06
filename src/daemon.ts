@@ -13,7 +13,8 @@
  */
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
-import { readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
+import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
+import archiver from "archiver";
 import { join, dirname } from "node:path";
 import { getBrowser, invalidateBrowser, closeBrowser, authAlive, lastLoginFailedAt } from "./meetings/browser.ts";
 import { listMeetings } from "./meetings/list.ts";
@@ -812,6 +813,63 @@ function startController(): void {
         return send(200, { ok: true, mp4: mp4name, stem, date, course, transcript: wroteTranscript });
       } catch (e) { return send(500, { error: `ingest failed: ${String(e).slice(0, 120)}` }); }
     }
+    // ── material download: one file streamed, many files/folders zipped ──
+    // GET /courses/<slug>/materials/download?p=<rel>&p=<rel>… (repeat p per
+    // selection; folders expand recursively server-side)
+    const DL_RE = /^\/courses\/([^/]+)\/materials\/download$/;
+    const dlm = url.pathname.match(DL_RE);
+    if (dlm && req.method === "GET") {
+      const slug = decodeURIComponent(dlm[1]!);
+      const picks = [...new Set(url.searchParams.getAll("p").map((p) => sanitizeRelPath(p)).filter((p): p is string => !!p))];
+      if (!picks.length) return send(400, { error: "p params required" });
+      const root = MATERIALS_DIR(slug);
+      const files: { abs: string; rel: string }[] = [];
+      const seen = new Set<string>();
+      const walk = (abs: string, rel: string): void => {
+        let names: string[] = [];
+        try { names = readdirSync(abs); } catch { return; }
+        for (const n of names.sort()) {
+          if (n === ".index" || n === "materials.json") continue; // derived caches / registry
+          const crel = rel ? `${rel}/${n}` : n;
+          if (seen.has(crel)) continue;
+          seen.add(crel);
+          let st;
+          try { st = statSync(join(abs, n)); } catch { continue; }
+          if (st.isDirectory()) walk(join(abs, n), crel);
+          else files.push({ abs: join(abs, n), rel: crel });
+        }
+      };
+      for (const rel of picks) {
+        const abs = join(root, rel);
+        if (!abs.startsWith(root + "/") && abs !== root) continue;
+        let st;
+        try { st = statSync(abs); } catch { continue; }
+        if (st.isDirectory()) walk(abs, rel);
+        else if (!seen.has(rel)) { seen.add(rel); files.push({ abs, rel }); }
+      }
+      if (!files.length) return send(404, { error: "no such files" });
+      pushEvent(`material download: ${files.length} file(s) from ${slug}`);
+      if (files.length === 1) {
+        const st = statSync(files[0]!.abs);
+        res.writeHead(200, {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": `attachment; filename="${files[0]!.rel.split("/").pop()!.replace(/[^\w.\- ]+/g, "_")}"`,
+          "Content-Length": st.size,
+        });
+        createReadStream(files[0]!.abs).pipe(res);
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="${slug}-materials-${new Date().toISOString().slice(0, 10)}.zip"`,
+      });
+      const zip = archiver("zip", { zlib: { level: 6 } });
+      zip.on("error", () => res.destroy());
+      zip.pipe(res);
+      for (const f of files) zip.file(f.abs, { name: f.rel });
+      zip.finalize().catch(() => { try { res.destroy(); } catch { /* gone */ } }); // never an unhandled rejection — that would kill the daemon
+      return;
+    }
     // ── course materials (upload / list / delete) + course config ─────
     const MATERIALS_RE = /^\/courses\/([^/]+)\/materials$/;
     const mm = url.pathname.match(MATERIALS_RE);
@@ -956,7 +1014,7 @@ function startController(): void {
     // ── deadlines (AI-built calendar of due dates + spread-out items) ──
     if (url.pathname === "/deadlines") {
       const DEADLINES = join(config.userDataDir, "deadlines.json");
-      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string; dueManual?: boolean; stale?: number };
+      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string; dueManual?: boolean; stale?: number; parts?: { title: string; due: string | null; note: string; done: boolean }[] };
       const readDl = (): Dl[] => {
         try {
           const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
@@ -992,7 +1050,71 @@ function startController(): void {
         return d;
       };
       const writeDl = (d: Dl[]): void => { mkdirSync(config.userDataDir, { recursive: true }); writeFileSync(DEADLINES, JSON.stringify(uniqIds(d), null, 2)); };
-      if (req.method === "GET") return send(200, { deadlines: readDl() });
+      // ── sub-task folding: "A1 Part A" → checklist step of "Assignment 1" ──
+      // LLM decides parent/child (see the rebuild pipeline); the fold itself is
+      // deterministic so re-folds after checklist regeneration stay stable.
+      const FOLDS = join(config.userDataDir, "deadlines-folds.json");
+      type FoldSug = { parentId: string; parentTitle: string; childId: string; childTitle: string; childDue: string | null };
+      const readFolds = (): { verdicts: Record<string, string>; pending: FoldSug[] } => {
+        try { const j = JSON.parse(readFileSync(FOLDS, "utf8")); return { verdicts: j.verdicts ?? {}, pending: Array.isArray(j.pending) ? j.pending : [] }; }
+        catch { return { verdicts: {}, pending: [] }; }
+      };
+      const foldChildInto = (parent: Dl, child: Dl): { steps: number } => {
+        const CKS = join(config.userDataDir, "checklists.json");
+        type CkItem = { id: string; text: string; done: boolean; doneAt: number | null; manual?: boolean };
+        type Ck = { deadlineId: string; course: string; title: string; items: CkItem[]; updatedAt: number };
+        let cks: Ck[] = [];
+        try { const j = JSON.parse(readFileSync(CKS, "utf8")); if (Array.isArray(j)) cks = j; } catch { /* none */ }
+        const childCkIdx = cks.findIndex((c) => c.deadlineId === child.id);
+        const childSteps = childCkIdx >= 0 ? cks[childCkIdx]!.items : [];
+        const pc = cks.find((c) => c.deadlineId === parent.id);
+        const label = (child.title.match(/\b(?:part|phase|section|component|stage)\s+[a-z0-9]+\b/i)?.[0] ?? child.title.split(/[:\u2014-]/)[0] ?? child.title).trim().slice(0, 40);
+        const dueTag = child.due && child.due !== parent.due ? ` (due ${child.due})` : "";
+        if (!parent.userNote && child.userNote) parent.userNote = child.userNote;
+        if (childCkIdx >= 0) cks.splice(childCkIdx, 1); // the child's checklist folds in / goes away
+        if (!pc) {
+          // no checklist yet — remember the parts; the next generation MUST
+          // include them as steps (prompt reads deadline.parts)
+          parent.parts = [...(parent.parts ?? []), { title: child.title, due: child.due, note: child.note, done: child.done }, ...childSteps.map((s) => ({ title: s.text, due: null, note: "", done: s.done }))];
+          writeFileSync(CKS, JSON.stringify(cks, null, 2));
+          return { steps: 0 };
+        }
+        const toks = (t: string): Set<string> => new Set(t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(" ").filter((w) => w.length > 1));
+        const over = (a: Set<string>, b: Set<string>): number => { if (!a.size || !b.size) return 0; let hit = 0; for (const w of a) if (b.has(w)) hit++; return hit / Math.min(a.size, b.size); };
+        const ct = toks(child.title);
+        const mkItem = (text: string, done: boolean): CkItem => {
+          let h = 5381;
+          for (const ch of `${parent.id}|${text.toLowerCase().trim()}`) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
+          return { id: h.toString(16), text: text.slice(0, 200), done, doneAt: done ? (child.doneAt ?? Date.now()) : null };
+        };
+        // idempotency: same text already folded → nothing to do
+        if (pc.items.some((it) => it.text === `${child.title}${dueTag}`.slice(0, 200))) { writeFileSync(CKS, JSON.stringify(cks, null, 2)); return { steps: 0 }; }
+        let mi = -1, ms = 0;
+        pc.items.forEach((it, i) => { const s = over(ct, toks(it.text)); if (s > ms) { ms = s; mi = i; } });
+        if (mi >= 0 && ms >= 0.5) {
+          // existing step covers this part → enrich it, don't duplicate
+          const it = pc.items[mi]!;
+          it.done = it.done || child.done;
+          if (dueTag && !/due \d{4}/.test(it.text)) it.text = `${it.text}${dueTag}`.slice(0, 200);
+          pc.items.splice(mi + 1, 0, ...childSteps.map((s) => mkItem(`${label}: ${s.text}`, s.done)));
+        } else {
+          const newText = `${child.title}${dueTag}`;
+          let at = pc.items.length;
+          let last = -1;
+          pc.items.forEach((it, i) => { if (over(ct, toks(it.text)) >= 0.25) last = i; });
+          if (last >= 0) at = last + 1; // group with sibling steps of this part
+          else if (pc.items.length > 1 && /submit|upload|hand in|post\b|verify|review/i.test(pc.items[pc.items.length - 1]!.text)) at = pc.items.length - 1; // before the final submit-ish step
+          pc.items.splice(at, 0, mkItem(newText, child.done), ...childSteps.map((s) => mkItem(`${label}: ${s.text}`, s.done)));
+        }
+        pc.updatedAt = Date.now();
+        writeFileSync(CKS, JSON.stringify(cks, null, 2));
+        return { steps: 1 + childSteps.length };
+      };
+      if (req.method === "GET") {
+        const dl = readDl();
+        const ids = new Set(dl.map((d) => d.id));
+        return send(200, { deadlines: dl, suggestions: readFolds().pending.filter((p) => ids.has(p.childId) && ids.has(p.parentId)) });
+      }
       if (req.method === "DELETE") {
         try { rmSync(DEADLINES, { force: true }); } catch { /* gone */ }
         return send(200, { ok: true });
@@ -1037,6 +1159,34 @@ function startController(): void {
               const [gone] = dl.splice(i, 1);
               writeDl(dl);
               return send(200, { ok: true, deleted: gone?.title ?? "", deadlines: dl });
+            }
+            // ── accept a fold suggestion: sub-task → parent checklist step ──
+            if (body.acceptFold && typeof body.acceptFold === "object") {
+              const { parent: pid, child: cid } = body.acceptFold as { parent?: string; child?: string };
+              const dl = readDl();
+              const parent = dl.find((d) => d.id === pid);
+              const child = dl.find((d) => d.id === cid);
+              if (!parent || !child || parent.id === child.id) return send(404, { error: "no such parent/child id" });
+              const r = foldChildInto(parent, child);
+              const out = dl.filter((d) => d.id !== child.id);
+              const f = readFolds();
+              f.verdicts[dlKey(child.course, child.title)] = "accepted";
+              f.pending = f.pending.filter((p) => p.childId !== child.id);
+              writeFileSync(FOLDS, JSON.stringify(f, null, 2));
+              writeDl(out);
+              pushEvent(`deadlines: folded "${child.title}" into "${parent.title}" (${r.steps} step(s))`);
+              return send(200, { ok: true, folded: r.steps, deadlines: out });
+            }
+            // ── decline: never suggest this fold again (by course+title) ──
+            if (body.declineFold && typeof body.declineFold === "object") {
+              const cid = String((body.declineFold as { child?: string }).child ?? "");
+              const dl = readDl();
+              const child = dl.find((d) => d.id === cid);
+              const f = readFolds();
+              if (child) f.verdicts[dlKey(child.course, child.title)] = "declined";
+              f.pending = f.pending.filter((p) => p.childId !== cid);
+              writeFileSync(FOLDS, JSON.stringify(f, null, 2));
+              return send(200, { ok: true, deadlines: dl });
             }
             if (typeof body.id === "string" && body.userNote === undefined) {
               const dl = readDl();
@@ -1343,6 +1493,61 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
                 pushEvent(`deadlines dedup skipped: ${String(e).slice(0, 100)}`); // keep both — never block the rebuild
               }
             }
+            // ── parent/child detection (LLM): sub-deliverables of a bigger
+            // deadline. First detection only SUGGESTS (UI banner — user
+            // accepts/declines once); accepted folds then re-apply on every
+            // rebuild, because children re-extract from the docs each time. ──
+            let foldedCount = 0;
+            const newPending: FoldSug[] = [];
+            try {
+              const folds = readFolds();
+              const PART_RE = /\b(part|phase|section|component|stage)\b/i;
+              const nom: [Dl, Dl][] = [];
+              for (let i = 0; i < merged.length && nom.length < 20; i++) {
+                for (let j = i + 1; j < merged.length && nom.length < 20; j++) {
+                  const a = merged[i]!, b = merged[j]!;
+                  if (a.course !== b.course || a.kind !== b.kind) continue;
+                  if (!digitsOk(a.title, b.title)) continue; // shared number anchor (A1 ↔ Assignment 1)
+                  if (PART_RE.test(a.title) || PART_RE.test(b.title) || sim(a.title, b.title) >= 0.5) nom.push([a, b]);
+                }
+              }
+              if (nom.length) {
+                const raw3 = await glmChatRaw([
+                  { role: "system", content: `You classify PAIRS of deadline entries from one student's course. Decide the relation between each pair:
+- "same": both entries are THE SAME task extracted twice.
+- "part-of": one entry is a distinct sub-deliverable OF the other — e.g. "A1 Part A: Venture vision paragraph" is part of "Assignment 1: Entrepreneurial Process" (separately evaluated, but belongs to the umbrella task). Name the umbrella via "parent": "A" or "B" — the umbrella is the BROADER whole, never the part.
+- "unrelated": different tasks (different numbers, weeks, or deliverables).
+STRICT: only "part-of" with confidence "high" when containment is explicit (Part/Phase/Section naming, or the child title is clearly one piece of the parent's deliverable). When in doubt, answer "unrelated".
+Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "relation": "same"|"part-of"|"unrelated", "parent": "A"|"B", "confidence": "high"|"medium"|"low"}` },
+                  { role: "user", content: nom.map(([a, b], i) => `PAIR ${i + 1}:\nA: ${JSON.stringify({ title: a.title, due: a.due, kind: a.kind, note: a.note })}\nB: ${JSON.stringify({ title: b.title, due: b.due, kind: b.kind, note: b.note })}`).join("\n\n") },
+                ]);
+                const m3 = raw3.content.match(/\[[\s\S]*\]/);
+                const rels: { pair: number; relation: string; parent?: string; confidence?: string }[] = m3 ? JSON.parse(m3[0]) : [];
+                const folded = new Set<Dl>();
+                for (const r of rels) {
+                  if (r.relation !== "part-of" || r.confidence !== "high") continue;
+                  const pr = nom[Number(r.pair) - 1];
+                  if (!pr || folded.has(pr[0]) || folded.has(pr[1])) continue;
+                  const parent = r.parent === "B" ? pr[1] : pr[0];
+                  const child = r.parent === "B" ? pr[0] : pr[1];
+                  if (parent.id === child.id || parent.done || child.done) continue;
+                  const verdict = folds.verdicts[dlKey(child.course, child.title)];
+                  if (verdict === "declined") continue;
+                  if (verdict === "accepted") { // re-apply every rebuild
+                    foldChildInto(parent, child);
+                    folded.add(child);
+                    foldedCount++;
+                  } else if (!folds.pending.some((p) => p.childId === child.id) && !newPending.some((p) => p.childId === child.id)) {
+                    newPending.push({ parentId: parent.id, parentTitle: parent.title, childId: child.id, childTitle: child.title, childDue: child.due });
+                  }
+                }
+                if (folded.size) merged = merged.filter((d) => !folded.has(d));
+                if (foldedCount) pushEvent(`deadlines: re-applied ${foldedCount} accepted fold(s)`);
+              }
+              writeFileSync(FOLDS, JSON.stringify({ verdicts: folds.verdicts, pending: newPending, updatedAt: Date.now() }, null, 2));
+            } catch (e) {
+              pushEvent(`deadlines fold-detection skipped: ${String(e).slice(0, 100)}`);
+            }
             const added = merged.filter((d) => freshIds.has(d.id)).map((d) => ({ course: d.course, title: d.title, due: d.due, kind: d.kind }));
             // heal orphaned checklists: entries whose deadlineId vanished get
             // fuzzy-reattached to the current entry of the same task
@@ -1369,9 +1574,9 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
             writeFileSync(META, JSON.stringify({ docs: snapshotDocs(), builtAt: Date.now() }, null, 2));
             const changedCount = [...changedDocs.values()].reduce((n, ds) => n + ds.length, 0) + deletedKeys.size;
             pushEvent(scoped
-              ? `deadlines updated: +${added.length} new, ${updatedDates.length} date(s) changed${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}, ${changedCount} changed doc(s) scanned — ${merged.length} item(s) total`
-              : `deadlines rebuilt: ${merged.length} item(s)${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}`);
-            return send(200, { ok: true, mode: scoped ? "update" : "full", count: merged.length, added, updated: updatedDates, deduped: semanticMerged, changed: changedCount });
+              ? `deadlines updated: +${added.length} new, ${updatedDates.length} date(s) changed${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}${foldedCount ? `, ${foldedCount} folded` : ""}${newPending.length ? `, ${newPending.length} fold suggestion(s)` : ""}, ${changedCount} changed doc(s) scanned — ${merged.length} item(s) total`
+              : `deadlines rebuilt: ${merged.length} item(s)${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}${foldedCount ? `, ${foldedCount} folded` : ""}${newPending.length ? `, ${newPending.length} fold suggestion(s)` : ""}`);
+            return send(200, { ok: true, mode: scoped ? "update" : "full", count: merged.length, added, updated: updatedDates, deduped: semanticMerged, folded: foldedCount, suggestions: newPending, changed: changedCount });
           } catch (e) {
             return send(500, { error: `deadline rebuild failed: ${String(e).slice(0, 150)}` });
           }
@@ -1383,7 +1588,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
     if (url.pathname === "/checklists") {
       const CHECKLISTS = join(config.userDataDir, "checklists.json");
       const DEADLINES = join(config.userDataDir, "deadlines.json");
-      const readDlAll = (): { id: string; course: string; title: string; kind: string; due: string | null; note: string }[] => {
+      const readDlAll = (): { id: string; course: string; title: string; kind: string; due: string | null; note: string; parts?: { title: string; due: string | null; note: string; done: boolean }[] }[] => {
         try {
           const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
           return Array.isArray(j) ? j : [];
@@ -1457,7 +1662,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
             const dl = readDlAll().find((d) => d.id === dlId);
             if (!dl) return send(404, { error: "no such deadline id" });
             const systemPrompt = `You build an EXECUTION CHECKLIST for one specific student task, from the real course files — never invent steps.
-Task: "${dl.title}" (${dl.kind})${dl.due ? `, due ${dl.due}` : ""}${dl.note ? `. Known detail: ${dl.note}` : ""}
+Task: "${dl.title}" (${dl.kind})${dl.due ? `, due ${dl.due}` : ""}${dl.note ? `. Known detail: ${dl.note}` : ""}${dl.parts?.length ? `\nThis task has KNOWN PARTS (folded sub-deliverables) — each MUST appear as its own step, with its due date when given:\n${dl.parts.map((p) => `- ${p.title}${p.due ? ` (due ${p.due})` : ""}${p.done ? " [already done]" : ""}${p.note ? ` — ${p.note}` : ""}`).join("\n")}` : ""}
 Course slug: ${dl.course}
 Explore with tools first: list_materials / read_document / view_page on anything related to THIS task (task sheets, lab specs, submission instructions). Read enough to know what concretely must be done; skim, don't quote.
 Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered steps:

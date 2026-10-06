@@ -51,6 +51,48 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   const [renameTo, setRenameTo] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
+  // ── multi-select download: exact file paths; folders expand server-side ──
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const filesUnder = (n: TNode): Entry[] => {
+    const out: Entry[] = [];
+    const walk = (x: TNode): void => {
+      if (x.file) out.push(x.file);
+      for (const c of x.children.values()) walk(c);
+    };
+    for (const c of n.children.values()) walk(c);
+    return out;
+  };
+  const toggleFile = (p: string): void => setSel((m) => { const n = new Set(m); if (n.has(p)) n.delete(p); else n.add(p); return n; });
+  const toggleFolder = (n: TNode): void => {
+    const paths = filesUnder(n).map((f) => f.path);
+    const all = paths.length > 0 && paths.every((p) => sel.has(p));
+    setSel((m) => { const nm = new Set(m); for (const p of paths) { if (all) nm.delete(p); else nm.add(p); } return nm; });
+  };
+  const folderState = (n: TNode): "all" | "some" | "none" => {
+    const ps = filesUnder(n).map((f) => f.path);
+    const c = ps.filter((p) => sel.has(p)).length;
+    return c === 0 || ps.length === 0 ? "none" : c === ps.length ? "all" : "some";
+  };
+  const selSize = entries.filter((e) => sel.has(e.path)).reduce((n, e) => n + e.size, 0);
+  /** collapse fully-selected folders to their folder path — shorter URLs; the
+   *  backend expands folders recursively anyway */
+  const downloadUrl = (): string => {
+    const picked = entries.filter((e) => sel.has(e.path));
+    const rels = new Set(picked.map((f) => f.path));
+    outer: for (const f of picked) {
+      const segs = f.path.split("/");
+      for (let i = segs.length - 1; i >= 1; i--) {
+        const dir = segs.slice(0, i).join("/");
+        const inDir = entries.filter((e) => e.path.startsWith(dir + "/"));
+        if (inDir.length && inDir.every((e) => sel.has(e.path))) {
+          for (const e of inDir) rels.delete(e.path);
+          rels.add(dir);
+          continue outer;
+        }
+      }
+    }
+    return `/api/courses/${encodeURIComponent(slug)}/materials/download?` + [...rels].map((r) => `p=${encodeURIComponent(r)}`).join("&");
+  };
 
   const reload = (): void => {
     fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
@@ -192,14 +234,18 @@ export default function MaterialsTab({ slug }: { slug: string }) {
     if (isFolder && n.name) {
       return (
         <details key={n.path} open={depth < 2} style={{ marginLeft: depth * 16 }}>
-          <summary style={{ cursor: "pointer", fontWeight: 600, padding: "3px 0" }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600, padding: "3px 0", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <input type="checkbox" className="selbox" checked={folderState(n) === "all"}
+              ref={(el) => { if (el) el.indeterminate = folderState(n) === "some"; }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFolder(n); }} // preventDefault: keep the <details> closed; state drives the visual
+              aria-label={`select folder ${n.name}`} />
             📁 {n.name}
-            <button onClick={(e) => { e.preventDefault(); setRenaming(n.path); setRenameTo(n.path); }} title="Rename folder" style={{ marginLeft: 8, fontSize: 11 }}>✎</button>
-            <button onClick={(e) => { e.preventDefault(); del(n.path); }} title="Delete folder" style={{ marginLeft: 4, fontSize: 11 }}>✕</button>
+            <button onClick={(e) => { e.preventDefault(); setRenaming(n.path); setRenameTo(n.path); }} title="Rename folder" className="iconbtn" style={{ marginLeft: 8, fontSize: 11 }}>✎</button>
+            <button onClick={(e) => { e.preventDefault(); del(n.path); }} title="Delete folder" className="iconbtn" style={{ marginLeft: 4, fontSize: 11 }}>✕</button>
           </summary>
           {renaming === n.path && (
             <div style={{ margin: "4px 0" }}>
-              <input value={renameTo} onChange={(e) => setRenameTo(e.target.value)} style={{ width: 320 }} placeholder="new path (folders with /)" />
+              <input value={renameTo} onChange={(e) => setRenameTo(e.target.value)} style={{ width: "min(320px, 70vw)" }} placeholder="new path (folders with /)" />
               <button onClick={() => rename(n.path)} disabled={busy}>Save</button>
               <button onClick={() => setRenaming(null)}>Cancel</button>
             </div>
@@ -211,15 +257,17 @@ export default function MaterialsTab({ slug }: { slug: string }) {
     if (n.file) {
       const f = n.file;
       return (
-        <div key={f.path} style={{ marginLeft: depth * 16, display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}>
+        <div key={f.path} style={{ marginLeft: depth * 16, display: "flex", gap: 8, alignItems: "center", padding: "2px 0", flexWrap: "wrap" }}>
+          <input type="checkbox" className="selbox" checked={sel.has(f.path)} onChange={() => toggleFile(f.path)} aria-label={`select ${f.filename}`} />
           <span>📄 {f.filename}</span>
           {f.week !== null && <span className="muted" style={{ fontSize: 12 }}>· week {f.week}</span>}
           <span className="muted" style={{ fontSize: 12 }}>{fmtSize(f.size)}</span>
-          <button onClick={() => { setRenaming(f.path); setRenameTo(f.path); }} title="Rename/move" style={{ fontSize: 11 }}>✎</button>
-          <button onClick={() => del(f.path)} title="Delete" style={{ fontSize: 11 }}>✕</button>
+          <a className="iconbtn" href={`/api/courses/${encodeURIComponent(slug)}/materials/download?p=${encodeURIComponent(f.path)}`} title="Download this file" style={{ fontSize: 11 }}>⬇</a>
+          <button onClick={() => { setRenaming(f.path); setRenameTo(f.path); }} title="Rename/move" className="iconbtn" style={{ fontSize: 11 }}>✎</button>
+          <button onClick={() => del(f.path)} title="Delete" className="iconbtn" style={{ fontSize: 11 }}>✕</button>
           {renaming === f.path && (
             <span>
-              <input value={renameTo} onChange={(e) => setRenameTo(e.target.value)} style={{ width: 320 }} placeholder="new path" />
+              <input value={renameTo} onChange={(e) => setRenameTo(e.target.value)} style={{ width: "min(320px, 70vw)" }} placeholder="new path" />
               <button onClick={() => rename(f.path)} disabled={busy}>Save</button>
               <button onClick={() => setRenaming(null)}>Cancel</button>
             </span>
@@ -255,6 +303,9 @@ export default function MaterialsTab({ slug }: { slug: string }) {
                }} />
         <button onClick={() => fileRef.current?.click()} disabled={busy}>+ Files</button>
         <button onClick={() => folderRef.current?.click()} disabled={busy}>+ Folder</button>
+        {sel.size > 0 && <span className="muted" style={{ fontSize: 13 }}>{sel.size} selected · {fmtSize(selSize)}</span>}
+        <button onClick={() => { window.location.href = downloadUrl(); }} disabled={busy || sel.size === 0} title="download the selection (single file as-is, several files/folders as a zip)">⬇ Download{sel.size > 0 ? ` (${sel.size})` : ""}</button>
+        {sel.size > 0 && <button onClick={() => setSel(new Set())} style={{ fontSize: 12 }}>Clear</button>}
         {busy && <span className="muted">working…</span>}
       </div>
 

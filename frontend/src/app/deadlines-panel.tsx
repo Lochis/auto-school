@@ -24,6 +24,15 @@ export interface DeadEntry {
   userNote?: string;
   dueManual?: boolean;
   stale?: number;
+  parts?: { title: string; due: string | null; note: string; done: boolean }[];
+}
+
+export interface FoldSuggestion {
+  parentId: string;
+  parentTitle: string;
+  childId: string;
+  childTitle: string;
+  childDue: string | null;
 }
 
 export interface ChecklistItem {
@@ -82,6 +91,17 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
     return () => clearTimeout(t);
   }, [toast]);
   const [tab, setTab] = useState<"week" | "later" | "done">("week");
+  // ── fold suggestions (sub-task → parent checklist), accepted/declined once ──
+  const [sugs, setSugs] = useState<FoldSuggestion[]>([]);
+  useEffect(() => {
+    fetch("/api/deadlines")
+      .then((r) => r.json())
+      .then((j: { deadlines?: DeadEntry[]; suggestions?: FoldSuggestion[] }) => {
+        if (j.deadlines) setItems(j.deadlines);
+        if (j.suggestions) setSugs(j.suggestions);
+      })
+      .catch(() => { /* props initial is fine */ });
+  }, []);
   // ── per-deadline checklists ──
   const [cks, setCks] = useState<Record<string, Checklist>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -138,8 +158,9 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
           setMsg(`updated — ${j.count} item(s), ${j.changed ?? 0} doc(s) scanned${upd.length ? `, ${upd.length} date(s) changed` : ""}${j.deduped ? `, ${j.deduped} duplicate(s) merged` : ""}`);
           if (j.added?.length || upd.length) setToast({ added: j.added ?? [], updated: upd, text: `${j.added?.length ?? 0} new deadline${(j.added?.length ?? 0) === 1 ? "" : "s"}, ${upd.length} date${upd.length === 1 ? "" : "s"} updated:` });
         } else setMsg(`built ${j.count} item(s)${upd.length ? `, ${upd.length} date(s) changed` : ""}${j.deduped ? `, ${j.deduped} duplicate(s) merged` : ""}`);
-        const lr = await fetch("/api/deadlines").then((x) => x.json()).catch(() => ({}) as { deadlines?: DeadEntry[] });
+        const lr = await fetch("/api/deadlines").then((x) => x.json()).catch(() => ({}) as { deadlines?: DeadEntry[]; suggestions?: FoldSuggestion[] });
         if (lr.deadlines) setItems(lr.deadlines);
+        if (lr.suggestions) setSugs(lr.suggestions);
         router.refresh();
       }
     } catch { setMsg("rebuild failed — backend unreachable"); }
@@ -191,6 +212,23 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
       if (j.deadlines) setItems(j.deadlines); // server truth
       router.refresh();
     } catch { /* keep optimistic state */ }
+  };
+
+  const acceptFold = async (s: FoldSuggestion): Promise<void> => {
+    setSugs((m) => m.filter((x) => x.childId !== s.childId)); // optimistic
+    try {
+      const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ acceptFold: { parent: s.parentId, child: s.childId } }) });
+      const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
+      if (j.deadlines) setItems(j.deadlines); // server truth (child is gone, checklist grew)
+      await refreshCks();
+      router.refresh();
+    } catch { /* keep optimistic state */ }
+  };
+
+  const declineFold = async (s: FoldSuggestion): Promise<void> => {
+    setSugs((m) => m.filter((x) => x.childId !== s.childId)); // optimistic — never asked again
+    try { await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ declineFold: { child: s.childId } }) }); }
+    catch { /* gone */ }
   };
 
   const open = items.filter((i) => !i.done);
@@ -355,7 +393,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
               onChange={(e) => setNoteText(e.target.value)}
               placeholder="context the AI should know: group members and their roles, links, decisions made…"
               rows={3}
-              style={{ width: 420, fontSize: 12, fontFamily: "inherit" }}
+              style={{ width: "min(420px, 100%)", fontSize: 12, fontFamily: "inherit" }}
               autoFocus
             />
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -378,11 +416,24 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
         {overdue.length > 0 && <span style={{ color: "#f87171", fontSize: 13, fontWeight: 600 }}>{overdue.length} overdue</span>}
       </summary>
       <div style={{ marginTop: 8 }}>
+        {sugs.length > 0 && (
+          <div className="card" style={{ borderColor: "#8a6d3b", padding: "10px 14px" }}>
+            {sugs.map((s) => (
+              <div key={s.childId} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "4px 0" }}>
+                <span style={{ fontSize: 13 }}>
+                  💡 <strong>{s.childTitle}</strong>{s.childDue ? ` (${s.childDue})` : ""} looks like part of <strong>{s.parentTitle}</strong> — fold it into that checklist?
+                </span>
+                <button onClick={() => void acceptFold(s)}>Fold</button>
+                <button onClick={() => void declineFold(s)} style={{ fontSize: 12 }}>Keep separate</button>
+              </div>
+            ))}
+          </div>
+        )}
         {items.length === 0 ? (
           <p className="muted" style={{ margin: "4px 0" }}>Not built yet — the assistant reads every course's documents and extracts due dates + spread-out items.</p>
         ) : (
           <>
-            <div style={{ display: "flex", gap: 12, marginBottom: 6, borderBottom: "1px solid #444" }}>
+            <div className="tabs" style={{ display: "flex", gap: 12, marginBottom: 6, borderBottom: "1px solid #444" }}>
               {(["week", "later", "done"] as const).map((t) => (
                 <button key={t} onClick={() => setTab(t)} style={{ all: "unset", cursor: "pointer", padding: "4px 2px", fontWeight: t === tab ? 600 : 400, color: t === tab ? undefined : "var(--muted, #999)", borderBottom: t === tab ? "2px solid #7aa2f7" : "2px solid transparent" }}>
                   {t === "week" ? `This Week (${weekTab.length})` : t === "later" ? `Later (${laterTab.length})` : `Done (${done.length})`}
@@ -429,7 +480,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
     {toast && (
       <div
         onClick={() => setToast(null)}
-        style={{ position: "fixed", bottom: 18, right: 18, zIndex: 50, maxWidth: 380, cursor: "pointer", background: "#1c2333", border: "1px solid #7aa2f7", borderRadius: 10, padding: "10px 14px", boxShadow: "0 6px 24px rgba(0,0,0,.35)", fontSize: 13 }}
+        style={{ position: "fixed", bottom: 18, right: 18, zIndex: 50, maxWidth: "min(380px, calc(100vw - 24px))", cursor: "pointer", background: "#1c2333", border: "1px solid #7aa2f7", borderRadius: 10, padding: "10px 14px", boxShadow: "0 6px 24px rgba(0,0,0,.35)", fontSize: 13 }}
       >
         <div style={{ fontWeight: 600, marginBottom: 4 }}>✨ {toast.text}</div>
         {toast.updated.slice(0, 6).map((u, i) => (
