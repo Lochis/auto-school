@@ -23,6 +23,7 @@ export interface DeadEntry {
   doneAt?: number | null;
   userNote?: string;
   dueManual?: boolean;
+  stale?: number;
 }
 
 export interface ChecklistItem {
@@ -74,7 +75,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const [items, setItems] = useState<DeadEntry[]>(initial);
   const [busy, setBusy] = useState<"" | "update" | "full">("");
   const [msg, setMsg] = useState("");
-  const [toast, setToast] = useState<{ added: { course: string; title: string; due: string | null }[]; text: string } | null>(null);
+  const [toast, setToast] = useState<{ added: { course: string; title: string; due: string | null }[]; updated: { course: string; title: string; due: string | null; was: string | null }[]; text: string } | null>(null);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 10_000);
@@ -129,13 +130,14 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode }),
       });
-      const j = (await r.json().catch(() => ({}))) as { count?: number; error?: string; added?: { course: string; title: string; due: string | null }[]; changed?: number; mode?: string };
+      const j = (await r.json().catch(() => ({}))) as { count?: number; error?: string; added?: { course: string; title: string; due: string | null }[]; updated?: { course: string; title: string; due: string | null; was: string | null }[]; deduped?: number; changed?: number; mode?: string };
       if (!r.ok) setMsg(j.error ?? `HTTP ${r.status}`);
       else {
+        const upd = j.updated ?? [];
         if (j.mode === "update") {
-          setMsg(`updated — ${j.count} item(s), ${j.changed ?? 0} doc(s) scanned`);
-          if (j.added?.length) setToast({ added: j.added, text: `${j.added.length} new deadline${j.added.length > 1 ? "s" : ""} added:` });
-        } else setMsg(`built ${j.count} item(s)`);
+          setMsg(`updated — ${j.count} item(s), ${j.changed ?? 0} doc(s) scanned${upd.length ? `, ${upd.length} date(s) changed` : ""}${j.deduped ? `, ${j.deduped} duplicate(s) merged` : ""}`);
+          if (j.added?.length || upd.length) setToast({ added: j.added ?? [], updated: upd, text: `${j.added?.length ?? 0} new deadline${(j.added?.length ?? 0) === 1 ? "" : "s"}, ${upd.length} date${upd.length === 1 ? "" : "s"} updated:` });
+        } else setMsg(`built ${j.count} item(s)${upd.length ? `, ${upd.length} date(s) changed` : ""}${j.deduped ? `, ${j.deduped} duplicate(s) merged` : ""}`);
         const lr = await fetch("/api/deadlines").then((x) => x.json()).catch(() => ({}) as { deadlines?: DeadEntry[] });
         if (lr.deadlines) setItems(lr.deadlines);
         router.refresh();
@@ -178,6 +180,16 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
       const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: it.id, revert: true }) });
       const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
       if (j.deadlines) setItems(j.deadlines);
+    } catch { /* keep optimistic state */ }
+  };
+
+  const removeStale = async (it: DeadEntry): Promise<void> => {
+    setItems((m) => m.filter((x) => x.id !== it.id)); // optimistic
+    try {
+      const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: it.id, delete: true }) });
+      const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
+      if (j.deadlines) setItems(j.deadlines); // server truth
+      router.refresh();
     } catch { /* keep optimistic state */ }
   };
 
@@ -297,6 +309,12 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
           </button>
           <Link href={`/course/${encodeURIComponent(it.course)}`} title={it.course} style={{ fontSize: 11, color: "#94a3b8", border: "1px solid #444", borderRadius: 4, padding: "0 5px", textDecoration: "none" }}>{courseCode(it.course)}</Link>
           <span style={{ fontSize: 14, color: hot ? "#f87171" : undefined, fontWeight: hot ? 600 : undefined, textDecoration: it.done ? "line-through" : undefined }}>{it.title}</span>
+          {it.stale && (
+            <span style={{ fontSize: 11, color: "#e0af68" }} title={`not seen in its source at the last update (${new Date(it.stale).toLocaleDateString("en-CA")}) — verify or remove`}>⚠ not in source</span>
+          )}
+          {it.stale && (
+            <button onClick={() => void removeStale(it)} title="remove this entry (its source no longer defines it)" style={{ all: "unset", cursor: "pointer", fontSize: 11, color: "#f87171" }}>✕ remove</button>
+          )}
           {ck && (
             <button onClick={() => setExpanded(expanded === it.id ? null : it.id)} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: doneN === ck.items.length && ck.items.length > 0 ? "#4ade80" : "#7aa2f7" }} title="show checklist">
               ✓ {doneN}/{ck.items.length}{expanded === it.id ? " ▴" : " ▾"}
@@ -414,12 +432,17 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
         style={{ position: "fixed", bottom: 18, right: 18, zIndex: 50, maxWidth: 380, cursor: "pointer", background: "#1c2333", border: "1px solid #7aa2f7", borderRadius: 10, padding: "10px 14px", boxShadow: "0 6px 24px rgba(0,0,0,.35)", fontSize: 13 }}
       >
         <div style={{ fontWeight: 600, marginBottom: 4 }}>✨ {toast.text}</div>
+        {toast.updated.slice(0, 6).map((u, i) => (
+          <div key={`u${i}`} style={{ color: "var(--muted, #999)" }}>
+            • {u.course.split("-")[1] ?? u.course}: {u.title}{u.due ? ` — due ${u.due}` : " (no date)"}{u.was ? ` (was ${u.was})` : ""}
+          </div>
+        ))}
         {toast.added.slice(0, 6).map((a, i) => (
-          <div key={i} style={{ color: "var(--muted, #999)" }}>
+          <div key={`a${i}`} style={{ color: "var(--muted, #999)" }}>
             • {a.course.split("-")[1] ?? a.course}: {a.title}{a.due ? ` — due ${a.due}` : " (no date)"}
           </div>
         ))}
-        {toast.added.length > 6 && <div style={{ color: "var(--muted, #999)" }}>+{toast.added.length - 6} more…</div>}
+        {toast.added.length + toast.updated.length > 6 && <div style={{ color: "var(--muted, #999)" }}>+{toast.added.length + toast.updated.length - 6} more…</div>}
         <div style={{ color: "var(--muted, #999)", fontSize: 11, marginTop: 6 }}>click to dismiss</div>
       </div>
     )}

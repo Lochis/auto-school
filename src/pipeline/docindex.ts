@@ -91,6 +91,10 @@ async function docxToPdf(src: string, dir: string): Promise<string | null> {
 const srcStamp = (src: string): string => {
   try { const st = statSync(src); return `${st.mtimeMs}:${st.size}`; } catch { return "gone"; }
 };
+/** Bundle-format version — bump when the bundling algorithm changes (e.g.
+ *  text files became multi-page) so existing cached bundles rebuild lazily. */
+const BUNDLE_VER = 2;
+const bundleStamp = (src: string): string => `${srcStamp(src)}|v${BUNDLE_VER}`;
 /** Build the bundle if missing. Returns page count, or 0 when unsupported. */
 export async function ensureIndex(course: string, rel: string): Promise<number> {
   if (!supportsIndex(rel)) return 0;
@@ -99,7 +103,7 @@ export async function ensureIndex(course: string, rel: string): Promise<number> 
   if (!existsSync(src)) return 0;
   // stale check: source changed under an existing bundle ⇒ wipe, rebuild lazily
   let fresh = false;
-  try { fresh = readFileSync(join(dir, ".src"), "utf8") === srcStamp(src); } catch { /* no marker */ }
+  try { fresh = readFileSync(join(dir, ".src"), "utf8") === bundleStamp(src); } catch { /* no marker */ }
   if (!fresh && (pagesOnDisk(dir) > 0 || existsSync(join(dir, ".textonly")))) {
     console.log(`[docindex] source changed — rebuilding index for ${rel}`);
     rmSync(dir, { recursive: true, force: true });
@@ -109,7 +113,7 @@ export async function ensureIndex(course: string, rel: string): Promise<number> 
   if (existing > 0 && !deferred && fresh) return existing;
   mkdirSync(dir, { recursive: true });
   const built = await buildBundle(src, dir, rel);
-  if (built > 0) writeFileSync(join(dir, ".src"), srcStamp(src)); // stamp AFTER build: a crash mid-build leaves no marker → retry next read
+  if (built > 0) writeFileSync(join(dir, ".src"), bundleStamp(src)); // stamp AFTER build: a crash mid-build leaves no marker → retry next read
   return built;
 }
 
@@ -158,15 +162,29 @@ async function buildBundle(src: string, dir: string, rel: string): Promise<numbe
     writeFileSync(join(dir, "page-1.txt"), text);
     return 1;
   }
-  // textual passthrough — single page
-  writeFileSync(join(dir, "page-1.txt"), readFileSync(src, "utf8"));
-  return 1;
+  // textual passthrough — chunked into ~12k-char pages, cut at line
+  // boundaries, so long text/JSON/CSV files can be paged through instead of
+  // truncated mid-item (a truncated whole-doc read names the page count)
+  const text = readFileSync(src, "utf8");
+  const PAGE = 12_000;
+  if (text.length <= PAGE) { writeFileSync(join(dir, "page-1.txt"), text); return 1; }
+  let n = 0, i = 0;
+  while (i < text.length) {
+    let end = Math.min(text.length, i + PAGE);
+    if (end < text.length) {
+      const nl = text.lastIndexOf("\n", end); // prefer cutting between lines
+      if (nl > i) end = nl;
+    }
+    writeFileSync(join(dir, `page-${++n}.txt`), text.slice(i, end));
+    i = end;
+  }
+  return n;
 }
 
 /** True when an existing bundle matches the current source fingerprint.
  *  Used by the docx-twin pass to skip docs whose twin is already current. */
 export const bundleFresh = (course: string, rel: string): boolean => {
-  try { return readFileSync(join(indexDir(course, rel), ".src"), "utf8") === srcStamp(join(MATERIALS_DIR(course), rel)); }
+  try { return readFileSync(join(indexDir(course, rel), ".src"), "utf8") === bundleStamp(join(MATERIALS_DIR(course), rel)); }
   catch { return false; }
 };
 
@@ -175,7 +193,7 @@ const pagesOnDisk = (dir: string): number => {
 };
 
 /** Read a page (1-based) or the whole doc. Caps output so one huge PDF can't eat the context. */
-export async function readDoc(course: string, rel: string, page?: number, cap = 24_000): Promise<{ pages: number; page: number | null; text: string } | { error: string }> {
+export async function readDoc(course: string, rel: string, page?: number, cap = 48_000): Promise<{ pages: number; page: number | null; text: string } | { error: string }> {
   if (!supportsIndex(rel)) return { error: `${rel}: ${extname(rel) || "unknown"} files aren't readable` };
   if (!existsSync(join(MATERIALS_DIR(course), rel))) return { error: `no such file: ${rel} — list_materials shows the exact paths` };
   const pages = await ensureIndex(course, rel);
@@ -183,7 +201,7 @@ export async function readDoc(course: string, rel: string, page?: number, cap = 
   const dir = indexDir(course, rel);
   if (page) {
     if (page < 1 || page > pages) return { error: `page ${page} out of range (1-${pages})` };
-    return { pages, page, text: readFileSync(join(dir, `page-${page}.txt`), "utf8").slice(0, 6_000) || "(no extractable text — try view_page for the image)" };
+    return { pages, page, text: readFileSync(join(dir, `page-${page}.txt`), "utf8").slice(0, 13_000) || "(no extractable text — try view_page for the image)" };
   }
   let out = "";
   for (let i = 1; i <= pages && out.length < cap; i++) {

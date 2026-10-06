@@ -962,7 +962,11 @@ function startController(): void {
           const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
           if (!Array.isArray(j)) return [];
           // backfill ids/done for files written before those fields existed
-          return j.map((d: Partial<Dl>) => ({ done: false, doneAt: null, ...d, id: d.id ?? dlId(String(d.course ?? ""), String(d.title ?? "")) }) as Dl);
+          const dl = j.map((d: Partial<Dl>) => ({ done: false, doneAt: null, ...d, id: d.id ?? dlId(String(d.course ?? ""), String(d.title ?? "")) }) as Dl);
+          const before = dl.map((x) => x.id).join("\u0000");
+          uniqIds(dl);
+          if (dl.map((x) => x.id).join("\u0000") !== before) writeDl(dl); // self-heal legacy duplicate ids on first touch
+          return dl;
         } catch { return []; }
       };
       const dlKey = (c: string, t: string): string => `${c}|${t.toLowerCase().trim()}`;
@@ -971,7 +975,23 @@ function startController(): void {
         for (const ch of dlKey(c, t)) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
         return h.toString(16);
       };
-      const writeDl = (d: Dl[]): void => { mkdirSync(config.userDataDir, { recursive: true }); writeFileSync(DEADLINES, JSON.stringify(d, null, 2)); };
+      /** enforce unique ids IN PLACE — duplicate ids (same course+title twice
+       *  in one build, or a hash collision) break every by-id lookup AND the
+       *  UI's React keys (rows bleed across tabs until a hard refresh).
+       *  First occurrence wins; later ones get a deterministic ~N suffix. */
+      const uniqIds = (d: Dl[]): Dl[] => {
+        const seen = new Set<string>();
+        for (const x of d) {
+          if (!x.id || seen.has(x.id)) {
+            let n = 1;
+            while (seen.has(`${x.id}~${n}`)) n++;
+            x.id = `${x.id}~${n}`;
+          }
+          seen.add(x.id);
+        }
+        return d;
+      };
+      const writeDl = (d: Dl[]): void => { mkdirSync(config.userDataDir, { recursive: true }); writeFileSync(DEADLINES, JSON.stringify(uniqIds(d), null, 2)); };
       if (req.method === "GET") return send(200, { deadlines: readDl() });
       if (req.method === "DELETE") {
         try { rmSync(DEADLINES, { force: true }); } catch { /* gone */ }
@@ -1008,6 +1028,15 @@ function startController(): void {
               }
               writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
+            }
+            if (typeof body.id === "string" && (body.delete === true || body.remove === true)) {
+              // remove one entry — stale zombies the UI flags ("not in source")
+              const dl = readDl();
+              const i = dl.findIndex((d) => d.id === body.id);
+              if (i < 0) return send(404, { error: "no such deadline id" });
+              const [gone] = dl.splice(i, 1);
+              writeDl(dl);
+              return send(200, { ok: true, deleted: gone?.title ?? "", deadlines: dl });
             }
             if (typeof body.id === "string" && body.userNote === undefined) {
               const dl = readDl();
@@ -1079,6 +1108,7 @@ Read ONLY these documents (list_courses first to resolve slugs). Re-extract ever
             const systemPrompt = `You build the student's DEADLINE CALENDAR across ALL courses from the real files — never invent dates.
 ${scopeText}
 JSON schedule files (quizzes.json, discussions.json, …) carry EXACT per-item due dates — always read them fully and emit ONE entry per item with its date; NEVER lump recurring weekly work (quizzes, discussion posts) into a single undated umbrella entry when individual dates exist.
+Long text/JSON documents are served page by page (~12k characters per page). If a read ends with "…(truncated — request specific pages)", keep reading the remaining pages with read_document's page argument until you have seen the WHOLE file — never extract items from a partial read.
 Then reply with ONLY a JSON array (no prose, no markdown fences), one object per task:
 {"course": exact slug from list_courses, "title": short task name, "due": "YYYY-MM-DD" or null, "kind": "assignment"|"lab"|"reading"|"install"|"signup"|"post"|"quiz"|"exam"|"other", "spread": true if worth spreading out / starting early (installs, long projects, readings) else false, "startBy": "YYYY-MM-DD" or null, "note": "≤120 chars, key detail", "source": "exact file name or session stem", "confidence": "high"|"medium"|"low"}
 Include hard deadlines AND soft/spread-out items. If a date is uncertain use confidence "low". Today is ${new Date().toISOString().slice(0, 10)}.`;
@@ -1094,7 +1124,7 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 for (const tc of msg.tool_calls) {
                   const result = await runTool(tc);
                   pushEvent(`deadline tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
-                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
+                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 52_000) });
                 }
                 continue;
               }
@@ -1171,19 +1201,21 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
               for (const [c, docs] of changedDocs) for (const d of docs) touchedKeys.add(`${c}|${baseOf(d)}`);
               for (const k of deletedKeys) touchedKeys.add(`${k.split("/")[0]}|${baseOf(k)}`);
             }
-            const isTouched = (p: Dl): boolean => touchedKeys.has(`${p.course}|${baseOf(p.source)}`);
+            const isTouched = (p: Dl): boolean => p.source.split(";").some((s) => touchedKeys.has(`${p.course}|${baseOf(s.trim())}`)); // merged entries can carry "a.pdf; b.json"
             const kept = scoped ? prev.filter((p) => !isTouched(p)) : [];
             // ── carry-over: inherit id/done/userNote from the previous build's
             // same task (exact key first, then fuzzy) — id stability is what
             // keeps checklists attached across rebuilds. Scoped mode only
             // matches against touched entries (kept ones stay verbatim).
             const pool = (scoped ? prev.filter(isTouched) : prev).filter((p) => !RANGE.test(p.title));
+            const updatedDates: { course: string; title: string; due: string | null; was: string | null }[] = [];
             for (const it of norm) {
               const exact = pool.find((p) => p.course === it.course && dlKey(p.course, p.title) === dlKey(it.course, it.title));
               if (exact) {
                 it.id = exact.id; it.done = exact.done; it.doneAt = exact.doneAt;
                 if (exact.userNote) it.userNote = exact.userNote;
                 if (exact.dueManual) { it.due = exact.due; it.startBy = exact.startBy; it.dueManual = true; it.confidence = "high"; }
+                else if (exact.due !== it.due) updatedDates.push({ course: it.course, title: it.title, due: it.due, was: exact.due });
                 pool.splice(pool.indexOf(exact), 1);
                 continue;
               }
@@ -1193,14 +1225,20 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
                 if (p.course !== it.course || p.kind !== it.kind) continue;
                 const sameDue = p.due === it.due;
                 // manual dates shouldn't block identity — the whole point of the
-                // override is that it differs from what the documents say
-                if (!sameDue && p.due && it.due && !p.dueManual) continue; // both dated but different days → different tasks
+                // override is that it differs from what the documents say.
+                // Same for a re-scan citing the SAME source file: same task,
+                // new date = the document was edited (due date moved), not a
+                // new task — otherwise every date change spawns a stale zombie.
+                const srcsOf = (p: string): Set<string> => new Set(p.split(";").map((s) => baseOf(s.trim())).filter(Boolean));
+                const sameSource = !!p.source && !!it.source && [...srcsOf(p.source)].some((s) => srcsOf(it.source).has(s));
+                if (!sameDue && p.due && it.due && !p.dueManual && !sameSource) continue; // both dated, different days, different files → different tasks
                 const sv = sim(p.title, it.title) * (sameDue ? 1 : 0.85);
                 const need = sameDue ? 0.5 : 0.7;
                 if (sv > bs && sv >= need && sameTask(p.title, it.title)) { bs = sv; bi = i; }
               }
               if (bi >= 0) {
                 const p = pool.splice(bi, 1)[0];
+                if (p.due !== it.due && !p.dueManual) updatedDates.push({ course: it.course, title: it.title, due: it.due, was: p.due });
                 it.id = p.id; it.done = p.done; it.doneAt = p.doneAt;
                 if (p.userNote) it.userNote = p.userNote;
                 if (p.dueManual) { it.due = p.due; it.startBy = p.startBy; it.dueManual = true; it.confidence = "high"; }
@@ -1247,6 +1285,64 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
               merged = norm;
             }
             merged.sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.course.localeCompare(b.course));
+            uniqIds(merged); // duplicate ids break by-id lookups + the UI's React keys
+            // ── semantic dedup (LLM, deliberately conservative): same course +
+            // kind + similar-title pairs the deterministic passes kept ONLY
+            // because their dates disagree — ask the model whether they're
+            // really one task. Merge only on same=true + confidence high. ──
+            let semanticMerged = 0;
+            const dupePairs: [Dl, Dl][] = [];
+            for (let i = 0; i < merged.length; i++) {
+              for (let j = i + 1; j < merged.length && dupePairs.length < 20; j++) {
+                const a = merged[i]!, b = merged[j]!;
+                if (a.course !== b.course || a.kind !== b.kind) continue;
+                if (a.due === b.due) continue; // same-date dupes were already deduped deterministically
+                if (sameTask(a.title, b.title)) dupePairs.push([a, b]);
+              }
+            }
+            if (dupePairs.length) {
+              try {
+                const pairText = dupePairs
+                  .map(([a, b], i) => `PAIR ${i + 1}:\nA: ${JSON.stringify({ title: a.title, due: a.due, startBy: a.startBy, note: a.note, source: a.source, manual: !!a.dueManual })}\nB: ${JSON.stringify({ title: b.title, due: b.due, startBy: b.startBy, note: b.note, source: b.source, manual: !!b.dueManual })}`)
+                  .join("\n\n");
+                const raw2 = await glmChatRaw([
+                  { role: "system", content: `You deduplicate a student's deadline calendar. Each PAIR holds two entries extracted from different course documents. Decide whether both describe the SAME real task (one assignment/quiz/exam/post extracted twice, with wording or date conflicts) or two DIFFERENT tasks.
+STRICT — only answer same=true with confidence "high" when you are certain: same task number AND same subject matter. "Assignment 1" vs "Assignment 1: Spring MVC car insurance app" = same. "Assignment 1" vs "Assignment 2", or "Week 3 discussion" vs "Week 4 discussion" = different. When in doubt, answer same=false.
+For pairs you judge same, also pick the best evidence: due/startBy as "A", "B" or "none" (prefer the more specific and more recent source; a dated entry beats an undated one; never pick the side that is NOT manual if the other IS), a merged short title, and a merged note (≤160 chars, keep the most specific detail).
+Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "same": boolean, "confidence": "high"|"medium"|"low", "due": "A"|"B"|"none", "startBy": "A"|"B"|"none", "title": string, "note": string}` },
+                  { role: "user", content: pairText },
+                ]);
+                const m2 = raw2.content.match(/\[[\s\S]*\]/);
+                const verdicts: { pair: number; same: boolean; confidence: string; due?: string; startBy?: string; title?: string; note?: string }[] = m2 ? JSON.parse(m2[0]) : [];
+                const removed = new Set<Dl>();
+                for (const v of verdicts) {
+                  if (v.same !== true || v.confidence !== "high") continue; // conservative: only certain merges
+                  const pr = dupePairs[Number(v.pair) - 1];
+                  if (!pr || removed.has(pr[0]) || removed.has(pr[1])) continue;
+                  const [a, b] = pr; // keep a — its id keeps checklists/done attached
+                  if (!a.dueManual && !b.dueManual) {
+                    if (v.due === "B") a.due = b.due;
+                    else if (v.due === "none") a.due = null;
+                    if (v.startBy === "B") a.startBy = b.startBy;
+                    else if (v.startBy === "none") a.startBy = null;
+                  }
+                  if (v.title) a.title = String(v.title).slice(0, 140);
+                  if (v.note) a.note = String(v.note).slice(0, 160);
+                  if (!a.userNote && b.userNote) a.userNote = b.userNote;
+                  a.done = a.done || b.done;
+                  if (a.done && !a.doneAt) a.doneAt = b.doneAt;
+                  a.confidence = "high";
+                  // keep BOTH source names: incremental scans key off them
+                  a.source = [...new Set([...a.source.split(";"), ...b.source.split(";")].map((s) => s.trim()).filter(Boolean))].join("; ").slice(0, 200);
+                  removed.add(b);
+                  semanticMerged++;
+                }
+                if (removed.size) merged = merged.filter((d) => !removed.has(d));
+                if (semanticMerged) pushEvent(`deadlines dedup: merged ${semanticMerged} duplicate pair${semanticMerged === 1 ? "" : "s"} (semantic check)`);
+              } catch (e) {
+                pushEvent(`deadlines dedup skipped: ${String(e).slice(0, 100)}`); // keep both — never block the rebuild
+              }
+            }
             const added = merged.filter((d) => freshIds.has(d.id)).map((d) => ({ course: d.course, title: d.title, due: d.due, kind: d.kind }));
             // heal orphaned checklists: entries whose deadlineId vanished get
             // fuzzy-reattached to the current entry of the same task
@@ -1273,9 +1369,9 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
             writeFileSync(META, JSON.stringify({ docs: snapshotDocs(), builtAt: Date.now() }, null, 2));
             const changedCount = [...changedDocs.values()].reduce((n, ds) => n + ds.length, 0) + deletedKeys.size;
             pushEvent(scoped
-              ? `deadlines updated: +${added.length} new, ${changedCount} changed doc(s) scanned — ${merged.length} item(s) total`
-              : `deadlines rebuilt: ${merged.length} item(s)`);
-            return send(200, { ok: true, mode: scoped ? "update" : "full", count: merged.length, added, changed: changedCount });
+              ? `deadlines updated: +${added.length} new, ${updatedDates.length} date(s) changed${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}, ${changedCount} changed doc(s) scanned — ${merged.length} item(s) total`
+              : `deadlines rebuilt: ${merged.length} item(s)${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}`);
+            return send(200, { ok: true, mode: scoped ? "update" : "full", count: merged.length, added, updated: updatedDates, deduped: semanticMerged, changed: changedCount });
           } catch (e) {
             return send(500, { error: `deadline rebuild failed: ${String(e).slice(0, 150)}` });
           }
