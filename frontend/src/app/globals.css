@@ -60,12 +60,17 @@ a.iconbtn:hover { text-decoration: none; background: #314061; }
 }
 @media (min-width: 900px) {
   .courses-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 10px; align-items: start; }
-  .courses-grid > details { margin: 0; }
+  .courses-grid > details { margin: 0; min-width: 0; }
 }
 @media (min-width: 1100px) {
   .sessions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
-  .sessions-grid > * { margin: 0; }
+  .sessions-grid > * { margin: 0; min-width: 0; }
 }
+/* markdown notes must never blow out a grid column — wrap text, scroll tables */
+.notes { max-width: 100%; overflow-wrap: break-word; }
+.notes pre { max-width: 100%; }
+.notes table { display: block; max-width: 100%; overflow-x: auto; }
+.notes img { max-width: 100%; height: auto; }
 input {
   background: #10131a;
   color: #e6e8ec;

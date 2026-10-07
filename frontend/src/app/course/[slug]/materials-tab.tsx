@@ -65,8 +65,13 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   const toggleFile = (p: string): void => setSel((m) => { const n = new Set(m); if (n.has(p)) n.delete(p); else n.add(p); return n; });
   const toggleFolder = (n: TNode): void => {
     const paths = filesUnder(n).map((f) => f.path);
-    const all = paths.length > 0 && paths.every((p) => sel.has(p));
-    setSel((m) => { const nm = new Set(m); for (const p of paths) { if (all) nm.delete(p); else nm.add(p); } return nm; });
+    // direction computed INSIDE the updater — never a stale-closure mis-toggle
+    setSel((m) => {
+      const all = paths.length > 0 && paths.every((p) => m.has(p));
+      const nm = new Set(m);
+      for (const p of paths) { if (all) nm.delete(p); else nm.add(p); }
+      return nm;
+    });
   };
   const folderState = (n: TNode): "all" | "some" | "none" => {
     const ps = filesUnder(n).map((f) => f.path);
@@ -232,13 +237,17 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   const renderNode = (n: TNode, depth: number): React.ReactNode => {
     const isFolder = n.children.size > 0 || !n.file;
     if (isFolder && n.name) {
+      const fs = folderState(n);
       return (
-        <details key={n.path} open={depth < 2} style={{ marginLeft: depth * 16 }}>
+        <div key={n.path} style={{ marginLeft: depth * 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          {/* checkbox OUTSIDE <summary>: plain controlled input — inside the
+              summary the preventDefault/checked interplay mis-toggles */}
+          <input type="checkbox" className="selbox" checked={fs === "all"}
+            ref={(el) => { if (el) el.indeterminate = fs === "some"; }}
+            onChange={() => toggleFolder(n)} aria-label={`select folder ${n.name}`} />
+          <details open={depth < 2} style={{ flex: 1, minWidth: 0 }}>
           <summary style={{ cursor: "pointer", fontWeight: 600, padding: "3px 0", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            <input type="checkbox" className="selbox" checked={folderState(n) === "all"}
-              ref={(el) => { if (el) el.indeterminate = folderState(n) === "some"; }}
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFolder(n); }} // preventDefault: keep the <details> closed; state drives the visual
-              aria-label={`select folder ${n.name}`} />
             📁 {n.name}
             <button onClick={(e) => { e.preventDefault(); setRenaming(n.path); setRenameTo(n.path); }} title="Rename folder" className="iconbtn" style={{ marginLeft: 8, fontSize: 11 }}>✎</button>
             <button onClick={(e) => { e.preventDefault(); del(n.path); }} title="Delete folder" className="iconbtn" style={{ marginLeft: 4, fontSize: 11 }}>✕</button>
@@ -251,7 +260,9 @@ export default function MaterialsTab({ slug }: { slug: string }) {
             </div>
           )}
           {[...n.children.values()].sort((a, b) => (a.children.size === b.children.size ? a.name.localeCompare(b.name) : b.children.size - a.children.size)).map((c) => renderNode(c, depth + 1))}
-        </details>
+          </details>
+        </div>
+        </div>
       );
     }
     if (n.file) {

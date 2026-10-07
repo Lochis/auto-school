@@ -35,6 +35,16 @@ export interface FoldSuggestion {
   childDue: string | null;
 }
 
+export interface FoldedChild {
+  key: string;
+  parentId: string;
+  parentTitle: string;
+  title: string;
+  due: string | null;
+  done: boolean;
+  at: number;
+}
+
 export interface ChecklistItem {
   id: string;
   text: string;
@@ -93,12 +103,17 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const [tab, setTab] = useState<"week" | "later" | "done">("week");
   // ── fold suggestions (sub-task → parent checklist), accepted/declined once ──
   const [sugs, setSugs] = useState<FoldSuggestion[]>([]);
+  const [foldedCh, setFoldedCh] = useState<FoldedChild[]>([]);
+  const [foldPick, setFoldPick] = useState<string | null>(null); // row whose fold-picker is open
+  const [foldQ, setFoldQ] = useState("");
+  const [showFolds, setShowFolds] = useState<string | null>(null); // row with its folded list expanded
   useEffect(() => {
     fetch("/api/deadlines")
       .then((r) => r.json())
-      .then((j: { deadlines?: DeadEntry[]; suggestions?: FoldSuggestion[] }) => {
+      .then((j: { deadlines?: DeadEntry[]; suggestions?: FoldSuggestion[]; foldedChildren?: FoldedChild[] }) => {
         if (j.deadlines) setItems(j.deadlines);
         if (j.suggestions) setSugs(j.suggestions);
+        if (j.foldedChildren) setFoldedCh(j.foldedChildren);
       })
       .catch(() => { /* props initial is fine */ });
   }, []);
@@ -158,9 +173,10 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
           setMsg(`updated — ${j.count} item(s), ${j.changed ?? 0} doc(s) scanned${upd.length ? `, ${upd.length} date(s) changed` : ""}${j.deduped ? `, ${j.deduped} duplicate(s) merged` : ""}`);
           if (j.added?.length || upd.length) setToast({ added: j.added ?? [], updated: upd, text: `${j.added?.length ?? 0} new deadline${(j.added?.length ?? 0) === 1 ? "" : "s"}, ${upd.length} date${upd.length === 1 ? "" : "s"} updated:` });
         } else setMsg(`built ${j.count} item(s)${upd.length ? `, ${upd.length} date(s) changed` : ""}${j.deduped ? `, ${j.deduped} duplicate(s) merged` : ""}`);
-        const lr = await fetch("/api/deadlines").then((x) => x.json()).catch(() => ({}) as { deadlines?: DeadEntry[]; suggestions?: FoldSuggestion[] });
+        const lr = await fetch("/api/deadlines").then((x) => x.json()).catch(() => ({}) as { deadlines?: DeadEntry[]; suggestions?: FoldSuggestion[]; foldedChildren?: FoldedChild[] });
         if (lr.deadlines) setItems(lr.deadlines);
         if (lr.suggestions) setSugs(lr.suggestions);
+        if (lr.foldedChildren) setFoldedCh(lr.foldedChildren);
         router.refresh();
       }
     } catch { setMsg("rebuild failed — backend unreachable"); }
@@ -229,6 +245,33 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
     setSugs((m) => m.filter((x) => x.childId !== s.childId)); // optimistic — never asked again
     try { await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ declineFold: { child: s.childId } }) }); }
     catch { /* gone */ }
+  };
+
+  const foldTargets = (it: DeadEntry): DeadEntry[] =>
+    items.filter((x) => x.course === it.course && !x.done && x.id !== it.id)
+      .filter((x) => !foldQ.trim() || x.title.toLowerCase().includes(foldQ.trim().toLowerCase()));
+
+  const doFold = async (it: DeadEntry, parentId: string): Promise<void> => {
+    setFoldPick(null);
+    setItems((m) => m.filter((x) => x.id !== it.id)); // optimistic — child folds away now
+    try {
+      const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fold: { parent: parentId, child: it.id } }) });
+      const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
+      if (j.deadlines) setItems(j.deadlines); // server truth
+      await refreshCks();
+      router.refresh();
+    } catch { /* keep optimistic state */ }
+  };
+
+  const unfold = async (key: string): Promise<void> => {
+    try {
+      const r = await fetch("/api/deadlines", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unfold: { key } }) });
+      const j = (await r.json().catch(() => ({}))) as { deadlines?: DeadEntry[] };
+      if (j.deadlines) setItems(j.deadlines);
+      setFoldedCh((m) => m.filter((x) => x.key !== key));
+      await refreshCks();
+      router.refresh();
+    } catch { /* leave */ }
   };
 
   const open = items.filter((i) => !i.done);
@@ -329,6 +372,7 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
   const Row = ({ it, hot }: { it: DeadEntry; hot?: boolean }) => {
     const ck = cks[it.id];
     const doneN = ck ? ck.items.filter((x) => x.done).length : 0;
+    const myFolds = foldedCh.filter((f) => f.parentId === it.id);
     return (
       <>
         <div style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "3px 0", flexWrap: "wrap" }}>
@@ -359,6 +403,12 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
             </button>
           )}
           <Link href={`/course/${encodeURIComponent(it.course)}?tab=ask&prompt=${encodeURIComponent(starterPrompt(it))}`} style={{ fontSize: 12 }}>ask AI ↗</Link>
+          {!it.done && (
+            <button onClick={() => { setFoldPick(foldPick === it.id ? null : it.id); setFoldQ(""); }} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: "#e0af68" }} title="fold this into another deadline's checklist — it becomes a step there (unfoldable later)">⤵ fold</button>
+          )}
+          {myFolds.length > 0 && (
+            <button onClick={() => setShowFolds(showFolds === it.id ? null : it.id)} style={{ all: "unset", cursor: "pointer", fontSize: 11, color: "#e0af68" }} title="folded sub-tasks — unfold to restore them as their own deadlines">⤵ {myFolds.length} folded{showFolds === it.id ? " ▴" : " ▾"}</button>
+          )}
           {!ck && !genBusy[it.id] && (
             <button onClick={() => { setExpanded(it.id); void genCk(it); }} style={{ all: "unset", cursor: "pointer", fontSize: 12, color: "#7aa2f7" }} title="AI-generate an execution checklist for this task">✚ checklist</button>
           )}
@@ -386,6 +436,24 @@ export default function DeadlinesPanel({ initial }: { initial: DeadEntry[] }) {
             {it.dueManual && <button onClick={() => void revertDate(it)} title="drop the manual override; next rebuild re-extracts from course docs" style={{ fontSize: 12 }}>revert to auto</button>}
           </div>
         )}
+        {foldPick === it.id && (
+          <div style={{ margin: "2px 0 6px 26px", fontSize: 12 }}>
+            <input autoFocus value={foldQ} onChange={(e) => setFoldQ(e.target.value)} placeholder="fold into which deadline? (same course)" style={{ width: "min(360px, 80vw)", fontSize: 12 }} />
+            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+              {foldTargets(it).slice(0, 8).map((x) => (
+                <button key={x.id} onClick={() => void doFold(it, x.id)} style={{ all: "unset", cursor: "pointer", color: "#7aa2f7", textAlign: "left" }}>⤵ {x.title}{x.due ? ` (${x.due})` : ""}</button>
+              ))}
+              {foldTargets(it).length === 0 && <span className="muted">no other open deadline in this course</span>}
+            </div>
+            <button onClick={() => setFoldPick(null)} style={{ fontSize: 11, marginTop: 6 }}>Cancel</button>
+          </div>
+        )}
+        {showFolds === it.id && myFolds.map((fc) => (
+          <div key={fc.key} style={{ margin: "2px 0 2px 26px", fontSize: 12, display: "flex", gap: 8, alignItems: "center" }}>
+            <span className="muted">⤵ {fc.title}{fc.due ? ` (${fc.due})` : ""}{fc.done ? " — was done ✓" : ""}</span>
+            <button onClick={() => void unfold(fc.key)} className="iconbtn" title="restore as its own deadline (removes exactly the steps the fold added)" style={{ fontSize: 11 }}>↩ unfold</button>
+          </div>
+        ))}
         {noteEdit === it.id && (
           <div style={{ margin: "2px 0 6px 26px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
             <textarea
