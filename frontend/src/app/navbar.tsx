@@ -2,30 +2,79 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { MagnifyingGlassIcon, UserIcon } from "@heroicons/react/24/outline";
 
-export default function Navbar() {
-  const pathname = usePathname();
+export interface NavbarProps {
+  /** opened by the ⌘K quick-filter pill */
+  onQuickFilter?: () => void;
+}
 
-  const links = [
-    { href: "/", label: "Schedule" },
-    { href: "/courses", label: "Courses" },
-    { href: "/settings", label: "Settings" },
-  ];
+const NAV = [
+  { href: "/", label: "Schedule" },
+  { href: "/courses", label: "Courses & Deadlines" },
+  { href: "/settings", label: "Settings" },
+];
+
+export default function Navbar({ onQuickFilter }: NavbarProps) {
+  const pathname = usePathname() ?? "/";
+  const isActive = (href: string) =>
+    href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
-    <nav className="navbar">
-      <div className="navbar-brand">auto-school</div>
-      <div className="navbar-links">
-        {links.map((link) => (
-          <Link
-            key={link.href}
-            href={link.href}
-            className={`navbar-link ${pathname === link.href ? "active" : ""}`}
-          >
-            {link.label}
+    <header className="app-header">
+      <div className="app-header-inner">
+        {/* left: brand + cron status */}
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-lg)", minWidth: 0 }}>
+          <Link href="/" className="brand" aria-label="auto-school home">
+            <span className="brand-glyph">
+              <span className="live-dot" />
+            </span>
+            <span className="brand-word">
+              auto<em>school</em>
+            </span>
           </Link>
-        ))}
+          <span className="cron-chip" title="Calendar cron daemon state">
+            <span className="live-dot live-dot--static" style={{ width: 6, height: 6 }} />
+            CRON: IDLE
+          </span>
+        </div>
+
+        {/* center: pill nav */}
+        <nav className="segmented-tabs" aria-label="Primary">
+          {NAV.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`segmented-tab ${isActive(item.href) ? "segmented-tab--active" : ""}`.trim()}
+              aria-current={isActive(item.href) ? "page" : undefined}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+
+        {/* right: quick filter, version, avatar */}
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)" }}>
+          <button
+            type="button"
+            className="search-pill"
+            onClick={onQuickFilter}
+            title="Quick filter"
+          >
+            <MagnifyingGlassIcon className="heroicon" style={{ display: "inline" }} />
+            <span>Quick filter…</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <span className="version-pill" title="Engine version">
+            <span>v2.4</span>
+            <span className="version-pill-dot" />
+            <span className="version-pill-ready">99.8%</span>
+          </span>
+          <Link href="/settings" className="avatar-btn" title="Account" aria-label="Account">
+            <UserIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
+          </Link>
+        </div>
       </div>
-    </nav>
+    </header>
   );
 }
