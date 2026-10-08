@@ -302,7 +302,8 @@
   gap: 6px;
   flex-wrap: wrap;
 }
-.chat-web-btn {
+.chat-web-btn,
+.chat-tool-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -314,8 +315,11 @@
   color: var(--on-surface-variant);
   font-size: 0.8125rem;
   font-weight: 500;
+  cursor: pointer;
 }
-.chat-web-btn:hover:not(:disabled) { color: var(--on-surface); }
+.chat-web-btn:hover:not(:disabled),
+.chat-tool-btn:hover { color: var(--on-surface); background: var(--surface-container-highest); }
+.chat-tool-btn--clear:hover { color: var(--error); }
 .chat-web-btn--on {
   background: var(--tertiary-container);
   border-color: var(--tertiary-container);

@@ -207,10 +207,6 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           {suggestions.map((x) => (
             <button key={x} type="button" className="chat-suggest-btn" disabled={busy} onClick={() => void send(`"${x}"`)}>{`“${x}”`}</button>
           ))}
-          <span style={{ flex: 1 }} />
-          <MicroButton onClick={() => void clear()} title="Clear this chat history" icon={<TrashIcon className="heroicon" style={{ width: 12, height: 12 }} />}>
-            clear
-          </MicroButton>
         </div>
 
         {/* composer dock */}
@@ -234,14 +230,15 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           </div>
           <div className="chat-composer-foot">
             <div className="chat-composer-tools">
-              <MicroButton
+              <button
                 type="button"
-                icon={<PaperClipIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />}
-                title="Attachments are not supported here — upload documents on the Materials tab; they are indexed for Ask automatically"
+                className="chat-tool-btn"
+                title="Attachments are not supported in chat — upload documents on the Materials tab; they are indexed for Ask automatically"
                 aria-label="Add file (uploads are managed on the Materials tab)"
               >
+                <PaperClipIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
                 Add file
-              </MicroButton>
+              </button>
               <button
                 type="button"
                 className={`chat-web-btn ${webSearch ? "chat-web-btn--on" : ""}`.trim()}
@@ -252,6 +249,15 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
               >
                 <GlobeAltIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
                 Web {webSearch ? "on" : "off"}
+              </button>
+              <button
+                type="button"
+                className="chat-tool-btn chat-tool-btn--clear"
+                onClick={() => void clear()}
+                title="Clear this chat history"
+              >
+                <TrashIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
+                Clear
               </button>
               <span className="chat-token-count" title="rough estimate of the outgoing prompt size">
                 tokens: {tokenEstimate.toLocaleString("en-US")} / 128k
