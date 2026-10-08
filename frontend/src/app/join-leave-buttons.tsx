@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { MicroButton, PrimaryButton } from "@/components/ui";
 
 /** Ask the daemon to manually join+record a meeting by title (UI "Join"
  *  button), or to leave the current one. */
@@ -29,16 +30,22 @@ export default function JoinLeaveButtons({ title, joined, compact = false }: { t
   return (
     <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
       {!joined && (
-        <button onClick={() => act("join")} disabled={busy !== null} title={`Join + record "${title}" now`}>
-          {busy === "join" ? "joining…" : compact ? "Join" : "Join now"}
-        </button>
+        compact ? (
+          <MicroButton className="btn-primary" onClick={() => act("join")} disabled={busy !== null} title={`Join + record "${title}" now`}>
+            {busy === "join" ? "joining…" : "Join"}
+          </MicroButton>
+        ) : (
+          <PrimaryButton onClick={() => act("join")} disabled={busy !== null} title={`Join + record "${title}" now`}>
+            {busy === "join" ? "joining…" : "Join now"}
+          </PrimaryButton>
+        )
       )}
       {joined && (
-        <button onClick={() => act("leave")} disabled={busy !== null} title="Stop recording, consolidate, and leave">
+        <MicroButton className="btn-destructive" onClick={() => act("leave")} disabled={busy !== null} title="Stop recording, consolidate, and leave">
           {busy === "leave" ? "leaving…" : compact ? "Leave" : "Leave meeting"}
-        </button>
+        </MicroButton>
       )}
-      {msg && <span className="muted">{msg.slice(0, 60)}</span>}
+      {msg && <span className="muted" style={{ fontSize: "0.6875rem" }}>{msg.slice(0, 60)}</span>}
     </span>
   );
 }

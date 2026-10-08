@@ -1,13 +1,14 @@
 import { readCalendar } from "@/lib/calendar";
-import CalendarList from "./calendar-list";
+import ScheduleScreen from "@/components/schedule/schedule-screen";
 
 export const dynamic = "force-dynamic";
 
-/** Today's calendar from the backend's last scan (out/calendar-events.txt).
- *  Live join-state + Leave button live in the client component. */
+/** Root dashboard (app "/"): server side only reads the backend's last
+ *  calendar scan (out/calendar-events.txt) — every live join-state badge,
+ *  the daemon bar and the activity stream poll /api/backend client-side. */
 export default function CalendarBoard() {
   const { events, asOf } = readCalendar();
   // serialize dates for the client boundary
   const plain = events.map((e) => ({ ...e, start: new Date(e.start).toISOString(), end: new Date(e.end).toISOString() }));
-  return <CalendarList events={plain} asOf={asOf ? asOf.toISOString() : null} />;
+  return <ScheduleScreen events={plain} asOf={asOf ? asOf.toISOString() : null} />;
 }
