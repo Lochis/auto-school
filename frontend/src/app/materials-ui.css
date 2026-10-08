@@ -1,0 +1,394 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   materials-ui.css — Screen 4 (course_materials_file_explorer) chrome
+   Owns: stat strip, drop-zone upload panel, semester toolbar, hierarchical
+   file explorer table, selection bar, sync strip, Ask-AI CTA, ingest form.
+   Relies on Safe Linear System tokens + shared classes in globals.css.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.mat-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* ── Stat strip ───────────────────────────────────────────────────────── */
+
+.mat-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--space-md);
+}
+.mat-stat-sub {
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--text-low);
+}
+.mat-parser {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Upload panel (drop zone + actions + semester toolbar) ────────────── */
+
+.mat-upload-top {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+.mat-dropzone {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: var(--space-md);
+  border: 1.5px dashed var(--line-hover);
+  border-radius: var(--radius-lg);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.mat-dropzone:hover,
+.mat-dropzone.dragover {
+  border-color: var(--primary-container);
+  background: rgba(16, 185, 129, 0.06);
+}
+.mat-drop-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mat-drop-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+.mat-drop-title .mat-drop-or {
+  font-weight: 400;
+  color: var(--text-low);
+}
+.mat-drop-sub {
+  font-size: 0.75rem;
+  color: var(--on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mat-drop-formats {
+  margin-left: auto;
+  flex: none;
+}
+.mat-upload-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+.mat-upload-actions .muted { font-size: 0.8125rem; }
+
+/* semester anchor toolbar (second row of the upload panel) */
+.mat-semtoolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding: 6px var(--space-sm);
+  background: rgba(13, 14, 21, 0.6);
+  border-radius: var(--radius-md);
+}
+.mat-sem-left,
+.mat-sem-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.mat-sem-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  color: var(--on-surface-variant);
+}
+.mat-sem-label .heroicon { color: var(--primary); }
+.mat-sem-input {
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+}
+.mat-sem-help {
+  font-size: 0.75rem;
+  color: var(--text-low);
+}
+.mat-linkbtn {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8125rem;
+  color: var(--on-surface-variant);
+  transition: color 0.15s;
+}
+.mat-linkbtn:hover { color: var(--primary); }
+.mat-linkbtn .heroicon { width: 0.9em; height: 0.9em; }
+
+/* ── File explorer table ──────────────────────────────────────────────── */
+
+.mat-explorer { padding: 0; overflow: hidden; }
+
+.mat-selbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(6, 78, 59, 0.25);
+  border-bottom: 1px solid rgba(6, 95, 70, 0.5);
+  color: var(--primary-fixed-dim);
+  font-size: 0.8125rem;
+  font-feature-settings: "tnum" 1;
+}
+
+.mat-head,
+.mat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.mat-head {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface-container-low);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-low);
+  user-select: none;
+}
+.mat-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mat-col { flex: none; }
+.mat-col--cat {
+  width: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.mat-col--size {
+  width: 76px;
+  text-align: right;
+  font-feature-settings: "tnum" 1;
+}
+.mat-col--act {
+  width: 104px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.mat-body {
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 62vh;
+  overflow: auto;
+}
+.mat-row {
+  padding: 3px var(--space-sm);
+  border-radius: var(--radius-md);
+}
+.mat-row:hover { background: var(--surface-container-low); }
+.mat-row--folder {
+  background: rgba(13, 14, 21, 0.5);
+  margin-top: 3px;
+}
+.mat-row--folder:hover { background: var(--surface-container-low); }
+
+.mat-caret {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  color: var(--on-surface-variant);
+  padding: 1px;
+}
+.mat-caret:hover { color: var(--on-surface); }
+.mat-caret svg { transition: transform 0.15s; }
+.mat-caret--open svg { transform: rotate(90deg); }
+
+.mat-ftile {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+.mat-fname {
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--on-surface);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mat-fname--file { font-weight: 400; }
+
+/* extension-derived icon tints */
+.mat-ic-red { color: var(--error); }
+.mat-ic-indigo { color: var(--secondary); }
+.mat-ic-cyan { color: var(--tertiary); }
+.mat-ic-emerald { color: var(--primary); }
+.mat-ic-muted { color: var(--outline); }
+
+.mat-col--size-muted { color: var(--text-low); font-size: 0.75rem; }
+.mat-size--big { color: var(--tertiary); font-weight: 600; }
+.mat-wk { font-size: 0.6875rem; color: var(--text-low); white-space: nowrap; }
+
+/* compact row action glyphs */
+.mat-act { min-width: 26px; min-height: 26px; padding: 0; }
+.mat-act--del:hover:not(:disabled) { background: rgba(69, 10, 10, 0.3); color: var(--error); }
+
+/* inline rename editor */
+.mat-rename {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mat-rename input { width: min(320px, 56vw); padding: 3px 8px; font-size: 0.8125rem; }
+
+/* loose root files divider */
+.mat-loose-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-sm) 2px;
+  margin-top: 8px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-low);
+}
+.mat-loose-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* explorer footer sync strip */
+.mat-syncbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface-container-lowest);
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+  color: var(--on-surface-variant);
+  font-feature-settings: "tnum" 1;
+}
+.mat-sync-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--primary);
+}
+
+.mat-empty {
+  padding: var(--space-md);
+  margin: 0;
+}
+.mat-err {
+  padding: var(--space-sm) var(--space-md);
+  margin: 0;
+  color: var(--error);
+}
+
+/* ── Ask AI CTA panel ─────────────────────────────────────────────────── */
+
+.mat-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  flex-wrap: wrap;
+  background: linear-gradient(
+    90deg,
+    var(--surface-container-low),
+    var(--surface-container),
+    var(--surface-container-low)
+  );
+}
+.mat-cta-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+.mat-cta-title {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--on-surface);
+}
+.mat-cta-sub {
+  font-size: 0.8125rem;
+  color: var(--on-surface-variant);
+}
+
+/* ── Ingest form internals (dropdown styled by sessions-ui.css) ───────── */
+
+.ig-grid {
+  display: grid;
+  gap: 10px;
+}
+.ig-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.ig-lbl {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--on-surface);
+  white-space: nowrap;
+}
+.ig-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.ig-msg {
+  font-size: 0.8125rem;
+  color: var(--on-surface-variant);
+}
+.ig-preview { font-size: 0.6875rem; }
+
+/* ── Responsive ───────────────────────────────────────────────────────── */
+
+@media (max-width: 700px) {
+  .mat-col--cat { display: none; }
+  .mat-drop-formats { display: none; }
+  .mat-sem-help { display: none; }
+}

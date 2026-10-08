@@ -2,6 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ArrowUpTrayIcon, VideoCameraIcon } from "@heroicons/react/24/outline";
+import { CodeChip, PrimaryButton, Toggle } from "@/components/ui";
+import "../../materials-ui.css";
 
 /** Ingest form — bring a Teams recording (+ optional transcript) into the
  *  course.  Week # + course → backend derives the standard
@@ -72,38 +75,38 @@ export default function IngestForm({ slug, courses, semesterStart }: {
   };
 
   return (
-    <details className="card" style={{ marginBottom: 14 }}>
-      <summary style={{ cursor: "pointer", fontWeight: 600 }}>＋ Ingest a Teams recording</summary>
-      <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <label style={{ fontWeight: 600 }}>Video</label>
+    <details className="card">
+      <summary><VideoCameraIcon className="heroicon" /> Ingest a Teams recording</summary>
+      <div className="ig-grid">
+        <div className="ig-row">
+          <span className="ig-lbl">Video</span>
           <input type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.m4v"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          <label style={{ fontWeight: 600 }}>Transcript (optional)</label>
+          <span className="ig-lbl">Transcript (optional)</span>
           <input type="file" accept=".txt,.md,.vtt" onChange={(e) => setTranscript(e.target.files?.[0] ?? null)} />
         </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <label htmlFor="ig-course" style={{ fontWeight: 600 }}>Course folder</label>
+        <div className="ig-row">
+          <label htmlFor="ig-course" className="ig-lbl">Course folder</label>
           <input id="ig-course" list="ig-courses" value={course} onChange={(e) => setCourse(e.target.value)}
             style={{ padding: "4px 8px", width: 220 }} />
           <datalist id="ig-courses">{courses.map((c) => <option key={c} value={c} />)}</datalist>
           {hasStart ? (
             <>
-              <label htmlFor="ig-week" style={{ fontWeight: 600 }}>Week</label>
+              <label htmlFor="ig-week" className="ig-lbl">Week</label>
               <select id="ig-week" value={week} onChange={(e) => setWeek(Number(e.target.value))} style={{ padding: "4px 8px" }}>
                 {weekOptions.map((w) => <option key={w.week} value={w.week}>{w.label}</option>)}
               </select>
             </>
           ) : <span className="muted">set a semester start (Materials tab) to pick weeks — otherwise today&apos;s date is used</span>}
         </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <label style={{ display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
-            <input type="checkbox" checked={autoTranscribe} onChange={(e) => setAutoTranscribe(e.target.checked)} />
-            auto-transcribe with Gemini when no transcript uploaded
-          </label>
-          <button onClick={submit} disabled={busy || !file}>Upload</button>
-          {preview && <span className="muted">→ {preview}</span>}
-          {msg && <span className="muted">{msg}</span>}
+        <div className="ig-row">
+          <span className="ig-toggle">
+            <Toggle checked={autoTranscribe} onChange={setAutoTranscribe} id="ig-auto" title="auto-transcribe with Gemini when no transcript uploaded" />
+            <label htmlFor="ig-auto" className="ig-lbl">auto-transcribe with Gemini when no transcript uploaded</label>
+          </span>
+          <PrimaryButton icon={<ArrowUpTrayIcon className="heroicon" />} onClick={submit} disabled={busy || !file}>Upload</PrimaryButton>
+          {preview && <CodeChip className="ig-preview" title="derived storage stem">→ {preview}</CodeChip>}
+          {msg && <span className="ig-msg">{msg}</span>}
         </div>
       </div>
     </details>
