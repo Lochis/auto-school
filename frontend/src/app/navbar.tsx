@@ -28,10 +28,6 @@ export default function Navbar() {
               auto<em>school</em>
             </span>
           </Link>
-          <span className="cron-chip" title="Calendar cron daemon state">
-            <span className="live-dot live-dot--static" style={{ width: 6, height: 6 }} />
-            CRON: IDLE
-          </span>
         </div>
 
         {/* center: pill nav */}

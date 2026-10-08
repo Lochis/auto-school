@@ -198,18 +198,18 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
                         <div style={{ margin: "8px 0 2px" }}>
                           {c.sessions.map((s) => (
                             <div key={s.stem} className="repo-session-row">
-                              <span className="muted tabular" style={{ fontSize: "0.75rem", minWidth: 90 }}>
+                              <span className="muted tabular" style={{ fontSize: "0.6875rem", minWidth: 0, flex: "none" }}>
                                 {s.date}
                                 {s.time ? ` ${s.time}` : ""}
                               </span>
                               {s.week !== null && (
-                                <span className="muted tabular" style={{ fontSize: "0.6875rem", minWidth: 52 }}>
-                                  week {s.week}
+                                <span className="muted tabular" style={{ fontSize: "0.625rem", minWidth: 0, flex: "none" }}>
+                                  wk{s.week}
                                 </span>
                               )}
                               <Link
                                 href={`/course/${encodeURIComponent(c.slug)}/session/${encodeURIComponent(s.stem)}`}
-                                style={{ fontSize: "0.8125rem" }}
+                                title={s.stem.split("__").slice(1).join("__").replace(/_/g, " ") || s.stem}
                               >
                                 {s.stem.split("__").slice(1).join("__").replace(/_/g, " ") || s.stem}
                               </Link>

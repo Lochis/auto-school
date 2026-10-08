@@ -323,14 +323,8 @@
 /* ── Registered course repositories ── */
 .repos-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 1fr; /* lives in the right rail now — never multi-column */
   gap: var(--space-md);
-}
-@media (min-width: 700px) {
-  .repos-grid { grid-template-columns: 1fr 1fr; }
-}
-@media (min-width: 1040px) {
-  .repos-grid { grid-template-columns: 1fr 1fr 1fr; }
 }
 .repo-card {
   background: var(--surface-container-low);
@@ -366,12 +360,23 @@ a.repo-name:hover { color: var(--primary); text-decoration: none; }
 }
 .repo-session-row {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  gap: 6px;
+  align-items: baseline;
   padding: 2px 0;
   font-size: 0.8125rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
+.repo-session-row a {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--on-surface);
+}
+.repo-session-row a:hover { color: var(--primary); }
 .repo-expand {
   font-size: 0.6875rem;
   font-weight: 600;
