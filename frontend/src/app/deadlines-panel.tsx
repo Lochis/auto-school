@@ -472,7 +472,7 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
     return (
       <>
         <div className={`cdl-row ${isOverdue ? "cdl-row--overdue" : ""} ${it.done ? "cdl-row--done" : ""}`}>
-          <div className="cdl-main">
+          <div className="cdl-top">
             <input
               type="checkbox"
               className={`cdl-check ${isOverdue ? "cdl-check--danger" : ""}`}
@@ -480,10 +480,7 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
               onChange={() => toggleSel(it.id)}
               aria-label={`select ${it.title}`}
             />
-            <KindIcon it={it} />
-            <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-                <span className="cdl-title">{it.title}</span>
+            <KindIcon it={it} />                <span className="cdl-title" title={it.title}>{it.title}</span>
                 <Link className="cdl-chiplink" href={`/course/${encodeURIComponent(it.course)}`} title="open course — ${it.course}" onClick={(e) => e.stopPropagation()}>
                   <CodeChip title={it.course}>{courseCode(it.course)}</CodeChip>
                 </Link>
@@ -497,28 +494,7 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
                   <Chip tone="neutral">no date</Chip>
                 )}
                 {it.dueManual && <PencilIcon className="heroicon cdl-iconbtn--amber" title="date set manually — survives rebuilds" style={{ display: "inline" }} />}
-              </div>
-              <div className="cdl-meta">
-                {ck && <span>Progress: <strong>{doneN}/{ck.items.length} tasks</strong></span>}
-                {ck && <span>•</span>}
-                {it.stale && (
-                  <span style={{ color: "#e0af68" }} title={`not seen in its source at the last update (${new Date(it.stale).toLocaleDateString("en-CA")}) — verify or remove`}>
-                    <ExclamationTriangleIcon className="heroicon" style={{ display: "inline" }} /> not in source
-                  </span>
-                )}
-                {it.stale && (
-                  <button onClick={() => void removeStale(it)} className="cdl-iconbtn cdl-iconbtn--red" title="remove this entry (its source no longer defines it)"><XMarkIcon className="heroicon" /></button>
-                )}
-                {it.confidence !== "high" && <span>({it.confidence})</span>}
-                {it.note && <span title={it.source}>— {it.note}</span>}
-                {it.userNote && noteEdit !== it.id && (
-                  <span style={{ color: "#e0af68" }} title={it.userNote}><ClipboardDocumentListIcon className="heroicon" style={{ display: "inline" }} /> {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
-                )}
-                {it.done && it.doneAt && <span><CheckIcon className="heroicon" style={{ display: "inline" }} /> {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
-              </div>
-            </div>
-          </div>
-          <div className="cdl-actions">
+                        <div className="cdl-actions">
             <Link
               href={`/course/${encodeURIComponent(it.course)}?tab=ask&prompt=${encodeURIComponent(starterPrompt(it))}`}
               className="btn btn-micro" style={{ color: "var(--primary)" }}
@@ -566,6 +542,25 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
               </button>
             )}
           </div>
+          </div>
+          <div className="cdl-meta">
+                {ck && <span>Progress: <strong>{doneN}/{ck.items.length} tasks</strong></span>}
+                {ck && <span>•</span>}
+                {it.stale && (
+                  <span style={{ color: "#e0af68" }} title={`not seen in its source at the last update (${new Date(it.stale).toLocaleDateString("en-CA")}) — verify or remove`}>
+                    <ExclamationTriangleIcon className="heroicon" style={{ display: "inline" }} /> not in source
+                  </span>
+                )}
+                {it.stale && (
+                  <button onClick={() => void removeStale(it)} className="cdl-iconbtn cdl-iconbtn--red" title="remove this entry (its source no longer defines it)"><XMarkIcon className="heroicon" /></button>
+                )}
+                {it.confidence !== "high" && <span>({it.confidence})</span>}
+                {it.note && <span title={it.source}>— {it.note}</span>}
+                {it.userNote && noteEdit !== it.id && (
+                  <span style={{ color: "#e0af68" }} title={it.userNote}><ClipboardDocumentListIcon className="heroicon" style={{ display: "inline" }} /> {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
+                )}
+                {it.done && it.doneAt && <span><CheckIcon className="heroicon" style={{ display: "inline" }} /> {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
+              </div>
         </div>
         {dateEdit === it.id && (
           <div className="cdl-sub">

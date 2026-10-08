@@ -72,13 +72,20 @@
   background: var(--surface-container-low);
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
-  padding: 8px var(--space-md);
+  padding: 6px var(--space-md);
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  flex-direction: column;
+  gap: 3px;
   transition: background 0.15s, border-color 0.15s;
+}
+/* top line: title + course badge + due chip stretch across the card,
+   actions hug the right; description sits below on the left */
+.cdl-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
 }
 .cdl-row:hover { background: var(--surface-container-high); }
 .cdl-row--overdue {
@@ -87,20 +94,16 @@
 }
 .cdl-row--overdue:hover { background: rgba(69, 10, 10, 0.32); }
 .cdl-row--done .cdl-title { text-decoration: line-through; opacity: 0.6; }
-.cdl-main {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  min-width: 0;
-  flex: 1 1 340px;
-}
 .cdl-title {
+  flex: 1;
   font-size: 0.9375rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--on-surface);
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cdl-row:hover .cdl-title { color: var(--primary); }
 .cdl-row--overdue:hover .cdl-title,
@@ -108,6 +111,9 @@
 .cdl-meta {
   color: var(--on-surface-variant);
   font-size: 0.75rem;
+  width: 100%;
+  min-width: 0;
+  padding-left: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
