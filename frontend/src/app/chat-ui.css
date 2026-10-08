@@ -98,20 +98,6 @@
   padding: var(--space-sm) 2px var(--space-sm);
 }
 
-.chat-empty {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  padding: var(--space-lg);
-  border-radius: var(--radius-xl);
-  border: 1px dashed var(--line-hover);
-  background: var(--surface-container-low);
-  color: var(--on-surface-variant);
-  font-size: 0.875rem;
-  line-height: 1.55;
-}
-.chat-empty strong { color: var(--on-surface); }
-
 .chat-turn {
   display: flex;
   flex-direction: column;
@@ -224,10 +210,20 @@
 
 /* ── Suggested prompt chips (quoted bordered pills) ──────────────────── */
 
-.chat-suggest {
+.chat-suggest-row {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+  padding: 8px 4px 4px 10px;
+}
+.chat-suggest-hint {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--outline);
+  margin-right: 2px;
 }
 .chat-suggest-btn {
   border-radius: var(--radius-full);

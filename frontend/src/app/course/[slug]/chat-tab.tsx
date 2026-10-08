@@ -15,7 +15,7 @@ import { LiveDot, MicroButton } from "@/components/ui";
 import DocPreview from "@/components/chat/doc-preview";
 import { MessageRow, makeLinkifier } from "@/components/chat/message-row";
 import ChatSidebar from "@/components/chat/sidebar";
-import type { LexHit, MaterialEntry, ModelQuota, Msg } from "@/components/chat/types";
+import type { LexHit, MaterialEntry, Msg } from "@/components/chat/types";
 import "../../chat-ui.css";
 
 /** sensible static starters — the chat API has no suggestions endpoint */
@@ -30,19 +30,11 @@ const SUGGESTED_ALL = [
   "Which lectures covered the last assignment's topic?",
 ];
 
-/** current head of the model fallback chain (first available model) */
-function currentModel(quotas: ModelQuota[] | null): string | undefined {
-  if (!quotas || quotas.length === 0) return undefined;
-  return (quotas.find((q) => q.available && !q.exhausted) ?? quotas[0])?.model
-    ?.replace(/^models\//, "");
-}
-
 export default function ChatTab({ slug, initialPrompt }: { slug?: string; initialPrompt?: string }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [materials, setMaterials] = useState<MaterialEntry[]>([]);
   const [lexicon, setLexicon] = useState<Record<string, LexHit[]>>({});
   const [hints, setHints] = useState<Record<string, string[]>>({});
-  const [model, setModel] = useState<ModelQuota[] | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
@@ -75,10 +67,6 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
         })
         .catch(() => { /* linkify just won't activate */ });
     }
-    fetch("/api/models")
-      .then((r) => r.json())
-      .then((q: ModelQuota[]) => setModel(Array.isArray(q) ? q : null))
-      .catch(() => { /* model stays "—" */ });
   }, [slug]);
 
   useEffect(() => {
@@ -177,7 +165,8 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
 
   // rough token estimate for the composer counter (≈ chars/4)
   const tokenEstimate = Math.ceil(input.length / 4);
-  const modelName = currentModel(model);
+  // chat runs through the daemon's GLM routing (glmChatRaw, GLM_MODEL default glm-5.3)
+  const modelName = "glm-5.3";
 
   const suggestions = slug ? SUGGESTED_COURSE : SUGGESTED_ALL;
 
@@ -215,33 +204,13 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
               clear
             </MicroButton>
             <span className="chat-ctx-model" title="head of the model fallback chain (Settings)">
-              Model: {modelName ?? (model === null ? "…" : "—")}
+              Model: {modelName}
             </span>
           </div>
         </div>
 
         {/* thread */}
         <div className="chat-scroll">
-          {messages.length === 0 && !busy && (
-            <div className="chat-empty">
-              <p style={{ margin: 0 }}>
-                {slug ? (
-                  <>Ask anything about this course — <strong>“what do I need to do for week 1?”</strong>, “summarize the last lecture”,
-                  “explain the diagram in 1.1 Dimensional Modeling”. The assistant reads the actual documents
-                  (including figures, via a vision model) and recorded sessions.</>
-                ) : (
-                  <>Ask across <strong>ALL courses</strong> — “it's week 1, what do I have to do and what should I study?”,
-                  “when is my next thing due?”, “which lectures covered dimensional modeling?”. The assistant
-                  sweeps every course's materials, sessions and documents (figures included, via a vision model).</>
-                )}
-              </p>
-              <div className="chat-suggest">
-                {suggestions.map((s) => (
-                  <button key={s} type="button" className="chat-suggest-btn" onClick={() => void send(`"${s}"`)}>{`“${s}”`}</button>
-                ))}
-              </div>
-            </div>
-          )}
           {messages.map((m) => (
             <MessageRow key={m.at ?? m.content.slice(0, 32)} m={m} linkify={linkify} onOpenPreview={openPreviewHash} />
           ))}
@@ -254,6 +223,14 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
             <p className="badge badge-red" style={{ alignSelf: "flex-start" }}>{err}</p>
           )}
           <div ref={bottomRef} />
+        </div>
+
+        {/* suggested starters — always available just above the composer */}
+        <div className="chat-suggest-row">
+          <span className="chat-suggest-hint">Try:</span>
+          {suggestions.map((x) => (
+            <button key={x} type="button" className="chat-suggest-btn" disabled={busy} onClick={() => void send(`"${x}"`)}>{`“${x}”`}</button>
+          ))}
         </div>
 
         {/* composer dock */}
