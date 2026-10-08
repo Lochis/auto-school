@@ -934,3 +934,8 @@ details > summary { cursor: pointer; color: var(--secondary); }
 .hljs .hljs-section, .hljs .hljs-title.section_ { color: #82aaff; font-weight: 600; }
 .hljs .hljs-emphasis { font-style: italic; }
 .hljs .hljs-strong { font-weight: 700; }
+
+/* chat pages span the full viewport width (not the 80rem cap) */
+.site-main:has(.chat-layout) main {
+  max-width: none;
+}
