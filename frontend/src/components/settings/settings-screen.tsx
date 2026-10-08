@@ -23,6 +23,16 @@ import "../../app/settings-ui.css";
  *  restart: each consumer reads the setting at use time (per segment close,
  *  per request, per spawn). .env values only seed defaults on a fresh volume. */
 interface KeyInfo { from: "settings" | "env" | null; hint: string | null }
+
+/** Never surface a key hint verbatim — keep the configured-state readable
+ *  but show only a masked tail ("settings***4f2a"). */
+function maskHint(hint: string | null | undefined): string {
+  if (!hint) return "";
+  const clean = hint.replace(/[\u2026.]+$/g, "").trim();
+  if (!clean) return "";
+  const tail = clean.slice(-4);
+  return `***${tail}`;
+}
 interface AllSettings {
   transcribe: boolean;
   recordRetentionDays: number;
@@ -363,7 +373,7 @@ export default function SettingsScreen() {
                   {info?.from && (
                     <span className={`vault-status ${info.from === "settings" ? "vault-status--set" : ""}`}>
                       <LiveDot static />
-                      set: {info.from} {info.hint ?? ""}
+                      set: {info.from}{maskHint(info.hint)}
                     </span>
                   )}
                 </div>

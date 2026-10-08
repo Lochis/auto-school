@@ -622,7 +622,7 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
       <div className="cdl-milestone">
         <div className="cdl-milestone-head">
           <CodeChip title={it.course}>{courseCode(it.course)}</CodeChip>
-          <span className="tabular" style={{ fontSize: "0.6875rem", color: "var(--tertiary)" }}>
+          <span className="tabular" style={{ fontSize: "0.6875rem", color: "var(--secondary)" }}>
             Start: {it.startBy ?? "anytime"}
           </span>
           <input
@@ -638,7 +638,9 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
         {it.note && <div className="cdl-meta">{it.note}</div>}
         {it.userNote && <div className="cdl-meta" style={{ color: "#e0af68" }} title={it.userNote}><ClipboardDocumentListIcon className="heroicon" style={{ display: "inline" }} /> {it.userNote.length > 80 ? `${it.userNote.slice(0, 80)}…` : it.userNote}</div>}
         <div className="cdl-milestone-foot">
-          {w !== null && w >= 20 ? <Badge variant="indigo">High Impact</Badge> : w !== null ? <Chip>Weight: {w}%</Chip> : <Chip>Milestone</Chip>}
+          {w !== null && <Chip>Weight: {w}%</Chip>}
+          {w !== null && w >= 15 ? <Badge variant="indigo">High Impact</Badge> : null}
+          {w === null && <Chip>Milestone</Chip>}
           <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
             <Link
               href={`/course/${encodeURIComponent(it.course)}?tab=ask&prompt=${encodeURIComponent(starterPrompt(it))}`}
@@ -692,7 +694,9 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
   };
 
   const winText = `${fmtWindow(new Date())} — ${fmtWindow(new Date(Date.now() + 6 * 86_400_000))}`;
-  const milestones = tab === "week" ? f(spreadSoon) : tab === "later" ? f(spreadFar) : [];
+  // milestone cards: every open spread-out item, even when it also carries a
+  // hard due date (those still show as dated rows in the tabs above)
+  const milestones = f(open.filter((i) => i.spread || i.startBy));
 
   return (
     <>
@@ -789,23 +793,27 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
         )}
 
         {milestones.length > 0 && (
-          <div style={{ marginTop: 6 }}>
-            <div className="cdl-section-head" style={{ marginBottom: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flexWrap: "wrap" }}>
-                <CalendarDaysIcon className="heroicon" style={{ color: "var(--tertiary)" }} />
-                <h3 style={{ margin: 0 }}>Worth Spreading Out / Upcoming Milestones</h3>
-                <Chip pill>{milestones.length} items</Chip>
-              </div>
-              <button onClick={() => setShowMs(!showMs)} className="cdl-iconbtn" title={showMs ? "collapse" : "expand"}>
-                {showMs ? "Collapse" : "Expand"}
-                {showMs ? <ChevronUpIcon className="heroicon" /> : <ChevronDownIcon className="heroicon" />}
-              </button>
-            </div>
-            {showMs && (
-              <div className="cdl-milestones">
-                {milestones.map((it) => <Fragment key={it.id}>{Milestone({ it })}</Fragment>)}
-              </div>
-            )}
+          <div style={{ marginTop: 12 }}>
+            <Panel
+              eyebrow="Worth Spreading Out"
+              icon={<CalendarDaysIcon className="heroicon" />}
+              title="Upcoming Milestones"
+              actions={
+                <>
+                  <Chip pill>{milestones.length} items</Chip>
+                  <MicroButton onClick={() => setShowMs(!showMs)} title={showMs ? "collapse" : "expand"}>
+                    {showMs ? "Collapse" : "Expand"}
+                    {showMs ? <ChevronUpIcon className="heroicon" /> : <ChevronDownIcon className="heroicon" />}
+                  </MicroButton>
+                </>
+              }
+            >
+              {showMs && (
+                <div className="cdl-milestones">
+                  {milestones.map((it) => <Fragment key={it.id}>{Milestone({ it })}</Fragment>)}
+                </div>
+              )}
+            </Panel>
           </div>
         )}
 

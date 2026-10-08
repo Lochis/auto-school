@@ -105,7 +105,14 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
             <span className="breadcrumb-sep">/</span>
             <CodeChip>{slug.split("-")[0]}</CodeChip>
           </div>
-          <Eyebrow>Course Repository</Eyebrow>
+          <SegmentedTabs
+            variant="emerald"
+            items={[
+              { label: "Sessions", active: activeTab === "sessions", href: `/course/${slug}` },
+              { label: "Materials", active: activeTab === "materials", href: `/course/${slug}?tab=materials` },
+              { label: "Ask", active: activeTab === "ask", href: `/course/${slug}?tab=ask` },
+            ]}
+          />
         </div>
 
         <div className="sess-hero">

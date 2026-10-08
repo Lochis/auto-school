@@ -194,7 +194,6 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
                         <CourseRename course={c.slug} />
                         {n === 0 && <CourseDelete course={c.slug} />}
                       </span>
-                      <span className="repo-expand">Sessions</span>
                     </div>
                   </summary>
                   {n === 0 ? (

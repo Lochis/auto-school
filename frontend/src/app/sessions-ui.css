@@ -258,8 +258,8 @@
 .sess-meeting { font-size: 0.8125rem; display: inline-flex; align-items: center; gap: 4px; }
 .sess-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .sess-actions .btn { font-size: 0.8125rem; }
-.sess-move-wrap { display: inline-flex; align-items: center; gap: 6px; }
-.sess-move { padding: 4px 8px; font-size: 0.8125rem; min-height: 30px; }
+.sess-move-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.sess-move { padding: 4px 8px; font-size: 0.8125rem; min-height: 30px; max-width: 190px; text-overflow: ellipsis; }
 .sess-msg { margin: 0; font-size: 0.8125rem; color: var(--on-surface-variant); }
 .sess-msg--err { color: var(--error); }
 .sess-card video {
@@ -325,7 +325,8 @@
 
 /* notes markdown headings → uppercase micro-labels */
 .sess-notes-scope .notes h1,
-.sess-notes-scope .notes h2 {
+.sess-notes-scope .notes h2,
+.sess-notes-scope .notes h3 {
   font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -334,7 +335,25 @@
   margin: 14px 0 4px;
 }
 .sess-notes-scope .notes h1:first-child,
-.sess-notes-scope .notes h2:first-child { margin-top: 0; }
+.sess-notes-scope .notes h2:first-child,
+.sess-notes-scope .notes h3:first-child { margin-top: 0; }
+
+/* the notes' document title heading ("Class Notes — …") reads as a heading,
+   not an uppercase eyebrow */
+.sess-doc-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--on-surface);
+}
+
+/* inline transcript timestamps ("[10:00]") */
+.sess-ts {
+  color: var(--tertiary);
+  font-weight: 600;
+  font-feature-settings: "tnum" 1;
+  margin-right: 2px;
+}
 
 /* KEY MILESTONES & ACTIONS item cards */
 .sess-action-grid {

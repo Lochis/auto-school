@@ -273,15 +273,9 @@ export default function MaterialsTab({ slug }: { slug: string }) {
     return c;
   }, [tree]);
   const totalSize = useMemo(() => entries.reduce((n, e) => n + e.size, 0), [entries]);
-  const formats = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const e of entries) {
-      const k = kindFor(e.filename).category;
-      if (k !== "FILE") counts.set(k, (counts.get(k) ?? 0) + 1);
-    }
-    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => k);
-    return top.length ? top.join(" / ") : "ANY FORMAT";
-  }, [entries]);
+  // the drop zone accepts archives too — surface the accepted formats, not the
+  // extension histogram of what happens to be stored already
+  const formats = "ZIP / PDF / DOCX / MP4";
   const anchorLabel = useMemo(() => {
     if (semStart === null) return "…";
     if (!semStart) return "not set";
@@ -415,7 +409,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
               Upload
             </PrimaryButton>
             <GhostButton icon={<FolderPlusIcon className="heroicon" />} onClick={() => folderRef.current?.click()} disabled={busy} title="pick a whole folder — subpaths are preserved">
-              Add Folder
+              New Folder
             </GhostButton>
             {busy && <span className="muted">working…</span>}
           </div>

@@ -72,12 +72,12 @@
   background: var(--surface-container-low);
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
-  padding: var(--space-md);
+  padding: 8px var(--space-md);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-sm);
+  gap: 6px;
   transition: background 0.15s, border-color 0.15s;
 }
 .cdl-row:hover { background: var(--surface-container-high); }

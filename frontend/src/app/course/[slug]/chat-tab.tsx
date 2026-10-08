@@ -9,7 +9,7 @@
  *  The same component also serves the all-courses chat (no slug → no rail). */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowUpIcon, GlobeAltIcon, TrashIcon, XMarkIcon,
+  ArrowUpIcon, GlobeAltIcon, PaperClipIcon, TrashIcon, XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { LiveDot, MicroButton } from "@/components/ui";
 import DocPreview from "@/components/chat/doc-preview";
@@ -277,6 +277,14 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           </div>
           <div className="chat-composer-foot">
             <div className="chat-composer-tools">
+              <MicroButton
+                type="button"
+                icon={<PaperClipIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />}
+                title="Attachments are not supported here — upload documents on the Materials tab; they are indexed for Ask automatically"
+                aria-label="Add file (uploads are managed on the Materials tab)"
+              >
+                Add file
+              </MicroButton>
               <button
                 type="button"
                 className={`chat-web-btn ${webSearch ? "chat-web-btn--on" : ""}`.trim()}

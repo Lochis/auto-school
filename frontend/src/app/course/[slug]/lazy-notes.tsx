@@ -79,9 +79,25 @@ function actionItems(body: string): ActionItem[] {
 }
 
 function Md({ children }: { children: string }) {
+  // inline "**[10:00]**" transcript timestamps render as tabular-nums spans
+  // instead of bold, so they read as a timeline gutter inside the notes
   return (
     <div className="notes">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: false }]]}>{children}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+        components={{
+          strong: ({ children }) => {
+            const text = Array.isArray(children) ? children.join("") : String(children ?? "");
+            if (/^\[\d{1,2}:\d{2}\]$/.test(text.trim())) {
+              return <span className="sess-ts tabular">{text.trim()}</span>;
+            }
+            return <strong>{children}</strong>;
+          },
+        }}
+      >
+        {children}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -132,9 +148,25 @@ function NotesBody({ md }: { md: string }) {
           )}
         </div>
       )}
-      {rest.map((s, i) => (
-        <Md key={i}>{`### ${s.heading}\n\n${s.body}`}</Md>
-      ))}
+      {rest.map((s, i) => {
+        // the document title heading ("Class Notes — …") stays a heading;
+        // every other markdown section label becomes an eyebrow-style label
+        const isTitle = i === 0 && /^class notes/i.test(s.heading);
+        if (isTitle) {
+          return (
+            <div className="sess-section" key={i}>
+              <span className="sess-doc-title">{s.heading}</span>
+              {s.body.trim() && <Md>{s.body}</Md>}
+            </div>
+          );
+        }
+        return (
+          <div className="sess-section" key={i}>
+            <Eyebrow>{s.heading}</Eyebrow>
+            {s.body.trim() && <Md>{s.body}</Md>}
+          </div>
+        );
+      })}
     </div>
   );
 }

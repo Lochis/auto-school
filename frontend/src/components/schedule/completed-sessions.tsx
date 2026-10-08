@@ -9,6 +9,7 @@ import { Badge, Panel } from "@/components/ui";
 import {
   CheckBadgeIcon,
   CheckCircleIcon,
+  ClockIcon,
   ExclamationTriangleIcon,
   FolderOpenIcon,
 } from "@heroicons/react/24/outline";
@@ -87,6 +88,7 @@ export default function CompletedSessions() {
                       {archived && <span className="code-chip">raw stream kept</span>}
                     </div>
                     <div className="sched-ses-meta">
+                      <ClockIcon className="heroicon" style={{ display: "inline", width: 12, height: 12, flex: "none" }} />
                       <span>{new Date(s.updatedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}</span>
                       {size && <><span>·</span><span>{size} {s.mp4?.endsWith(".webm") ? ".webm" : s.mp4 ? ".mp4" : ""}</span></>}
                       {failed && s.stageNote && <><span>·</span><span>{s.stageNote.slice(0, 60)}</span></>}
