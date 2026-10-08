@@ -16,18 +16,6 @@ import {
 } from "@heroicons/react/24/outline";
 import { filesUnder, fmtSize, kindFor, sortNodes, type Entry, type TNode } from "./file-meta";
 
-/** Plain folder-category label for the CATEGORY column: top-level folder
- *  ("week 1" / "proposal" / …) or "root" for loose files. */
-function categoryLabel(f: Entry): string {
-  const segs = f.path.split("/");
-  if (segs.length === 1) return "root";
-  const top = segs[0];
-  if (/^week\s*\d+/i.test(top)) return top.toLowerCase().replace(/\s+/g, " ").replace(/_/g, " ");
-  if (/proposal/i.test(top)) return "proposal";
-  if (/\b(root|loose|attic)\b/i.test(top)) return "root";
-  return top.toLowerCase().replace(/_/g, " ");
-}
-
 export interface FileTreeProps {
   root: TNode;
   slug: string;
@@ -97,9 +85,6 @@ export default function FileTree(props: FileTreeProps) {
             </span>
           )}
         </div>
-        <span className="mat-col mat-col--cat">
-          <span className={`chip chip--${kind.tone}`}>{categoryLabel(f)}</span>
-        </span>
         <span className={`mat-col mat-col--size${f.size > 10 * 1024 * 1024 ? " mat-size--big" : ""}`}>{fmtSize(f.size)}</span>
         <span className="mat-col mat-col--act">
           <a className="iconbtn mat-act" href={dl(f.path)} title="Download this file">

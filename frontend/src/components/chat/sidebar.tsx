@@ -38,7 +38,7 @@ function daysUntil(date: string): number {
 
 /* ── Source Documents ────────────────────────────────────────────────── */
 
-function SourceDocuments({ slug, materials, onOpenPreview }: {
+export function SourceDocuments({ slug, materials, onOpenPreview }: {
   slug: string;
   materials: MaterialEntry[];
   onOpenPreview: (course: string, path: string) => void;
@@ -214,7 +214,6 @@ export default function ChatSidebar({ slug, materials, onOpenPreview }: {
 }) {
   return (
     <aside className="chat-rail">
-      <SourceDocuments slug={slug} materials={materials} onOpenPreview={onOpenPreview} />
       <NextDeliverable slug={slug} />
     </aside>
   );

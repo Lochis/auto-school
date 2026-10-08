@@ -464,3 +464,29 @@
 }
 .chat-ck-text { min-width: 0; }
 .chat-ck--done .chat-ck-text { text-decoration: line-through; color: var(--outline); }
+
+/* ── Collapsible Source Documents header (replaces the context strip) ── */
+.chat-src-head {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-container);
+  overflow: hidden;
+}
+.chat-src-head-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--on-surface);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.chat-src-head-btn:hover { background: var(--surface-container-high); }
+.chat-src-chev { transition: transform 0.15s ease; margin-left: auto; color: var(--outline); }
+.chat-src-chev--open { transform: rotate(180deg); }

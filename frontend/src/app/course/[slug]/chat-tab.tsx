@@ -9,12 +9,12 @@
  *  The same component also serves the all-courses chat (no slug → no rail). */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowUpIcon, GlobeAltIcon, PaperClipIcon, TrashIcon, XMarkIcon,
+  ArrowUpIcon, BookOpenIcon, ChevronDownIcon, GlobeAltIcon, PaperClipIcon, TrashIcon, XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { LiveDot, MicroButton } from "@/components/ui";
 import DocPreview from "@/components/chat/doc-preview";
 import { MessageRow, makeLinkifier } from "@/components/chat/message-row";
-import ChatSidebar from "@/components/chat/sidebar";
+import ChatSidebar, { SourceDocuments } from "@/components/chat/sidebar";
 import type { LexHit, MaterialEntry, Msg } from "@/components/chat/types";
 import "../../chat-ui.css";
 
@@ -35,6 +35,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   const [materials, setMaterials] = useState<MaterialEntry[]>([]);
   const [lexicon, setLexicon] = useState<Record<string, LexHit[]>>({});
   const [hints, setHints] = useState<Record<string, string[]>>({});
+  const [srcOpen, setSrcOpen] = useState(true);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
@@ -155,19 +156,8 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     }
   }, [initialPrompt]);
 
-  // context-strip chips: newest materials first
-  const ctxChips = useMemo(
-    () => [...materials].sort((a, b) => (b.uploadedAt ?? "").localeCompare(a.uploadedAt ?? "")),
-    [materials],
-  );
-  const shownChips = ctxChips.slice(0, 3);
-  const moreChips = ctxChips.length - shownChips.length;
-
   // rough token estimate for the composer counter (≈ chars/4)
   const tokenEstimate = Math.ceil(input.length / 4);
-  // chat runs through the daemon's GLM routing (glmChatRaw, GLM_MODEL default glm-5.3)
-  const modelName = "glm-5.3";
-
   const suggestions = slug ? SUGGESTED_COURSE : SUGGESTED_ALL;
 
   return (
@@ -176,38 +166,24 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
 
       {/* ── left: conversational stream ── */}
       <section className="chat-main">
-        {/* context strip */}
-        <div className="chat-ctx">
-          <div className="chat-ctx-chips">
-            <LiveDot />
-            <span className="chat-ctx-label">Context loaded:</span>
-            {slug ? (
-              <>
-                {shownChips.map((m) => (
-                  <button key={m.path} type="button" className="chat-ctx-chip" title={`open ${m.path}`} onClick={() => openPreview(slug, m.path)}>
-                    {m.filename}
-                  </button>
-                ))}
-                {moreChips > 0 && <span className="chip chip--pill">+{moreChips} more</span>}
-                {ctxChips.length === 0 && <span className="chat-ctx-label" style={{ color: "var(--outline)" }}>no materials indexed yet</span>}
-              </>
-            ) : (
-              <span className="chat-ctx-label">every registered course — materials, sessions &amp; documents</span>
-            )}
-          </div>
-          <div className="chat-ctx-right">
-            <MicroButton
-              onClick={() => void clear()}
-              title="Clear this chat history"
-              icon={<TrashIcon className="heroicon" style={{ width: 12, height: 12 }} />}
+        {slug && (
+          <div className="chat-src-head">
+            <button
+              type="button"
+              className="chat-src-head-btn"
+              onClick={() => setSrcOpen((o) => !o)}
+              aria-expanded={srcOpen}
             >
-              clear
-            </MicroButton>
-            <span className="chat-ctx-model" title="head of the model fallback chain (Settings)">
-              Model: {modelName}
-            </span>
+              <BookOpenIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
+              <span>Source Documents</span>
+              {materials.length > 0 && <span className="chat-token-count">{materials.length} Indexed</span>}
+              <ChevronDownIcon className={`heroicon chat-src-chev ${srcOpen ? "chat-src-chev--open" : ""}`.trim()} style={{ display: "inline", width: 14, height: 14 }} />
+            </button>
           </div>
-        </div>
+        )}
+        {slug && srcOpen && (
+          <SourceDocuments slug={slug} materials={materials} onOpenPreview={openPreview} />
+        )}
 
         {/* thread */}
         <div className="chat-scroll">
@@ -231,6 +207,10 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           {suggestions.map((x) => (
             <button key={x} type="button" className="chat-suggest-btn" disabled={busy} onClick={() => void send(`"${x}"`)}>{`“${x}”`}</button>
           ))}
+          <span style={{ flex: 1 }} />
+          <MicroButton onClick={() => void clear()} title="Clear this chat history" icon={<TrashIcon className="heroicon" style={{ width: 12, height: 12 }} />}>
+            clear
+          </MicroButton>
         </div>
 
         {/* composer dock */}
