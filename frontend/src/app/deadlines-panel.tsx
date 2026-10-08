@@ -494,7 +494,28 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
                   <Chip tone="neutral">no date</Chip>
                 )}
                 {it.dueManual && <PencilIcon className="heroicon cdl-iconbtn--amber" title="date set manually — survives rebuilds" style={{ display: "inline" }} />}
-                        <div className="cdl-actions">
+              
+          </div>
+          <div className="cdl-bottom">
+            <div className="cdl-meta">
+                {ck && <span>Progress: <strong>{doneN}/{ck.items.length} tasks</strong></span>}
+                {ck && <span>•</span>}
+                {it.stale && (
+                  <span style={{ color: "#e0af68" }} title={`not seen in its source at the last update (${new Date(it.stale).toLocaleDateString("en-CA")}) — verify or remove`}>
+                    <ExclamationTriangleIcon className="heroicon" style={{ display: "inline" }} /> not in source
+                  </span>
+                )}
+                {it.stale && (
+                  <button onClick={() => void removeStale(it)} className="cdl-iconbtn cdl-iconbtn--red" title="remove this entry (its source no longer defines it)"><XMarkIcon className="heroicon" /></button>
+                )}
+                {it.confidence !== "high" && <span>({it.confidence})</span>}
+                {it.note && <span title={it.source}>— {it.note}</span>}
+                {it.userNote && noteEdit !== it.id && (
+                  <span style={{ color: "#e0af68" }} title={it.userNote}><ClipboardDocumentListIcon className="heroicon" style={{ display: "inline" }} /> {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
+                )}
+                {it.done && it.doneAt && <span><CheckIcon className="heroicon" style={{ display: "inline" }} /> {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
+              </div>
+                      <div className="cdl-actions">
             <Link
               href={`/course/${encodeURIComponent(it.course)}?tab=ask&prompt=${encodeURIComponent(starterPrompt(it))}`}
               className="btn btn-micro" style={{ color: "var(--primary)" }}
@@ -541,26 +562,8 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
                 <ArrowDownOnSquareIcon className="heroicon" /> {myFolds.length}
               </button>
             )}
+            </div>
           </div>
-          </div>
-          <div className="cdl-meta">
-                {ck && <span>Progress: <strong>{doneN}/{ck.items.length} tasks</strong></span>}
-                {ck && <span>•</span>}
-                {it.stale && (
-                  <span style={{ color: "#e0af68" }} title={`not seen in its source at the last update (${new Date(it.stale).toLocaleDateString("en-CA")}) — verify or remove`}>
-                    <ExclamationTriangleIcon className="heroicon" style={{ display: "inline" }} /> not in source
-                  </span>
-                )}
-                {it.stale && (
-                  <button onClick={() => void removeStale(it)} className="cdl-iconbtn cdl-iconbtn--red" title="remove this entry (its source no longer defines it)"><XMarkIcon className="heroicon" /></button>
-                )}
-                {it.confidence !== "high" && <span>({it.confidence})</span>}
-                {it.note && <span title={it.source}>— {it.note}</span>}
-                {it.userNote && noteEdit !== it.id && (
-                  <span style={{ color: "#e0af68" }} title={it.userNote}><ClipboardDocumentListIcon className="heroicon" style={{ display: "inline" }} /> {it.userNote.length > 70 ? `${it.userNote.slice(0, 70)}…` : it.userNote}</span>
-                )}
-                {it.done && it.doneAt && <span><CheckIcon className="heroicon" style={{ display: "inline" }} /> {new Date(it.doneAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}</span>}
-              </div>
         </div>
         {dateEdit === it.id && (
           <div className="cdl-sub">

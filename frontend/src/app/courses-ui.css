@@ -108,13 +108,23 @@
 .cdl-row:hover .cdl-title { color: var(--primary); }
 .cdl-row--overdue:hover .cdl-title,
 .cdl-row--overdue .cdl-title { color: var(--error); }
+.cdl-bottom {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  flex-wrap: nowrap;
+  width: 100%;
+  min-width: 0;
+}
 .cdl-meta {
   color: var(--on-surface-variant);
   font-size: 0.75rem;
-  width: 100%;
+  flex: 1 1 0;
   min-width: 0;
   padding-left: 0;
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
   flex-wrap: wrap;
   gap: 6px;
   align-items: baseline;

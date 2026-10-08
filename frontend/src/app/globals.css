@@ -425,6 +425,16 @@ a.iconbtn:hover { text-decoration: none; background: var(--surface-container-hig
   background: var(--surface-container-highest);
   color: var(--on-surface);
 }
+/* emerald course tabs: stretch across the available row (not content-width) */
+.segmented-tabs--emerald {
+  display: flex;
+  width: 100%;
+  justify-content: stretch;
+}
+.segmented-tabs--emerald .segmented-tab {
+  flex: 1 1 0;
+  justify-content: center;
+}
 /* emerald-filled active (course tabs) */
 .segmented-tabs--emerald .segmented-tab--active {
   background: var(--primary-container);
