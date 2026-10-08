@@ -484,7 +484,9 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
             <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
                 <span className="cdl-title">{it.title}</span>
-                <CodeChip title={it.course}>{courseCode(it.course)}</CodeChip>
+                <Link className="cdl-chiplink" href={`/course/${encodeURIComponent(it.course)}`} title="open course — ${it.course}" onClick={(e) => e.stopPropagation()}>
+                  <CodeChip title={it.course}>{courseCode(it.course)}</CodeChip>
+                </Link>
                 {isOverdue && it.due ? (
                   <Badge variant="red" title={`due ${it.due}`}>OVERDUE ({-od!}D)</Badge>
                 ) : it.due ? (
@@ -621,7 +623,9 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
     return (
       <div className="cdl-milestone">
         <div className="cdl-milestone-head">
-          <CodeChip title={it.course}>{courseCode(it.course)}</CodeChip>
+          <Link className="cdl-chiplink" href={`/course/${encodeURIComponent(it.course)}`} title="open course — ${it.course}" onClick={(e) => e.stopPropagation()}>
+            <CodeChip title={it.course}>{courseCode(it.course)}</CodeChip>
+          </Link>
           <span className="tabular" style={{ fontSize: "0.6875rem", color: "var(--secondary)" }}>
             Start: {it.startBy ?? "anytime"}
           </span>

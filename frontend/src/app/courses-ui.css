@@ -413,3 +413,16 @@ a.repo-name:hover { color: var(--primary); text-decoration: none; }
   font-size: 0.75rem;
   font-feature-settings: "tnum" 1;
 }
+
+/* deadline/assigned course-code chips link to their course page */
+.cdl-chiplink {
+  text-decoration: none;
+  color: inherit;
+}
+.cdl-chiplink:hover .code-chip {
+  border: 1px solid var(--secondary);
+  background: var(--surface-container-highest);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cdl-chiplink:hover { text-decoration: none; }
