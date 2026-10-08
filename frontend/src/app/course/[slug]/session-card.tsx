@@ -5,15 +5,26 @@ import Link from "next/link";
 import { t12 } from "@/lib/format";
 import { useRouter } from "next/navigation";
 import type { Session } from "@/lib/data";
+import {
+  ArrowPathIcon,
+  ArrowUpRightIcon,
+  LinkIcon,
+  PlayCircleIcon,
+  TrashIcon,
+  XMarkIcon,
+} from "@heroicons/react/24/outline";
+import "../../sessions-ui.css";
 
-/** Player row + purge + manual transcribe + move-to-course. The mp4 has a
- *  video track, so it renders in a <video> element (an <audio> tag shows only
- *  the soundtrack). */
+/** Session row: date link + pipeline status chips, then the utility command
+ *  bar (Re-transcribe / move-to-course / Delete / Play recording). The mp4
+ *  has a video track, so it renders in a <video> element (an <audio> tag
+ *  shows only the soundtrack) mounted on demand — 20+ concurrent <video>
+ *  elements crash the page. */
 export default function SessionCard({ session, course, courses = [] }: { session: Session; course: string; courses?: string[] }) {
   const [busy, setBusy] = useState(false);
   const [job, setJob] = useState<string | null>(null);
   const [broken, setBroken] = useState(false);
-  const [open, setOpen] = useState(false); // player mounts on demand — 20+ concurrent <video> elements crash the page
+  const [open, setOpen] = useState(false); // player mounts on demand
   const [moveTo, setMoveTo] = useState("");
   const [moveMsg, setMoveMsg] = useState("");
   const router = useRouter();
@@ -31,7 +42,9 @@ export default function SessionCard({ session, course, courses = [] }: { session
       if (!r.ok) setMoveMsg(j.error ?? `HTTP ${r.status}`);
       else { setMoveMsg(""); router.refresh(); }
     } catch { setMoveMsg("move failed — backend unreachable"); }
-    finally { setBusy(false); }
+    finally {
+      setBusy(false);
+    }
   };
 
   const purge = async () => {
@@ -59,66 +72,81 @@ export default function SessionCard({ session, course, courses = [] }: { session
     }
   };
 
+  const hasText = Boolean(session.transcript || session.timeline);
+
   return (
     <div>
-      <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-        <strong style={{ minWidth: 120 }}>
-          <Link href={`/course/${course}/session/${session.stem}`} style={{ color: "inherit", textDecoration: "underline dotted" }}>
-            {session.date}{session.time ? ` · ${t12(session.time)}` : ""} ↗
-          </Link>
-        </strong>
-        <span className="muted">
-          {session.audio ? "recorded" : "no recording"}
-          {(session.transcript || session.timeline) ? " · transcribed" : ""}
-          {session.segmentCount ? ` · ${session.segmentCount} segment${session.segmentCount === 1 ? "" : "s"} merged` : ""}
-        </span>
+      <div className="sess-card-head">
+        <Link className="sess-card-date" href={`/course/${course}/session/${session.stem}`}>
+          {session.date}{session.time ? ` · ${t12(session.time)}` : ""} <ArrowUpRightIcon className="heroicon" />
+        </Link>
+        <div className="sess-status">
+          <span className={`sess-dot ${session.audio ? "" : "sess-dot--off"}`} />
+          <span>{session.audio ? "recorded" : "no recording"}</span>
+          {hasText && (
+            <>
+              <span>·</span>
+              <span>transcribed</span>
+            </>
+          )}
+          {session.segmentCount ? (
+            <>
+              <span>·</span>
+              <span className="code-chip sess-seg-chip">{session.segmentCount} segment{session.segmentCount === 1 ? "" : "s"} merged</span>
+            </>
+          ) : null}
+        </div>
         {session.joinUrl && (
-          <a href={session.joinUrl} target="_blank" rel="noreferrer"
-             title="Open this meeting in Teams" style={{ color: "#2563eb", fontSize: 13 }}>
-            🔗 meeting
+          <a className="sess-meeting" href={session.joinUrl} target="_blank" rel="noreferrer" title="Open this meeting in Teams">
+            <LinkIcon className="heroicon" /> meeting
           </a>
         )}
-        <span style={{ flex: 1 }} />
+      </div>
+
+      <div className="sess-actions">
         {session.audio && (
-          <button onClick={transcribe} disabled={busy} title="Run the Gemini model chain over this recording — transcript + notes">
-            {busy ? "…" : session.transcript || session.timeline ? "↻ Re-transcribe" : "✎ Transcribe"}
+          <button className="btn" onClick={transcribe} disabled={busy} title="Run the Gemini model chain over this recording — transcript + notes">
+            <ArrowPathIcon className="heroicon" /> {busy ? "…" : hasText ? "Re-transcribe" : "Transcribe"}
           </button>
         )}
         {courses.length > 1 && (
-          <span style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12 }}>
-            <select value={moveTo} onChange={(e) => setMoveTo(e.target.value)} disabled={busy} title="Refile this session to another course">
+          <span className="sess-move-wrap">
+            <select className="sess-move" value={moveTo} onChange={(e) => setMoveTo(e.target.value)} disabled={busy} title="Refile this session to another course">
               <option value="">move to…</option>
               {courses.filter((c) => c !== course).map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
-            {moveTo && <button onClick={move} disabled={busy} style={{ fontSize: 12 }}>{busy ? "moving…" : "Move →"}</button>}
+            {moveTo && <button className="btn btn-micro" onClick={move} disabled={busy}>{busy ? "moving…" : "Move →"}</button>}
           </span>
         )}
-        {moveMsg && <span className="muted" style={{ fontSize: 12, color: "#f87171" }}>{moveMsg}</span>}
-        <button onClick={purge} disabled={busy} title="Delete the recording and its transcript/notes/timeline">
-          {busy ? "deleting…" : "✕ Delete"}
+        <button className="btn btn-destructive" onClick={purge} disabled={busy} title="Delete the recording and its transcript/notes/timeline">
+          <TrashIcon className="heroicon" /> {busy ? "deleting…" : "Delete"}
         </button>
+        {session.audio && !broken && !open && (
+          <button className="btn btn-primary" onClick={() => setOpen(true)}>
+            <PlayCircleIcon className="heroicon" /> Play recording
+          </button>
+        )}
       </div>
-      {job && <p className="muted" style={{ margin: "6px 0 0" }}>{job}</p>}
-      {session.audio && !broken && !open && (
-        <button onClick={() => setOpen(true)} style={{ marginTop: 8 }}>
-          ▶ Play recording
-        </button>
-      )}
+
+      {moveMsg && <p className="sess-msg sess-msg--err">{moveMsg}</p>}
+      {job && <p className="sess-msg">{job}</p>}
       {session.audio && !broken && open && (
-        <div style={{ marginTop: 8 }}>
+        <div>
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
           <video
             controls
             autoPlay
             preload="metadata"
             src={`/api/media/${session.audio}`}
             onError={() => setBroken(true)}
-            style={{ width: "100%", maxHeight: 300, background: "#000", borderRadius: 8 }}
           />
-          <button onClick={() => setOpen(false)} style={{ marginTop: 4 }}>✕ close player</button>
+          <div className="sess-close-row">
+            <button className="btn btn-micro" onClick={() => setOpen(false)}><XMarkIcon className="heroicon" /> close player</button>
+          </div>
         </div>
       )}
       {session.audio && broken && (
-        <p className="muted" style={{ margin: "8px 0 0" }}>
+        <p className="sess-msg">
           recording unplayable (corrupt consolidation) — transcription still works; delete when done with it
         </p>
       )}
