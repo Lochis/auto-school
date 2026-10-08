@@ -154,86 +154,84 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
           />
         </div>
         <div className="courses-rail">
+          <Panel
+            icon={<FolderOpenIcon className="heroicon" />}
+            title="Courses"
+            actions={<CourseNew />}
+          >
+            {courseList.length === 0 ? (
+              <p className="muted" style={{ margin: 0 }}>
+                No courses yet — register one with the button above, or let the backend record a session.
+              </p>
+            ) : (
+              <div className="repos-grid">
+                {courseList.map((c, i) => {
+                  const Icon = TILE_ICONS[i % TILE_ICONS.length];
+                  const tone = TILE_TONES[i % TILE_TONES.length];
+                  const n = c.sessions.length;
+                  return (
+                    <details className="repo-card" key={c.slug} open={n > 0 && n <= 3}>
+                      <summary>
+                        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)" }}>
+                          <div className="repo-card-head" style={{ flex: 1 }}>
+                            <span className={`icon-tile icon-tile--${tone}`}>
+                              <Icon className="heroicon" />
+                            </span>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+                              <CourseLink href={`/course/${encodeURIComponent(c.slug)}`} label={c.slug.replace(/_/g, " ")} />
+                              <span className="repo-sessions">
+                                {n} indexed session{n === 1 ? "" : "s"}
+                              </span>
+                            </div>
+                          </div>
+                          <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex", gap: 4 }}>
+                            <CourseRename course={c.slug} />
+                            {n === 0 && <CourseDelete course={c.slug} />}
+                          </span>
+                        </div>
+                      </summary>
+                      {n === 0 ? (
+                        <p className="muted" style={{ margin: "8px 0 2px", fontSize: "0.75rem" }}>
+                          No sessions yet — ingest a recording from the course page, or wait for the next scheduled one.
+                        </p>
+                      ) : (
+                        <div style={{ margin: "8px 0 2px" }}>
+                          {c.sessions.map((s) => (
+                            <div key={s.stem} className="repo-session-row">
+                              <span className="muted tabular" style={{ fontSize: "0.75rem", minWidth: 90 }}>
+                                {s.date}
+                                {s.time ? ` ${s.time}` : ""}
+                              </span>
+                              {s.week !== null && (
+                                <span className="muted tabular" style={{ fontSize: "0.6875rem", minWidth: 52 }}>
+                                  week {s.week}
+                                </span>
+                              )}
+                              <Link
+                                href={`/course/${encodeURIComponent(c.slug)}/session/${encodeURIComponent(s.stem)}`}
+                                style={{ fontSize: "0.8125rem" }}
+                              >
+                                {s.stem.split("__").slice(1).join("__").replace(/_/g, " ") || s.stem}
+                              </Link>
+                              <span className="muted" style={{ fontSize: "0.6875rem", display: "inline-flex", gap: 4, alignItems: "center" }}>
+                                {s.audio ? <FilmIcon className="heroicon" title="recording" /> : null}
+                                {s.transcript ? <DocumentTextIcon className="heroicon" /> : s.notes ? <DocumentIcon className="heroicon" /> : null}
+                                {s.notes ? <ClipboardDocumentListIcon className="heroicon" /> : null}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </details>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
           <MappingManager initial={mappingSnap} />
           <DaemonCard />
         </div>
       </div>
-
-      {/* ── Registered course repositories ── */}
-      <Panel
-        icon={<FolderOpenIcon className="heroicon" />}
-        title="Registered Course Repositories"
-        actions={<CourseNew />}
-      >
-        {courseList.length === 0 ? (
-          <p className="muted" style={{ margin: 0 }}>
-            No courses yet — register one above or let the backend record a session.
-          </p>
-        ) : (
-          <div className="repos-grid">
-            {courseList.map((c, i) => {
-              const Icon = TILE_ICONS[i % TILE_ICONS.length];
-              const tone = TILE_TONES[i % TILE_TONES.length];
-              const n = c.sessions.length;
-              return (
-                <details className="repo-card" key={c.slug} open={n > 0 && n <= 3}>
-                  <summary>
-                    <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)" }}>
-                      <div className="repo-card-head" style={{ flex: 1 }}>
-                        <span className={`icon-tile icon-tile--${tone}`}>
-                          <Icon className="heroicon" />
-                        </span>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
-                          <CourseLink href={`/course/${encodeURIComponent(c.slug)}`} label={c.slug.replace(/_/g, " ")} />
-                          <span className="repo-sessions">
-                            {n} indexed session{n === 1 ? "" : "s"}
-                          </span>
-                        </div>
-                      </div>
-                      <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex", gap: 4 }}>
-                        <CourseRename course={c.slug} />
-                        {n === 0 && <CourseDelete course={c.slug} />}
-                      </span>
-                    </div>
-                  </summary>
-                  {n === 0 ? (
-                    <p className="muted" style={{ margin: "8px 0 2px", fontSize: "0.75rem" }}>
-                      No sessions yet — ingest a recording from the course page, or wait for the next scheduled one.
-                    </p>
-                  ) : (
-                    <div style={{ margin: "8px 0 2px" }}>
-                      {c.sessions.map((s) => (
-                        <div key={s.stem} className="repo-session-row">
-                          <span className="muted tabular" style={{ fontSize: "0.75rem", minWidth: 90 }}>
-                            {s.date}
-                            {s.time ? ` ${s.time}` : ""}
-                          </span>
-                          {s.week !== null && (
-                            <span className="muted tabular" style={{ fontSize: "0.6875rem", minWidth: 52 }}>
-                              week {s.week}
-                            </span>
-                          )}
-                          <Link
-                            href={`/course/${encodeURIComponent(c.slug)}/session/${encodeURIComponent(s.stem)}`}
-                            style={{ fontSize: "0.8125rem" }}
-                          >
-                            {s.stem.split("__").slice(1).join("__").replace(/_/g, " ") || s.stem}
-                          </Link>
-                          <span className="muted" style={{ fontSize: "0.6875rem", display: "inline-flex", gap: 4, alignItems: "center" }}>
-                            {s.audio ? <FilmIcon className="heroicon" title="recording" /> : null}
-                            {s.transcript ? <DocumentTextIcon className="heroicon" /> : s.notes ? <DocumentIcon className="heroicon" /> : null}
-                            {s.notes ? <ClipboardDocumentListIcon className="heroicon" /> : null}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </details>
-              );
-            })}
-          </div>
-        )}
-      </Panel>
     </div>
   );
 }
