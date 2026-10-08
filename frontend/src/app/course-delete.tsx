@@ -2,6 +2,7 @@
 /** Delete-button for empty course folders (server refuses if sessions exist). */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { TrashIcon } from "@heroicons/react/24/outline";
 
 export default function CourseDelete({ course }: { course: string }) {
   const [busy, setBusy] = useState(false);
@@ -25,10 +26,17 @@ export default function CourseDelete({ course }: { course: string }) {
   };
 
   return (
-    <span style={{ marginLeft: "auto" }}>
-      {err && <span className="muted" style={{ marginRight: 8, color: "#b91c1c" }}>{err}</span>}
-      <button onClick={del} disabled={busy} title="Delete this course folder (only when it has no sessions)">
-        {busy ? "…" : "✕"}
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      {err && <span className="muted" style={{ color: "var(--error)", fontSize: "0.6875rem" }}>{err}</span>}
+      <button
+        onClick={(e) => { e.stopPropagation(); void del(); }}
+        disabled={busy}
+        className="btn btn-destructive"
+        style={{ padding: "3px 6px", minHeight: 24 }}
+        title="Delete this course folder (only when it has no sessions)"
+        aria-label={`Delete ${course}`}
+      >
+        {busy ? "…" : <TrashIcon className="heroicon" />}
       </button>
     </span>
   );
