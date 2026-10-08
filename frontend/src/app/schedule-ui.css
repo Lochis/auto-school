@@ -93,10 +93,18 @@
   display: grid;
   grid-template-columns: 1fr;
   gap: var(--space-lg);
-  align-items: start;
+  align-items: stretch;
 }
 @media (min-width: 1020px) {
   .sched-grid { grid-template-columns: 7fr 5fr; }
+}
+/* right column (Activity Stream) stretches to the left column's height,
+   so it ends level with the Automation Directives instead of floating */
+.sched-grid > .panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .sched-col-left {
   display: flex;
@@ -185,7 +193,8 @@
   border-radius: var(--radius-lg);
   background: var(--surface-container-lowest);
   border: 1px solid var(--line);
-  max-height: 420px;
+  flex: 1 1 auto;
+  min-height: 120px;
   overflow-y: auto;
   scrollbar-width: thin;
 }

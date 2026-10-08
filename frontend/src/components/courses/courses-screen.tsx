@@ -32,7 +32,6 @@ import CourseNew from "@/app/course-new";
 import CourseRename from "@/app/course-rename";
 import CourseLink from "@/app/course-link";
 import CourseDelete from "@/app/course-delete";
-import DaemonCard from "@/components/courses/daemon-card";
 
 export interface CourseSessionRow {
   stem: string;
@@ -229,7 +228,6 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
             )}
           </Panel>
           <MappingManager initial={mappingSnap} />
-          <DaemonCard />
         </div>
       </div>
     </div>
