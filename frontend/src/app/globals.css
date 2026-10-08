@@ -103,6 +103,9 @@
 
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
   font-family: var(--font);
   background: var(--surface);
   color: var(--on-surface);
@@ -110,10 +113,18 @@ body {
   font-feature-settings: "tnum" 0;
 }
 
+.site-main {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
 main {
   max-width: 80rem;
   margin: 0 auto;
-  padding: clamp(16px, 3vw, 40px) clamp(14px, 3.5vw, 40px) 96px;
+  padding: clamp(16px, 3vw, 40px) clamp(14px, 3.5vw, 40px) 48px;
+  width: 100%;
 }
 
 h1 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; }
@@ -561,10 +572,12 @@ a.iconbtn:hover { text-decoration: none; background: var(--surface-container-hig
 
 /* ── Footer status bar ────────────────────────────────────────────────── */
 
-.footer-bar {
+.footer-shell {
   position: sticky;
   bottom: 0;
   z-index: 90;
+}
+.footer-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;

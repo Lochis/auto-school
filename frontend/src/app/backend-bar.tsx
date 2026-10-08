@@ -100,7 +100,7 @@ export default function BackendBar() {
   // (⌘K quick-filter wiring is navbar-side)
 
   return (
-    <>
+    <div className="footer-shell">
       <footer className="footer-bar" role="contentinfo">
         <div className="footer-bar-side">
           {online ? (
@@ -141,10 +141,6 @@ export default function BackendBar() {
           <MicroButton onClick={() => scan(false)} disabled={busy} title="Rescan now, skip handled titles">
             Scan
           </MicroButton>
-          <span className="footer-mono">LISTENER: STEREO 48kHz</span>
-          <span className={`footer-mono ${online ? "footer-ready" : "footer-offline"}`}>
-            {online ? "PIPELINE READY" : "PIPELINE DOWN"}
-          </span>
         </div>
       </footer>
 
@@ -213,6 +209,6 @@ export default function BackendBar() {
           </div>
         </div>
       </details>
-    </>
+    </div>
   );
 }

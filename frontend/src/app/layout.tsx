@@ -9,10 +9,10 @@ export const metadata: Metadata = { title: "auto-school", description: "Class re
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>
+      <body className="app-shell">
         <AutoRefresh />
         <Navbar />
-        {children}
+        <div className="site-main">{children}</div>
         <BackendBar />
       </body>
     </html>
