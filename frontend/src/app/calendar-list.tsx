@@ -74,7 +74,7 @@ export default function CalendarList({ events, asOf }: { events: CalEvent[]; asO
     <Panel
       className="sched-calendar"
       icon={<CalendarDaysIcon className="heroicon" />}
-      title={`Calendar — ${now.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })}`}
+      title={`Calendar — ${now.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}`}
       subtitle={
         asOf
           ? `${today.length} session${today.length === 1 ? "" : "s"} scheduled today · scanned ${clock(asOf)}`
@@ -151,8 +151,8 @@ export default function CalendarList({ events, asOf }: { events: CalEvent[]; asO
                   <div className="sched-day-head">
                     <span className={`sched-day-label ${isToday ? "" : "sched-day-label--future"}`}>
                       {isToday
-                        ? `Today — ${new Date(day).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })}`
-                        : new Date(day).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })}
+                        ? `Today — ${new Date(day).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}`
+                        : new Date(day).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
                     </span>
                     <span className="chip chip--pill">{count}</span>
                   </div>
