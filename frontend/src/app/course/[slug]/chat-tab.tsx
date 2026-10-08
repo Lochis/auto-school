@@ -14,7 +14,7 @@ import {
 import { LiveDot, MicroButton } from "@/components/ui";
 import DocPreview from "@/components/chat/doc-preview";
 import { MessageRow, makeLinkifier } from "@/components/chat/message-row";
-import ChatSidebar, { SourceDocuments } from "@/components/chat/sidebar";
+import { SourceDocuments } from "@/components/chat/sidebar";
 import type { LexHit, MaterialEntry, Msg } from "@/components/chat/types";
 import "../../chat-ui.css";
 
@@ -161,7 +161,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   const suggestions = slug ? SUGGESTED_COURSE : SUGGESTED_ALL;
 
   return (
-    <div className={`chat-layout ${slug ? "chat-layout--with-rail" : ""}`.trim()}>
+    <div className="chat-layout">
       {preview && <DocPreview slug={preview.course} path={preview.path} onClose={() => setPreview(null)} />}
 
       {/* ── left: conversational stream ── */}
@@ -271,7 +271,6 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
       </section>
 
       {/* ── right: knowledge rail (course chat only) ── */}
-      {slug && <ChatSidebar slug={slug} materials={materials} onOpenPreview={openPreview} />}
     </div>
   );
 }
