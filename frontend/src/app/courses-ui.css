@@ -171,7 +171,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 3px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 3px 7px;
+  margin: 0 1px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
   border-radius: var(--radius-sm);
   color: var(--on-surface-variant);
 }

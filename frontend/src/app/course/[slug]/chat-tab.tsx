@@ -232,7 +232,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
             <div className="chat-composer-tools">
               <button
                 type="button"
-                className="chat-tool-btn"
+                className="tool-chip"
                 title="Attachments are not supported in chat — upload documents on the Materials tab; they are indexed for Ask automatically"
                 aria-label="Add file (uploads are managed on the Materials tab)"
               >
@@ -252,7 +252,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
               </button>
               <button
                 type="button"
-                className="chat-tool-btn chat-tool-btn--clear"
+                className="tool-chip tool-chip--clear"
                 onClick={() => void clear()}
                 title="Clear this chat history"
               >

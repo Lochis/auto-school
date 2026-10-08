@@ -119,7 +119,7 @@ export default function BackendBar() {
               <NoSymbolIcon className="heroicon" style={{ display: "inline", width: 12, height: 12 }} /> AUTO-JOIN PAUSED
             </span>
           )}
-          <span>© 2025 AutoSchool Engine</span>
+          <span>© {new Date().getFullYear()} AutoSchool Engine</span>
         </div>
 
         <div className="footer-bar-side">

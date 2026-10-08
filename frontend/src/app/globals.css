@@ -298,14 +298,38 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-container-highest); }
 
-.btn-micro {
-  min-height: var(--micro-h);
-  padding: 2px 8px;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  gap: 4px;
-  border-radius: var(--radius-sm);
+/* ── tool chips: shared small-action button family ─────────────────────── */
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  min-height: 24px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-high);
+  border: 1px solid transparent;
+  color: var(--on-surface-variant);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  flex: none;
 }
+.tool-chip:hover:not(:disabled) { background: var(--surface-container-highest); color: var(--on-surface); }
+.tool-chip--icon { padding: 3px 7px; }
+.tool-chip--clear:hover { color: var(--error); }
+
+.btn-micro {
+  min-height: 24px;
+  padding: 2px 10px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  gap: 6px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-high);
+  border: 1px solid transparent;
+  color: var(--on-surface-variant);
+}
+.btn-micro:hover:not(:disabled) { background: var(--surface-container-highest); color: var(--on-surface); }
 
 .btn-destructive {
   background: transparent;
@@ -314,11 +338,15 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .btn-destructive:hover:not(:disabled) { background: rgba(69, 10, 10, 0.3); }
 
-/* small square icon buttons (legacy) */
+/* small square icon buttons — chip-icon family */
 .iconbtn {
-  min-width: 30px;
-  min-height: 30px;
-  padding: 2px 8px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 3px 7px;
+  background: var(--surface-container-high);
+  border: 1px solid transparent;
+  color: var(--on-surface-variant);
+  border-radius: var(--radius-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -326,6 +354,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   text-decoration: none;
 }
 a.iconbtn:hover { text-decoration: none; background: var(--surface-container-highest); }
+.iconbtn:hover:not(:disabled) { background: var(--surface-container-highest); color: var(--on-surface); }
 
 /* ── Toggle (emerald pill switch) ─────────────────────────────────────── */
 
