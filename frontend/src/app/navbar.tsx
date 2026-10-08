@@ -2,12 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { MagnifyingGlassIcon, UserIcon } from "@heroicons/react/24/outline";
-
-export interface NavbarProps {
-  /** opened by the ⌘K quick-filter pill */
-  onQuickFilter?: () => void;
-}
+import { UserIcon } from "@heroicons/react/24/outline";
 
 const NAV = [
   { href: "/", label: "Schedule" },
@@ -15,7 +10,7 @@ const NAV = [
   { href: "/settings", label: "Settings" },
 ];
 
-export default function Navbar({ onQuickFilter }: NavbarProps) {
+export default function Navbar() {
   const pathname = usePathname() ?? "/";
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -53,23 +48,8 @@ export default function Navbar({ onQuickFilter }: NavbarProps) {
           ))}
         </nav>
 
-        {/* right: quick filter, version, avatar */}
+        {/* right: avatar */}
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)" }}>
-          <button
-            type="button"
-            className="search-pill"
-            onClick={onQuickFilter}
-            title="Quick filter"
-          >
-            <MagnifyingGlassIcon className="heroicon" style={{ display: "inline" }} />
-            <span>Quick filter…</span>
-            <kbd>⌘K</kbd>
-          </button>
-          <span className="version-pill" title="Engine version">
-            <span>v2.4</span>
-            <span className="version-pill-dot" />
-            <span className="version-pill-ready">99.8%</span>
-          </span>
           <Link href="/settings" className="avatar-btn" title="Account" aria-label="Account">
             <UserIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
           </Link>

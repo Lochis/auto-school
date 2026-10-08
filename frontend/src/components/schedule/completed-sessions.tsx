@@ -38,13 +38,21 @@ function humanMB(mb?: number): string | null {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`;
 }
 
-/** the mp4 field is `recordings/<course>/<file>.mp4` — link the row's folder
- *  button into the session detail page for that recording */
-function sessionHref(s: SessionRow): string | null {
+/** resolve a working target for a completed capture:
+ *  - deep-link into the course session page ONLY when the recording stem
+ *    matches a real data-dir stem (date-prefixed, e.g. 2026-10-06__Lab),
+ *    otherwise that route 404s;
+ *  - every other case falls back to the course page (always valid),
+ *    so the folder button never dead-links. */
+function sessionHref(s: SessionRow): { href: string; label: string } | null {
   const course = s.course ?? s.mp4?.match(/^recordings\/([^/]+)\//)?.[1];
+  if (!course) return null;
   const file = s.mp4?.split("/").pop()?.replace(/\.(mp4|webm)$/, "");
-  if (!course || !file) return null;
-  return `/course/${encodeURIComponent(course)}/session/${encodeURIComponent(file)}`;
+  const stemLike = (x?: string): x is string => !!x && /^\d{4}-\d{2}-\d{2}__/.test(x);
+  const stem = stemLike(file) ? file : stemLike(s.stem) ? s.stem : null;
+  return stem
+    ? { href: `/course/${encodeURIComponent(course)}/session/${encodeURIComponent(stem)}`, label: "Open session — notes & transcript" }
+    : { href: `/course/${encodeURIComponent(course)}`, label: "Open course" };
 }
 
 export default function CompletedSessions() {
@@ -104,7 +112,7 @@ export default function CompletedSessions() {
                     <Badge variant="emerald">Done</Badge>
                   )}
                   {href && (
-                    <Link className="sched-folder-btn" href={href} title="Open session — notes & transcript">
+                    <Link className="sched-folder-btn" href={href.href} title={href.label}>
                       <FolderOpenIcon className="heroicon" />
                     </Link>
                   )}

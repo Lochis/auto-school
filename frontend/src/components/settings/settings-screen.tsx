@@ -223,7 +223,6 @@ export default function SettingsScreen() {
               <LiveDot />
               PIPELINE CONTROL MATRIX
             </Eyebrow>
-            <span className="settings-hero-version">/ v2.4</span>
           </span>
           <h1>Settings &amp; Automation Engine</h1>
           <p className="settings-hero-sub">
