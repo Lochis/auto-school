@@ -14,6 +14,7 @@ import {
   ClipboardDocumentCheckIcon,
   ClipboardDocumentListIcon,
   CloudIcon,
+  Cog6ToothIcon,
   ComputerDesktopIcon,
   DocumentIcon,
   DocumentTextIcon,
@@ -29,8 +30,9 @@ import { GhostButton, Panel, StatCard } from "@/components/ui";
 import DeadlinesPanel, { type DeadEntry } from "@/app/deadlines-panel";
 import MappingManager from "@/app/mapping-manager";
 import CourseNew from "@/app/course-new";
-import CourseRename from "@/app/course-rename";
 import CourseLink from "@/app/course-link";
+import CourseSettingsModal from "@/components/courses/course-settings-modal";
+import { courseIconOf } from "@/components/courses/course-icons";
 import CourseDelete from "@/app/course-delete";
 
 export interface CourseSessionRow {
@@ -44,6 +46,7 @@ export interface CourseSessionRow {
 }
 export interface CourseCardData {
   slug: string;
+  icon?: string | null;
   start: string | null;
   sessions: CourseSessionRow[];
 }
@@ -65,6 +68,7 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
   const [items, setItems] = useState<DeadEntry[]>(deadlines);
   const [busy, setBusy] = useState<"" | "update" | "full">("");
   const [sig, setSig] = useState<{ mode: "update" | "full"; n: number }>({ mode: "update", n: 0 });
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
 
   const [counts, setCounts] = useState(() => {
     const open = deadlines.filter((i) => !i.done);
@@ -90,9 +94,6 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
           <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", flexWrap: "wrap" }}>
             <span className="live-dot" />
             <h1 style={{ margin: 0 }}>Courses &amp; Academic Deadlines</h1>
-            <span className="courses-hero-badge">
-              {items.length > 0 ? "SYNCED" : "NOT BUILT"} // {items.length} ITEMS
-            </span>
           </div>
           <p className="panel-sub">
             Automated course folder mappings, transcript extractions, and deadline tracking daemon.
@@ -165,16 +166,16 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
             ) : (
               <div className="repos-grid">
                 {courseList.map((c, i) => {
-                  const Icon = TILE_ICONS[i % TILE_ICONS.length];
-                  const tone = TILE_TONES[i % TILE_TONES.length];
+                  const reg = courseIconOf(c.icon);
+                  const crd = reg ?? { Icon: TILE_ICONS[i % TILE_ICONS.length], tone: TILE_TONES[i % TILE_TONES.length] as string };
                   const n = c.sessions.length;
                   return (
                     <details className="repo-card" key={c.slug} open={n > 0 && n <= 3}>
                       <summary>
                         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)" }}>
                           <div className="repo-card-head" style={{ flex: 1 }}>
-                            <span className={`icon-tile icon-tile--${tone}`}>
-                              <Icon className="heroicon" />
+                            <span className={`icon-tile icon-tile--${crd.tone}`}>
+                              <crd.Icon className="heroicon" />
                             </span>
                             <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
                               <CourseLink href={`/course/${encodeURIComponent(c.slug)}`} label={c.slug.replace(/_/g, " ")} />
@@ -184,7 +185,14 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
                             </div>
                           </div>
                           <span onClick={(e) => e.stopPropagation()} style={{ display: "inline-flex", gap: 4 }}>
-                            <CourseRename course={c.slug} />
+                            <button
+                              className="iconbtn"
+                              onClick={() => setSettingsFor(c.slug)}
+                              title="Course settings — icon &amp; name"
+                              aria-label={`Settings for ${c.slug}`}
+                            >
+                              <Cog6ToothIcon className="heroicon" />
+                            </button>
                             {n === 0 && <CourseDelete course={c.slug} />}
                           </span>
                         </div>
@@ -230,6 +238,19 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
           <MappingManager initial={mappingSnap} />
         </div>
       </div>
+      {settingsFor &&
+        (() => {
+          const c = courseList.find((x) => x.slug === settingsFor);
+          if (!c) return null;
+          return (
+            <CourseSettingsModal
+              slug={c.slug}
+              name={c.slug.replace(/_/g, " ")}
+              icon={c.icon}
+              onClose={() => setSettingsFor(null)}
+            />
+          );
+        })()}
     </div>
   );
 }

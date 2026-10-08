@@ -1,4 +1,4 @@
-import { courses, sessions, semesterStartOf, weekOf } from "@/lib/data";
+import { courses, sessions, semesterStartOf, weekOf, courseIcon } from "@/lib/data";
 import { candidateTitles, folders, readMapping } from "@/lib/mapping";
 import { readDeadlines } from "@/lib/deadlines";
 import CoursesScreen from "@/components/courses/courses-screen";
@@ -11,6 +11,7 @@ export default function CoursesPage() {
     const start = semesterStartOf(slug);
     return {
       slug,
+      icon: courseIcon(slug),
       start,
       sessions: sessions(slug).map((s) => ({
         stem: s.stem,

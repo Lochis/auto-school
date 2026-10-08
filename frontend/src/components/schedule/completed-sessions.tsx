@@ -18,6 +18,8 @@ interface SessionRow {
   stem: string;
   title: string;
   course?: string;
+  /** validated by the /api/backend route: stem that exists in the data dir */
+  sessionStem?: string;
   stage: string;
   stageNote?: string;
   segCount?: number;
@@ -39,19 +41,16 @@ function humanMB(mb?: number): string | null {
 }
 
 /** resolve a working target for a completed capture:
- *  - deep-link into the course session page ONLY when the recording stem
- *    matches a real data-dir stem (date-prefixed, e.g. 2026-10-06__Lab),
- *    otherwise that route 404s;
- *  - every other case falls back to the course page (always valid),
- *    so the folder button never dead-links. */
+ *  - deep-link into the course session page ONLY when the /api/backend route
+ *    validated a matching data-dir stem (sessionStem);
+ *  - otherwise fall back to the canonical course page;
+ *  - when no course resolved at all, return null so the button isn't shown.
+ *  Never emitted for a route that would 404. */
 function sessionHref(s: SessionRow): { href: string; label: string } | null {
-  const course = s.course ?? s.mp4?.match(/^recordings\/([^/]+)\//)?.[1];
+  const course = s.course;
   if (!course) return null;
-  const file = s.mp4?.split("/").pop()?.replace(/\.(mp4|webm)$/, "");
-  const stemLike = (x?: string): x is string => !!x && /^\d{4}-\d{2}-\d{2}__/.test(x);
-  const stem = stemLike(file) ? file : stemLike(s.stem) ? s.stem : null;
-  return stem
-    ? { href: `/course/${encodeURIComponent(course)}/session/${encodeURIComponent(stem)}`, label: "Open session — notes & transcript" }
+  return s.sessionStem
+    ? { href: `/course/${encodeURIComponent(course)}/session/${encodeURIComponent(s.sessionStem)}`, label: "Open session — notes & transcript" }
     : { href: `/course/${encodeURIComponent(course)}`, label: "Open course" };
 }
 
