@@ -35,7 +35,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   const [materials, setMaterials] = useState<MaterialEntry[]>([]);
   const [lexicon, setLexicon] = useState<Record<string, LexHit[]>>({});
   const [hints, setHints] = useState<Record<string, string[]>>({});
-  const [srcOpen, setSrcOpen] = useState(true);
+  const [srcOpen, setSrcOpen] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
