@@ -453,3 +453,79 @@ a.repo-name:hover { color: var(--primary); text-decoration: none; }
   text-underline-offset: 2px;
 }
 .cdl-chiplink:hover { text-decoration: none; }
+
+/* ── Course settings modal ────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(4, 5, 8, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal-card {
+  background: var(--surface-container);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  width: min(440px, 100%);
+  padding: var(--space-lg);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.modal-head h3 { margin: 0; font-size: 1rem; font-weight: 600; }
+.modal-label {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--outline);
+  font-weight: 600;
+}
+.icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: var(--space-sm);
+}
+.icon-opt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-low);
+  border: 1px solid var(--line);
+  color: var(--on-surface-variant);
+  cursor: pointer;
+}
+.icon-opt:hover { background: var(--surface-container-high); color: var(--on-surface); }
+.icon-opt--active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+.modal-name {
+  width: 100%;
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  color: var(--on-surface);
+  font: inherit;
+}
+.modal-name:focus { outline: 1px solid var(--primary); }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
