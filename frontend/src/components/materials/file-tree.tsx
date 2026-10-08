@@ -153,7 +153,6 @@ export default function FileTree(props: FileTreeProps) {
               </>
             )}
           </div>
-          <span className="mat-col mat-col--cat" />
           <span className="mat-col mat-col--size mat-col--size-muted" title="total size of contained files">
             {fmtSize(total)}
           </span>

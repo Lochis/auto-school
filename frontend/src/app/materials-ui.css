@@ -181,13 +181,6 @@
   gap: 6px;
 }
 .mat-col { flex: none; }
-.mat-col--cat {
-  width: 100px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-}
 .mat-col--size {
   width: 76px;
   text-align: right;
@@ -388,7 +381,6 @@
 /* ── Responsive ───────────────────────────────────────────────────────── */
 
 @media (max-width: 700px) {
-  .mat-col--cat { display: none; }
   .mat-drop-formats { display: none; }
   .mat-sem-help { display: none; }
 }

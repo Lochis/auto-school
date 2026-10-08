@@ -494,7 +494,6 @@ export default function MaterialsTab({ slug }: { slug: string }) {
             />
             <span>Name &amp; Hierarchy</span>
           </div>
-          <span className="mat-col mat-col--cat">Category</span>
           <span className="mat-col mat-col--size">Size</span>
           <span className="mat-col mat-col--act">Actions</span>
         </div>
