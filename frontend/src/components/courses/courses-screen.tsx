@@ -91,10 +91,7 @@ export default function CoursesScreen({ deadlines, courseList, mappingSnap }: Co
       {/* ── Hero ── */}
       <section className="courses-hero">
         <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", flexWrap: "wrap" }}>
-            <span className="live-dot" />
-            <h1 style={{ margin: 0 }}>Courses &amp; Academic Deadlines</h1>
-          </div>
+          <h1 style={{ margin: 0 }}>Courses &amp; Academic Deadlines</h1>
           <p className="panel-sub">
             Automated course folder mappings, transcript extractions, and deadline tracking daemon.
           </p>

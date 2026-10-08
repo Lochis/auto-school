@@ -220,7 +220,6 @@ export default function SettingsScreen() {
         <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Eyebrow tone="emerald">
-              <LiveDot />
               PIPELINE CONTROL MATRIX
             </Eyebrow>
           </span>

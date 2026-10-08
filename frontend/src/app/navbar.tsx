@@ -22,7 +22,7 @@ export default function Navbar() {
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-lg)", minWidth: 0 }}>
           <Link href="/" className="brand" aria-label="auto-school home">
             <span className="brand-glyph">
-              <span className="live-dot" />
+              <span style={{ display: "block", width: 8, height: 8, borderRadius: "50%", background: "var(--primary)" }} />
             </span>
             <span className="brand-word">
               auto<em>school</em>
