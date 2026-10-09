@@ -725,32 +725,7 @@ a.iconbtn:hover { text-decoration: none; background: var(--surface-container-hig
   font-feature-settings: "tnum" 1;
 }
 
-/* ── Search pill / inputs ─────────────────────────────────────────────── */
-
-.search-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: 4px 8px;
-  min-height: 30px;
-  border-radius: var(--radius-md);
-  background: var(--surface-container-low);
-  border: 1px solid rgba(60, 74, 66, 0.5);
-  color: var(--outline);
-  font-size: 0.8125rem;
-  cursor: pointer;
-  font: inherit;
-}
-.search-pill:hover { background: var(--surface-container); color: var(--on-surface-variant); }
-.search-pill kbd {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  padding: 0 4px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-container-high);
-  border: 1px solid rgba(60, 74, 66, 0.5);
-  color: var(--on-surface-variant);
-}
+/* ── Inputs ───────────────────────────────────────────────────────────── */
 
 input, select, textarea {
   background: var(--surface-container-lowest);
@@ -827,34 +802,6 @@ input:focus, select:focus, textarea:focus {
   color: var(--on-surface);
 }
 .brand-word em { font-style: normal; color: var(--primary); }
-.cron-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-  background: var(--surface-container);
-  border: 1px solid rgba(60, 74, 66, 0.4);
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--on-surface-variant);
-}
-.version-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  border-radius: var(--radius-md);
-  background: var(--surface-container-low);
-  border: 1px solid rgba(60, 74, 66, 0.4);
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  color: var(--on-surface-variant);
-}
-.version-pill-dot { width: 4px; height: 4px; border-radius: var(--radius-full); background: var(--outline-variant); }
-.version-pill-ready { color: var(--primary); }
 
 /* ── Legacy compat (restyled to tokens) ───────────────────────────────── */
 

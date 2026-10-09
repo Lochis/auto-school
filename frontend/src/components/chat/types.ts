@@ -22,33 +22,6 @@ export interface MaterialEntry {
   size?: number;
 }
 
-export interface ChecklistItem {
-  id: string;
-  text: string;
-  done: boolean;
-  doneAt?: number | null;
-  manual?: boolean;
-}
-
-export interface Checklist {
-  deadlineId: string;
-  course: string;
-  title: string;
-  items: ChecklistItem[];
-  updatedAt: number;
-}
-
-/** the fields of a deadline entry the chat rail needs (from /api/deadlines) */
-export interface DeadEntryLite {
-  id: string;
-  course: string;
-  title: string;
-  due: string | null;
-  kind?: string;
-  note?: string;
-  done?: boolean;
-}
-
 /** one model of the fallback chain (from /api/models) */
 export interface ModelQuota {
   model: string;

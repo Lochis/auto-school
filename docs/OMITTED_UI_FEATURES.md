@@ -47,9 +47,20 @@ KPI stat cards, deadline filter tabs with counts + text search, overdue rows wit
 checkbox/bulk selection, milestones "Worth Spreading Out" panel, mapping rail (11-active style),
 registered-course grid, daemon/whisper status cards, week-grouped sessions with sprint labels,
 playback-speed cycling + scrubber, re-transcribe + move-to, structured AI summary styling,
-context strip with document chips, suggested prompts, token meter, Next Deliverable progress
-ring + checklist widget, source-docs sidebar, file-explorer tree with category chips + large-file
+suggested prompts, token meter, collapsible source-docs panel above the chat thread,
+file-explorer tree with category chips + large-file
 emphasis, drop zone + semester-anchor toolbar + expand-all/select-visible, "Ask AI across N
 materials" CTA, daemon status bar with pause/scan controls, completed-sessions list, automation
 directives toggles, day/3-day calendar switcher, failover-chain editor + RAW_LIST, stepper
 fields, masked API vault, quota monitor table + 429 explainer, config-state bar.
+
+## Descoped on ui-overhaul (removed — do NOT re-add without a design decision)
+
+- **Chat right rail** (Next Deliverable progress-ring + interactive checklist widget) and the
+  **context strip** ("Context loaded" chips + model pill) above the thread. Rationale: single-column
+  chat layout; deadline/checklist interaction remains on the Deadlines screen. Note: the stitch
+  mockups (ANALYSIS.md screen 3) still show a 2-col chat with rail + context strip — the
+  divergence is deliberate. The "Next Deliverable" API itself (/api/deadlines + /api/checklists)
+  is unchanged.
+- **Search pill** (⌘K launcher button), **cron chip**, **version pill** (header), **courses hero badge** —
+  removed with the header/kbd palette deferral; none of these were wired beyond styling.

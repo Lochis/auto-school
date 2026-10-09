@@ -289,6 +289,8 @@ export function ProgressBar({ value, showScrubber = true, className = "", trackC
   );
 }
 
+/** Design-system primitive — kept even when no current screen uses it;
+ *  progress rings recur across the stitch mockups (see stitch/ANALYSIS.md). */
 export interface ProgressRingProps {
   /** 0–100 */
   value: number;
