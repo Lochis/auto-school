@@ -1,0 +1,643 @@
+<!DOCTYPE html><html class="dark" lang="en" style=""><head><meta charset="utf-8"><meta content="width=device-width, initial-scale=1.0" name="viewport"><meta content="web_course_detail" name="shell-type"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&amp;display=swap" rel="stylesheet"><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      "colors": {
+        "surface-container-low": "#1a1b22",
+        "tertiary-container": "#00b2d0",
+        "inverse-surface": "#e3e1ec",
+        "error-container": "#93000a",
+        "inverse-on-surface": "#2f3038",
+        "primary-fixed": "#6ffbbe",
+        "on-tertiary": "#003640",
+        "on-primary-fixed": "#002113",
+        "on-primary-fixed-variant": "#005236",
+        "on-tertiary-container": "#003f4b",
+        "surface-container-lowest": "#0d0e15",
+        "surface-container-high": "#292931",
+        "error": "#ffb4ab",
+        "on-secondary": "#1000a9",
+        "on-surface-variant": "#bbcabf",
+        "on-tertiary-fixed": "#001f26",
+        "outline-variant": "#3c4a42",
+        "primary-fixed-dim": "#4edea3",
+        "on-background": "#e3e1ec",
+        "on-surface": "#e3e1ec",
+        "surface": "#12131a",
+        "surface-container-highest": "#33343c",
+        "secondary-fixed-dim": "#c0c1ff",
+        "on-error-container": "#ffdad6",
+        "primary-container": "#10b981",
+        "on-tertiary-fixed-variant": "#004e5c",
+        "tertiary-fixed-dim": "#4cd7f6",
+        "on-primary-container": "#00422b",
+        "background": "#12131a",
+        "inverse-primary": "#006c49",
+        "surface-tint": "#4edea3",
+        "primary": "#4edea3",
+        "surface-dim": "#12131a",
+        "outline": "#86948a",
+        "on-primary": "#003824",
+        "on-secondary-fixed": "#07006c",
+        "surface-bright": "#383941",
+        "tertiary-fixed": "#acedff",
+        "on-secondary-container": "#b0b2ff",
+        "secondary": "#c0c1ff",
+        "on-secondary-fixed-variant": "#2f2ebe",
+        "secondary-container": "#3131c0",
+        "surface-variant": "#33343c",
+        "secondary-fixed": "#e1e0ff",
+        "tertiary": "#4cd7f6",
+        "on-error": "#690005",
+        "surface-container": "#1e1f26"
+      },
+      "borderRadius": {
+        "DEFAULT": "0.125rem",
+        "lg": "0.25rem",
+        "xl": "0.5rem",
+        "full": "0.75rem"
+      },
+      "spacing": {
+        "space-xs": "0.25rem",
+        "margin": "1rem",
+        "space-md": "0.75rem",
+        "gutter": "1rem",
+        "gutter-desktop": "1.5rem",
+        "space-xl": "2rem",
+        "space-sm": "0.5rem",
+        "space-lg": "1.25rem",
+        "margin-desktop": "2rem"
+      },
+      "fontFamily": {
+        "body-sm": ["Inter"],
+        "headline-lg": ["Inter"],
+        "body-md": ["Inter"],
+        "label-sm": ["Inter"],
+        "body-lg": ["Inter"],
+        "code-tabular": ["Inter"],
+        "headline-sm": ["Inter"],
+        "label-md": ["Inter"],
+        "headline-md": ["Inter"]
+      },
+      "fontSize": {
+        "body-sm": ["0.8125rem", {"lineHeight": "1.125rem", "letterSpacing": "0.005em", "fontWeight": "400"}],
+        "headline-lg": ["1.75rem", {"lineHeight": "2.25rem", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+        "body-md": ["0.875rem", {"lineHeight": "1.25rem", "letterSpacing": "0em", "fontWeight": "400"}],
+        "label-sm": ["0.6875rem", {"lineHeight": "0.875rem", "letterSpacing": "0.04em", "fontWeight": "600"}],
+        "body-lg": ["0.9375rem", {"lineHeight": "1.5rem", "letterSpacing": "0em", "fontWeight": "400"}],
+        "code-tabular": ["0.75rem", {"lineHeight": "1rem", "letterSpacing": "0em", "fontWeight": "500"}],
+        "headline-sm": ["1rem", {"lineHeight": "1.5rem", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+        "label-md": ["0.8125rem", {"lineHeight": "1rem", "letterSpacing": "0.01em", "fontWeight": "500"}],
+        "headline-md": ["1.25rem", {"lineHeight": "1.75rem", "letterSpacing": "-0.015em", "fontWeight": "600"}]
+      }
+    }
+  }
+}</script></head><body class="bg-background font-body-md text-on-surface min-h-screen"><header class="fixed top-0 left-0 right-0 z-50 bg-surface/95 backdrop-blur-xl border-b border-outline-variant/30 shadow-[0_1px_8px_rgba(0,0,0,0.4)]"><div class="h-24 max-w-[1440px] mx-auto px-margin lg:px-margin-desktop flex flex-col justify-between py-1.5"><div class="h-11 flex items-center justify-between gap-space-md"><div class="flex items-center gap-space-lg"><a class="flex items-center gap-space-sm group" data-path="schedule-and-automation-dashboard" href="#"><span class="w-5 h-5 rounded-lg bg-surface-container-high flex items-center justify-center border border-outline-variant/40"><span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span></span><span class="font-headline-sm text-headline-sm tracking-tight text-on-surface">auto<span class="text-primary">school</span></span></a><div class="hidden sm:flex items-center gap-space-xs px-space-sm py-0.5 rounded-full bg-surface-container border border-outline-variant/30"><span class="w-1.5 h-1.5 rounded-full bg-primary"></span><span class="font-code-tabular text-code-tabular text-on-surface-variant uppercase tracking-wider">cron: idle</span></div></div><nav class="flex items-center p-0.5 rounded-full bg-surface-container-lowest border border-outline-variant/20" data-active-classes="bg-surface-container-highest text-on-surface font-label-md"><a class="px-space-md py-1 rounded-full font-label-md text-label-md text-on-surface-variant hover:text-on-surface transition-colors" data-path="schedule-and-automation-dashboard" href="#">Schedule</a><a class="px-space-md py-1 rounded-full font-label-md text-label-md bg-surface-container-highest text-on-surface" data-path="courses-and-deadlines-manager" href="#">Courses &amp; Deadlines</a><a class="px-space-md py-1 rounded-full font-label-md text-label-md text-on-surface-variant hover:text-on-surface transition-colors" data-path="settings-and-model-pipeline" href="#">Settings</a></nav><div class="flex items-center gap-space-sm"><div class="hidden md:flex items-center gap-space-xs px-space-sm py-1 rounded-lg bg-surface-container-low border border-outline-variant/40 text-on-surface-variant"><span class="material-symbols-outlined text-[15px]">search</span><span class="font-body-sm text-body-sm text-outline">Quick filter...</span><kbd class="font-code-tabular text-code-tabular px-1 rounded bg-surface-container-high text-on-surface-variant border border-outline-variant/40">⌘K</kbd></div><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div><div class="h-10 flex items-center justify-between border-t border-outline-variant/20 pt-1"><div class="flex items-center gap-space-xs min-w-0"><a class="font-body-sm text-body-sm text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1 shrink-0" data-path="courses-and-deadlines-manager" href="#"><span class="material-symbols-outlined text-[16px]">arrow_back</span><span class="">All Courses</span></a><span class="text-outline-variant select-none">/</span><span class="font-code-tabular text-code-tabular text-primary-fixed-dim bg-surface-container-low px-space-xs py-0.5 rounded border border-outline-variant/30 shrink-0">26F-COMP231</span><span class="hidden sm:inline font-label-md text-label-md text-on-surface truncate">Software Development Project 1</span></div></div></div></header><main class="w-full pt-24 bg-background min-h-[calc(100vh-4rem)]"><div class="flex flex-col w-full">
+<div class="max-w-[1440px] w-full mx-auto px-margin lg:px-margin-desktop py-space-xl flex flex-col gap-space-lg">
+<!-- Top Course Overview Header & Navigation Context -->
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-space-lg"><div class="flex flex-col gap-space-sm"><div class="flex items-center gap-space-xs text-on-surface-variant"><a class="inline-flex items-center gap-1 font-body-sm text-body-sm text-on-surface-variant hover:text-primary transition-colors" href="#"><span class="material-symbols-outlined text-[16px]">arrow_back</span><span class="">All courses</span></a><span class="text-outline-variant font-code-tabular text-code-tabular">/</span><span class="font-code-tabular text-code-tabular text-tertiary">TERM_26F</span></div><div class="flex flex-wrap items-center gap-space-md"><h1 class="font-headline-lg text-headline-lg tracking-tight text-on-surface flex items-center gap-space-sm"><span class="">26F-COMP231-Software Development Project 1</span><button class="w-7 h-7 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors flex items-center justify-center text-outline hover:text-on-surface" title="Edit course metadata"><span class="material-symbols-outlined text-[16px]">tag</span></button></h1><span class="px-2 py-0.5 rounded-full bg-primary-container/20 text-primary font-code-tabular text-code-tabular inline-flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>SYNCED</span></div><div class="flex items-center gap-space-xs mt-space-xs"><a class="px-space-md py-1.5 rounded-full font-label-md text-label-md bg-surface-container-low text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center gap-1.5" data-path="course-sessions" href="#"><span class="material-symbols-outlined text-[16px]">record_voice_over</span><span class="">Sessions</span><span class="px-1.5 py-0.2 rounded-full bg-surface-container-highest text-on-surface-variant font-code-tabular text-code-tabular ml-0.5">8</span></a><a class="px-space-md py-1.5 rounded-full font-label-md text-label-md bg-primary text-on-primary font-medium flex items-center gap-1.5 shadow-sm" data-path="course-materials" href="#"><span class="material-symbols-outlined text-[16px]">folder_open</span><span class="">Materials</span><span class="px-1.5 py-0.2 rounded-full bg-on-primary/20 text-on-primary font-code-tabular text-code-tabular ml-0.5">16</span></a><a class="px-space-md py-1.5 rounded-full font-label-md text-label-md bg-surface-container-low text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors flex items-center gap-1.5" data-path="course-ask-ai" href="#"><span class="material-symbols-outlined text-[16px]">auto_awesome</span><span class="">Ask</span></a></div></div></div>
+<!-- Quick Stats & Storage Health Bento Strip -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md">
+<div class="bg-surface-container-low rounded-xl p-space-md flex items-center justify-between shadow-sm">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-outline">Total Artifacts</span>
+<span class="font-headline-md text-headline-md text-on-surface mt-0.5">16 Files <span class="font-body-sm text-body-sm text-outline">/ 4 Folders</span></span>
+</div>
+<div class="w-9 h-9 rounded-lg bg-surface-container flex items-center justify-center text-primary">
+<span class="material-symbols-outlined text-[20px]">inventory_2</span>
+</div>
+</div>
+<div class="bg-surface-container-low rounded-xl p-space-md flex items-center justify-between shadow-sm">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-outline">Indexed Footprint</span>
+<span class="font-headline-md text-headline-md text-on-surface mt-0.5">68.4 MB <span class="font-body-sm text-body-sm text-outline">processed</span></span>
+</div>
+<div class="w-9 h-9 rounded-lg bg-surface-container flex items-center justify-center text-tertiary">
+<span class="material-symbols-outlined text-[20px]">database</span>
+</div>
+</div>
+<div class="bg-surface-container-low rounded-xl p-space-md flex items-center justify-between shadow-sm">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-outline">Semantic Parser</span>
+<div class="flex items-center gap-1.5 mt-0.5">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+<span class="font-headline-md text-headline-md text-on-surface">Embeddings Ready</span>
+</div>
+</div>
+<div class="w-9 h-9 rounded-lg bg-surface-container flex items-center justify-center text-primary">
+<span class="material-symbols-outlined text-[20px]">hub</span>
+</div>
+</div>
+<div class="bg-surface-container-low rounded-xl p-space-md flex items-center justify-between shadow-sm">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-outline">Active Semester Anchor</span>
+<span class="font-headline-md text-headline-md text-on-surface mt-0.5">Aug 9, 2026</span>
+</div>
+<div class="w-9 h-9 rounded-lg bg-surface-container flex items-center justify-center text-secondary">
+<span class="material-symbols-outlined text-[20px]">event_repeat</span>
+</div>
+</div>
+</div>
+<!-- Materials Action & Drag Toolbar Panel -->
+<div class="bg-surface-container-low rounded-xl p-space-md shadow-md flex flex-col gap-space-md">
+<!-- Top Upload / Dropzone & Action Bar -->
+<div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-space-md">
+<!-- Interactive Drop Strip -->
+<div class="flex-1 bg-surface-container-lowest hover:bg-surface-container transition-all rounded-lg p-space-md flex items-center justify-between cursor-pointer group" id="drop-target">
+<div class="flex items-center gap-space-md min-w-0">
+<div class="w-8 h-8 rounded-lg bg-surface-container-high group-hover:bg-primary/20 flex items-center justify-center text-primary transition-colors shrink-0">
+<span class="material-symbols-outlined text-[20px]">cloud_upload</span>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs">
+<span class="font-label-md text-label-md text-on-surface font-semibold">Drop files or folders here</span>
+<span class="font-body-sm text-body-sm text-outline hidden sm:inline">— or browse your machine</span>
+</div>
+<span class="font-code-tabular text-code-tabular text-on-surface-variant truncate">Auto-extracts slides, PDFs, code blueprints &amp; syncs with Ask AI</span>
+</div>
+</div>
+<span class="font-code-tabular text-code-tabular text-primary-fixed-dim bg-surface-container-high px-2 py-0.5 rounded shrink-0 hidden md:inline">ZIP / PDF / DOCX / MP4</span>
+</div>
+<!-- Utility Batch Actions -->
+<div class="flex items-center gap-space-sm shrink-0"><button class="px-space-md py-2 rounded-lg font-label-md text-label-md bg-primary text-on-primary font-semibold flex items-center gap-1.5 hover:bg-primary/90 transition-colors shadow-sm"><span class="material-symbols-outlined text-[18px]">upload_file</span><span class="">Upload</span></button><button class="px-space-md py-2 rounded-lg font-label-md text-label-md bg-surface-container hover:bg-surface-container-high text-on-surface transition-colors flex items-center gap-1.5 border border-outline-variant/30"><span class="material-symbols-outlined text-[18px]">create_new_folder</span><span class="">New Folder</span></button></div>
+</div>
+<!-- Secondary Controls: Semester Schedule Anchor -->
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm bg-surface-container-lowest/70 px-space-md py-2 rounded-lg">
+<div class="flex items-center gap-space-sm flex-wrap">
+<div class="flex items-center gap-1.5 text-on-surface-variant font-body-sm text-body-sm">
+<span class="material-symbols-outlined text-[16px] text-primary">calendar_clock</span>
+<span class="">Semester starts:</span>
+</div>
+<div class="flex items-center bg-surface-container-high px-2 py-1 rounded gap-1.5">
+<input class="bg-transparent font-code-tabular text-code-tabular text-on-surface focus:outline-none w-24 tracking-wider" type="text" value="08/09/2026">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant">calendar_today</span>
+</div>
+<button class="h-7 px-space-md rounded bg-surface-container-high hover:bg-primary hover:text-on-primary font-label-md text-label-md text-on-surface transition-colors shadow-sm">
+            Save
+          </button>
+<span class="font-body-sm text-body-sm text-outline hidden md:inline">— calculates dynamic week offsets &amp; associates session recordings</span>
+</div>
+<div class="flex items-center gap-space-md">
+<button class="font-body-sm text-body-sm text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1" id="expand-all-btn">
+<span class="material-symbols-outlined text-[15px]">unfold_more</span>
+<span class="">Expand All</span>
+</button>
+<button class="font-body-sm text-body-sm text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1" id="select-all-btn">
+<span class="material-symbols-outlined text-[15px]">select_all</span>
+<span class="">Select Visible</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Hierarchical File Tree & Document Explorer Section -->
+<div class="bg-surface-container-low rounded-xl shadow-md overflow-hidden flex flex-col">
+<!-- File Explorer Column Headers -->
+<div class="flex items-center justify-between px-space-lg py-2.5 bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm uppercase tracking-wider select-none">
+<div class="flex items-center gap-space-md flex-1 min-w-0">
+<input class="w-4 h-4 rounded bg-surface-container-lowest checked:bg-primary accent-emerald-500 cursor-pointer" id="master-checkbox" type="checkbox">
+<span class="">Name &amp; Hierarchy</span>
+</div>
+<div class="hidden md:flex items-center gap-4 sm:gap-6 justify-end text-right"><span class="w-20 text-right">Category</span><span class="w-16 text-right">Size</span><span class="w-20 text-right pr-2">Actions</span></div>
+</div>
+<!-- File Tree Body -->
+<div class="flex flex-col p-space-sm gap-0.5 select-none" id="file-tree-container">
+<!-- Folder 1: .index -->
+<div class="flex flex-col group/folder" data-folder="index">
+<div class="flex items-center justify-between py-1.5 px-space-md rounded-lg hover:bg-surface-container-high transition-colors cursor-pointer">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<button class="folder-toggle text-on-surface-variant hover:text-on-surface transition-transform duration-150">
+<span class="material-symbols-outlined text-[18px]">keyboard_arrow_right</span>
+</button>
+<div class="w-6 h-6 rounded bg-surface-container-lowest flex items-center justify-center text-primary-fixed-dim">
+<span class="material-symbols-outlined text-[17px]">folder</span>
+</div>
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold truncate">.index</span>
+<span class="font-code-tabular text-code-tabular text-outline px-1.5 py-0.5 bg-surface-container-lowest rounded">hidden / cache</span>
+</div>
+<div class="flex items-center gap-4 text-code-tabular text-outline"><span class="w-16 text-right">System</span></div>
+</div>
+<div class="folder-content hidden flex flex-col pl-9 pr-space-md py-1 gap-1 bg-surface-container-lowest/40 rounded-lg my-0.5"><span class="text-body-sm font-body-sm text-outline px-2 py-1 italic">Internal cache / metadata indices</span></div>
+</div>
+<!-- Folder 2: Week 1 -->
+<div class="flex flex-col group/folder" data-folder="week-1">
+<div class="flex items-center justify-between py-1.5 px-space-md rounded-lg hover:bg-surface-container-high transition-colors cursor-pointer bg-surface-container-lowest/50">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<button class="folder-toggle text-on-surface-variant hover:text-on-surface transition-transform duration-150 rotate-90">
+<span class="material-symbols-outlined text-[18px]">keyboard_arrow_right</span>
+</button>
+<div class="w-6 h-6 rounded bg-primary/10 flex items-center justify-center text-primary">
+<span class="material-symbols-outlined text-[17px]">folder_open</span>
+</div>
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold truncate">Week 1</span>
+<span class="font-code-tabular text-code-tabular text-on-surface-variant px-1.5 py-0.5 bg-surface-container-high rounded">6 items</span>
+</div>
+<div class="flex items-center gap-1.5 text-on-surface-variant"><button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Download folder"><span class="material-symbols-outlined text-[14px]">download</span></button></div>
+</div>
+<!-- Week 1 Content Items -->
+<div class="folder-content flex flex-col pl-7 md:pl-9 pr-space-sm py-1 gap-0.5">
+<!-- File: introduction.pdf -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">introduction.pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant"><span class="w-20 hidden md:inline text-right text-outline">week 1</span><span class="w-16 text-right">245 KB</span><div class="flex items-center gap-1.5 justify-end"><button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download"><span class="material-symbols-outlined text-[14px]">download</span></button><button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag"><span class="material-symbols-outlined text-[14px]">sell</span></button><button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete"><span class="material-symbols-outlined text-[14px]">close</span></button></div></div>
+</div>
+<!-- File: Samsung Printer Project -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Samsung Printer Project (Google Drive API architecture v2).pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 1</span>
+<span class="w-16 text-right">101 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download">
+<span class="material-symbols-outlined text-[14px]">download</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag">
+<span class="material-symbols-outlined text-[14px]">sell</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete">
+<span class="material-symbols-outlined text-[14px]">close</span>
+</button>
+</div>
+</div>
+</div>
+<!-- File: TAC Technical Report Template.docx -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-tertiary shrink-0">description</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">TAC Technical Report Template.docx</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 1</span>
+<span class="w-16 text-right">1.3 MB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download">
+<span class="material-symbols-outlined text-[14px]">download</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag">
+<span class="material-symbols-outlined text-[14px]">sell</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete">
+<span class="material-symbols-outlined text-[14px]">close</span>
+</button>
+</div>
+</div>
+</div>
+<!-- File: User Role Modeling.mp4 -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-secondary shrink-0">movie</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">User Role Modeling.mp4</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 1</span>
+<span class="w-16 text-right text-tertiary-fixed-dim font-semibold">57.2 MB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download">
+<span class="material-symbols-outlined text-[14px]">download</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag">
+<span class="material-symbols-outlined text-[14px]">sell</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete">
+<span class="material-symbols-outlined text-[14px]">close</span>
+</button>
+</div>
+</div>
+</div>
+<!-- File: week 1 - overview .pdf -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">week 1 - overview .pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 1</span>
+<span class="w-16 text-right">183 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download">
+<span class="material-symbols-outlined text-[14px]">download</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag">
+<span class="material-symbols-outlined text-[14px]">sell</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete">
+<span class="material-symbols-outlined text-[14px]">close</span>
+</button>
+</div>
+</div>
+</div>
+<!-- File: week 1 - summary.pdf -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">week 1 - summary.pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 1</span>
+<span class="w-16 text-right">177 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download">
+<span class="material-symbols-outlined text-[14px]">download</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag">
+<span class="material-symbols-outlined text-[14px]">sell</span>
+</button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete">
+<span class="material-symbols-outlined text-[14px]">close</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Folder 3: Week 2 -->
+<div class="flex flex-col group/folder" data-folder="week-2">
+<div class="flex items-center justify-between py-1.5 px-space-md rounded-lg hover:bg-surface-container-high transition-colors cursor-pointer bg-surface-container-lowest/50">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<button class="folder-toggle text-on-surface-variant hover:text-on-surface transition-transform duration-150 rotate-90">
+<span class="material-symbols-outlined text-[18px]">keyboard_arrow_right</span>
+</button>
+<div class="w-6 h-6 rounded bg-primary/10 flex items-center justify-center text-primary">
+<span class="material-symbols-outlined text-[17px]">folder_open</span>
+</div>
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold truncate">Week 2</span>
+<span class="font-code-tabular text-code-tabular text-on-surface-variant px-1.5 py-0.5 bg-surface-container-high rounded">1 nested folder · 5 items</span>
+</div>
+<div class="flex items-center gap-1.5 text-on-surface-variant"><button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Download folder"><span class="material-symbols-outlined text-[14px]">download</span></button></div>
+</div>
+<!-- Week 2 Content: Project Proposal nested folder -->
+<div class="folder-content flex flex-col pl-7 md:pl-9 pr-space-sm py-1 gap-0.5">
+<div class="flex flex-col group/subfolder" data-folder="project-proposal">
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors cursor-pointer">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<button class="folder-toggle text-on-surface-variant hover:text-on-surface transition-transform duration-150 rotate-90">
+<span class="material-symbols-outlined text-[16px]">keyboard_arrow_right</span>
+</button>
+<div class="w-5 h-5 rounded bg-surface-container flex items-center justify-center text-primary-fixed-dim">
+<span class="material-symbols-outlined text-[15px]">folder</span>
+</div>
+<span class="font-label-md text-label-md text-on-surface font-medium truncate">Project Proposal</span>
+<span class="font-code-tabular text-code-tabular text-outline">5 docs</span>
+</div>
+<div class="flex items-center gap-1.5 text-on-surface-variant"><span class="text-code-tabular text-outline text-right pr-2">5 files</span></div>
+</div>
+<!-- Nested Files inside Project Proposal -->
+<div class="folder-content flex flex-col pl-6 md:pl-8 pr-1 py-1 gap-0.5"><div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row"><div class="flex items-center gap-space-sm min-w-0 flex-1"><input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox"><span class="material-symbols-outlined text-[18px] text-tertiary shrink-0">description</span><span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Project Charter &amp; Scope Statement.docx</span></div><div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant"><span class="w-20 hidden md:inline text-right text-outline">proposal</span><span class="w-16 text-right">412 KB</span><div class="flex items-center gap-1.5 justify-end"><button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download"><span class="material-symbols-outlined text-[14px]">download</span></button><button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete"><span class="material-symbols-outlined text-[14px]">close</span></button></div></div></div><div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row"><div class="flex items-center gap-space-sm min-w-0 flex-1"><input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox"><span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span><span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Stakeholder Matrix &amp; Approvals.pdf</span></div><div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant"><span class="w-20 hidden md:inline text-right text-outline">proposal</span><span class="w-16 text-right">188 KB</span><div class="flex items-center gap-1.5 justify-end"><button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download"><span class="material-symbols-outlined text-[14px]">download</span></button><button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete"><span class="material-symbols-outlined text-[14px]">close</span></button></div></div></div></div>
+</div>
+</div>
+</div>
+<!-- Folder 4: Week 3 -->
+<div class="flex flex-col group/folder" data-folder="week-3">
+<div class="flex items-center justify-between py-1.5 px-space-md rounded-lg hover:bg-surface-container-high transition-colors cursor-pointer bg-surface-container-lowest/50">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<button class="folder-toggle text-on-surface-variant hover:text-on-surface transition-transform duration-150 rotate-90">
+<span class="material-symbols-outlined text-[18px]">keyboard_arrow_right</span>
+</button>
+<div class="w-6 h-6 rounded bg-primary/10 flex items-center justify-center text-primary">
+<span class="material-symbols-outlined text-[17px]">folder_open</span>
+</div>
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold truncate">Week 3</span>
+<span class="font-code-tabular text-code-tabular text-on-surface-variant px-1.5 py-0.5 bg-surface-container-high rounded">4 items</span>
+</div>
+<div class="flex items-center gap-1.5 text-on-surface-variant"><button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Download folder"><span class="material-symbols-outlined text-[14px]">download</span></button></div>
+</div>
+<!-- Week 3 Content Items -->
+<div class="folder-content flex flex-col pl-7 md:pl-9 pr-space-sm py-1 gap-0.5">
+<!-- Long title PDF -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors" title="User Stories Applied_ For Agile Software Development (The -- Cohn_ Mike -- Signature_ March 1_ 2004 -- Addison-Wesley Professional.pdf">
+                  User Stories Applied_ For Agile Software Development (The -- Cohn_ Mike -- Signature_ March 1_ 2004 -- Addison-Wesley Professional.pdf
+                </span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant"><span class="w-20 hidden md:inline text-right text-outline">week 3</span><span class="w-16 text-right text-tertiary-fixed-dim font-semibold">4.2 MB</span><div class="flex items-center gap-1.5 justify-end"><button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download"><span class="material-symbols-outlined text-[14px]">download</span></button><button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag"><span class="material-symbols-outlined text-[14px]">sell</span></button><button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete"><span class="material-symbols-outlined text-[14px]">close</span></button></div></div>
+</div>
+<!-- Week 3_ Overview.pdf -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Week 3_ Overview.pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 3</span>
+<span class="w-16 text-right">723 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">download</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">sell</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">close</span></button>
+</div>
+</div>
+</div>
+<!-- Week 3_ Summary.pdf -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Week 3_ Summary.pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 3</span>
+<span class="w-16 text-right">519 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">download</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">sell</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">close</span></button>
+</div>
+</div>
+</div>
+<!-- Writing and Gathering User Stories.pdf -->
+<div class="flex items-center justify-between py-1 px-space-sm rounded hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Writing and Gathering User Stories.pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">week 3</span>
+<span class="w-16 text-right">453 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">download</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">sell</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors"><span class="material-symbols-outlined text-[14px]">close</span></button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Root Loose Files Header Divider -->
+<div class="px-space-md py-1 mt-2 text-outline font-label-sm text-label-sm uppercase tracking-wider flex items-center gap-2">
+<span class="">Loose / Root Resources</span>
+<div class="h-px bg-surface-container flex-1"></div>
+</div>
+<!-- Root File: Evaluation Scheme.pdf -->
+<div class="flex items-center justify-between py-1 px-space-md rounded-lg hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-error shrink-0">picture_as_pdf</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Evaluation Scheme.pdf</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">root</span>
+<span class="w-16 text-right">100 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download"><span class="material-symbols-outlined text-[14px]">download</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag"><span class="material-symbols-outlined text-[14px]">sell</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete"><span class="material-symbols-outlined text-[14px]">close</span></button>
+</div>
+</div>
+</div>
+<!-- Root File: Grading Sheet COMP231.xlsx -->
+<div class="flex items-center justify-between py-1 px-space-md rounded-lg hover:bg-surface-container-high transition-colors group/row">
+<div class="flex items-center gap-space-sm min-w-0 flex-1">
+<input class="tree-item-checkbox w-4 h-4 rounded bg-surface-container-lowest accent-emerald-500 cursor-pointer" type="checkbox">
+<span class="material-symbols-outlined text-[18px] text-primary shrink-0">table_chart</span>
+<span class="font-body-md text-body-md text-on-surface truncate group-hover/row:text-primary transition-colors">Grading Sheet COMP231.xlsx</span>
+</div>
+<div class="flex items-center gap-4 sm:gap-6 shrink-0 font-code-tabular text-code-tabular text-on-surface-variant">
+<span class="w-20 hidden md:inline text-right text-outline">root</span>
+<span class="w-16 text-right">48 KB</span>
+<div class="flex items-center gap-1.5 justify-end">
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-primary hover:text-on-primary flex items-center justify-center transition-colors" title="Download"><span class="material-symbols-outlined text-[14px]">download</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-surface-container-highest flex items-center justify-center transition-colors" title="Tag"><span class="material-symbols-outlined text-[14px]">sell</span></button>
+<button class="w-6 h-6 rounded bg-surface-container hover:bg-error-container hover:text-error flex items-center justify-center transition-colors" title="Delete"><span class="material-symbols-outlined text-[14px]">close</span></button>
+</div>
+</div>
+</div>
+</div>
+<!-- File Explorer Footer Status Bar -->
+<div class="flex items-center justify-between px-space-lg py-2 bg-surface-container-lowest text-on-surface-variant font-code-tabular text-code-tabular">
+<div class="flex items-center gap-space-md">
+<span class="text-primary-fixed-dim flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-primary"></span>
+            Sync daemon: watching folder /mnt/courses/26F-COMP231
+          </span>
+</div>
+<div class="flex items-center gap-space-sm">
+<span class="">Auto-indexing enabled</span>
+<span class="text-outline">·</span>
+<span class="">Last polled 2m ago</span>
+</div>
+</div>
+</div>
+<!-- AI Synthesis & Assistant Integration Card -->
+<div class="bg-gradient-to-r from-surface-container-low via-surface-container to-surface-container-low rounded-xl p-space-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-space-lg shadow-sm border border-outline-variant/30"><div class="flex items-center gap-space-md"><div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0 border border-primary/20"><span class="material-symbols-outlined text-[24px]">psychology</span></div><div class="flex flex-col"><span class="font-headline-sm text-headline-sm font-semibold text-on-surface">Ask AI across 16 Indexed Materials</span><span class="font-body-sm text-body-sm text-on-surface-variant">Query project charters, user stories, PDF lecture slides, and transcripts with citations.</span></div></div><div class="flex items-center gap-space-sm w-full md:w-auto"><a class="w-full md:w-auto px-space-lg py-2 rounded-lg font-label-md text-label-md bg-primary text-on-primary font-semibold flex items-center justify-center gap-2 hover:bg-primary/90 transition-colors shadow-sm" data-path="course-ask-ai" href="#"><span class="material-symbols-outlined text-[18px]">chat_bubble</span><span class="">Launch Ask AI</span></a></div></div>
+</div>
+<!-- Interactive Logic for Tree Expander, Checkboxes and Drop Zone -->
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+      // Folder Collapse / Expand
+      const folderToggles = document.querySelectorAll('.folder-toggle');
+      folderToggles.forEach(toggleBtn => {
+        toggleBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const folderDiv = toggleBtn.closest('[data-folder]');
+          if (!folderDiv) return;
+          const content = folderDiv.querySelector('.folder-content');
+          if (content) {
+            content.classList.toggle('hidden');
+            toggleBtn.classList.toggle('rotate-90');
+          }
+        });
+      });
+
+      // Selection Counter & Master Checkbox
+      const masterCheckbox = document.getElementById('master-checkbox');
+      const itemCheckboxes = document.querySelectorAll('.tree-item-checkbox');
+      const countDisplay = document.getElementById('selected-count');
+      const selectAllBtn = document.getElementById('select-all-btn');
+      const expandAllBtn = document.getElementById('expand-all-btn');
+
+      function updateCount() {
+        const checkedCount = document.querySelectorAll('.tree-item-checkbox:checked').length;
+        if (countDisplay) countDisplay.textContent = checkedCount;
+        if (masterCheckbox) {
+          masterCheckbox.checked = checkedCount > 0 && checkedCount === itemCheckboxes.length;
+          masterCheckbox.indeterminate = checkedCount > 0 && checkedCount < itemCheckboxes.length;
+        }
+      }
+
+      itemCheckboxes.forEach(cb => {
+        cb.addEventListener('change', updateCount);
+      });
+
+      if (masterCheckbox) {
+        masterCheckbox.addEventListener('change', (e) => {
+          const isChecked = e.target.checked;
+          itemCheckboxes.forEach(cb => cb.checked = isChecked);
+          updateCount();
+        });
+      }
+
+      if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', () => {
+          const allChecked = Array.from(itemCheckboxes).every(cb => cb.checked);
+          itemCheckboxes.forEach(cb => cb.checked = !allChecked);
+          updateCount();
+        });
+      }
+
+      if (expandAllBtn) {
+        let isExpanded = true;
+        expandAllBtn.addEventListener('click', () => {
+          isExpanded = !isExpanded;
+          document.querySelectorAll('.folder-content').forEach(content => {
+            if (isExpanded) {
+              content.classList.remove('hidden');
+            } else {
+              content.classList.add('hidden');
+            }
+          });
+          document.querySelectorAll('.folder-toggle').forEach(t => {
+            if (isExpanded) {
+              t.classList.add('rotate-90');
+            } else {
+              t.classList.remove('rotate-90');
+            }
+          });
+          expandAllBtn.querySelector('span:last-child').textContent = isExpanded ? 'Collapse All' : 'Expand All';
+        });
+      }
+
+      // Drag and Drop feedback
+      const dropZone = document.getElementById('drop-target');
+      if (dropZone) {
+        ['dragenter', 'dragover'].forEach(eventName => {
+          dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropZone.classList.add('bg-surface-container-high', 'scale-[0.99]');
+          });
+        });
+        ['dragleave', 'drop'].forEach(eventName => {
+          dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('bg-surface-container-high', 'scale-[0.99]');
+          });
+        });
+      }
+    });
+  </script>
+</div></main><footer class="w-full bg-surface-container-lowest border-t border-outline-variant/20 py-space-md"><div class="max-w-[1440px] mx-auto px-margin lg:px-margin-desktop flex flex-col sm:flex-row items-center justify-between gap-space-sm text-on-surface-variant"><div class="flex items-center gap-space-md"><span class="font-code-tabular text-code-tabular text-outline">AUTOSCHOOL DAEMON // ACTIVE</span><span class="font-body-sm text-body-sm text-on-surface-variant">© 2025 AutoSchool Engine</span></div><div class="flex items-center gap-space-md font-body-sm text-body-sm"><span class="font-code-tabular text-code-tabular text-outline">LISTENER: STEREO 48kHz</span><span class="font-code-tabular text-code-tabular text-primary-fixed-dim">PIPELINE READY</span></div></div></footer>
+
+</body></html>

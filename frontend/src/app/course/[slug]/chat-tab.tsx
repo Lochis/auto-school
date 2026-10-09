@@ -1,191 +1,41 @@
 "use client";
 /** Course "Ask" tab: chat with the LLM about this course — tool-calling on
  *  the backend (materials, document bundles, VLM page vision, transcripts).
- *  Assistant messages render as markdown; any material file name it cites
- *  becomes a link that opens an inline previewer. */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
+ *  Restyled per stitch/course_ai_assistant_knowledge_chat: context strip
+ *  with indexed-material chips + current model, rich-markdown assistant
+ *  turns with doc-citation links, indigo user bubbles, quoted suggested
+ *  prompts, a composer dock (token estimate, Web toggle, emerald Send),
+ *  and a right rail with Source Documents + the Next Deliverable widget.
+ *  The same component also serves the all-courses chat (no slug → no rail). */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowUpIcon, BookOpenIcon, ChevronDownIcon, GlobeAltIcon, PaperClipIcon, TrashIcon, XMarkIcon,
+} from "@heroicons/react/24/outline";
+import { LiveDot, MicroButton } from "@/components/ui";
+import DocPreview from "@/components/chat/doc-preview";
+import { MessageRow, makeLinkifier } from "@/components/chat/message-row";
+import { SourceDocuments } from "@/components/chat/sidebar";
+import type { LexHit, MaterialEntry, Msg } from "@/components/chat/types";
+import "../../chat-ui.css";
 
-interface Msg { role: "user" | "assistant"; content: string; at: string }
-interface Material { path: string; filename: string }
-interface LexHit { course: string; path: string }
-
-
-/** overlay: fixed, click-outside to close */
-function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClose: () => void }) {
-  const [text, setText] = useState<string | null>(null);
-  const [twin, setTwin] = useState<string | null>(null); // docx→pdf twin, if converted
-  const ext = path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
-  const media = `/api/media/courses/${encodeURIComponent(slug)}/materials/${path.split("/").map(encodeURIComponent).join("/")}`;
-  // bundle twin: .index/<rel-minus-ext>/source.pdf (proactive docx→pdf pass)
-  const twinUrl = ext === "docx"
-    ? `/api/media/courses/${encodeURIComponent(slug)}/materials/.index/${path.replace(/\.docx$/i, "").split("/").map(encodeURIComponent).join("/")}/source.pdf`
-    : null;
-
-  useEffect(() => {
-    let alive = true;
-    if (ext === "pdf" || ["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return; // rendered natively
-    if (ext === "docx" && twinUrl) {
-      // prefer the PDF twin for viewing; fall back to text if not converted yet
-      fetch(twinUrl, { method: "HEAD" })
-        .then((r) => {
-          if (!alive) return;
-          if (r.ok) { setTwin(twinUrl); return; }
-          setTwin("none");
-          return fetch(`/api/courses/${encodeURIComponent(slug)}/doc?path=${encodeURIComponent(path)}`)
-            .then((r2) => r2.json())
-            .then((j) => { if (alive) setText(j.error ? `⚠️ ${j.error}` : (j.text || "(empty)")); });
-        })
-        .catch(() => {
-          if (!alive) return;
-          setTwin("none");
-          fetch(`/api/courses/${encodeURIComponent(slug)}/doc?path=${encodeURIComponent(path)}`)
-            .then((r2) => r2.json())
-            .then((j) => { if (alive) setText(j.error ? `⚠️ ${j.error}` : (j.text || "(empty)")); })
-            .catch(() => { if (alive) setText("preview unavailable"); });
-        });
-      return;
-    }
-    fetch(`/api/courses/${encodeURIComponent(slug)}/doc?path=${encodeURIComponent(path)}`)
-      .then((r) => r.json())
-      .then((j) => { if (alive) setText(j.error ? `⚠️ ${j.error}` : (j.text || "(empty)")); })
-      .catch(() => { if (alive) setText("preview unavailable"); });
-    return () => { alive = false; };
-  }, [slug, path, ext, twinUrl]);
-
-  return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(900px, 94vw)", height: "86vh", display: "flex", flexDirection: "column", padding: 12 }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-          <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{path}</strong>
-          <span style={{ flex: 1 }} />
-          <a href={media} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>open raw ↗</a>
-          <button onClick={onClose}>✕ close</button>
-        </div>
-        <div style={{ flex: 1, overflow: "auto" }}>
-          {ext === "pdf" || twin?.startsWith("/") ? (
-            <iframe src={twin?.startsWith("/") ? twin : media} title={path} style={{ width: "100%", height: "100%", border: 0, background: "#fff", borderRadius: 8 }} />
-          ) : ["png", "jpg", "jpeg", "gif", "webp"].includes(ext) ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={media} alt={path} style={{ maxWidth: "100%", display: "block", margin: "0 auto" }} />
-          ) : (
-            <div className="notes" style={{ fontSize: 14 }}>
-              {ext === "docx" && twin === null ? <p className="muted">checking for PDF twin…</p> : null}
-              {text === null && !(ext === "docx" && twin === null) ? <p className="muted">extracting text…</p> : null}
-              {text !== null ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown> : null}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Build a linkifier with the citation targets precomputed + sorted ONCE —
- *  calling it per keystroke per message was the main typing-lag source. */
-function makeLinkifier(byPath: Map<string, LexHit[]>, byLeaf: Map<string, LexHit[]>, hints: Record<string, string[]>) {
-  /** pick the right course when a filename exists in several: score hint
-   *  tokens (from the course slug + its meeting titles) found in the text
-   *  just before the citation — longer hits count more */
-  const resolveHit = (cands: LexHit[], context: string): LexHit => {
-    if (cands.length === 1) return cands[0]!;
-    const ctx = context.toLowerCase().slice(-300);
-    let best = cands[0]!;
-    let bestScore = -1;
-    for (const c of cands) {
-      const score = (hints[c.course] ?? []).reduce((s, tok) => s + (ctx.includes(tok) ? tok.length : 0), 0);
-      if (score > bestScore) { best = c; bestScore = score; }
-    }
-    return best;
-  };
-  const linkFor = (leaf: string, hit: LexHit): string =>
-    `[${leaf}](#doc:${encodeURIComponent(hit.course + "/" + hit.path)})`;
-  // all known citations (full paths + bare leaves), longest first — a
-  // single left-to-right scan never re-enters inserted link text, so a
-  // leaf that's part of a longer path can't nest inside its own link
-  const targets = [...byPath, ...byLeaf].sort((a, b) => b[0].length - a[0].length);
-  const linkifySegment = (seg: string): string => {
-    let out = "";
-    let i = 0;
-    while (i < seg.length) {
-      let hit = false;
-      for (const [name, cands] of targets) {
-        if (name && seg.startsWith(name, i)) {
-          out += linkFor(name, resolveHit(cands, seg.slice(0, i)));
-          i += name.length;
-          hit = true;
-          break;
-        }
-      }
-      if (!hit) { out += seg[i]!; i++; }
-    }
-    return out;
-  };
-  return (md: string): string => md
-    .split(/(`+[^`\n]+`+)/g)
-    .map((seg, i) => {
-      if (i % 2 === 0) return linkifySegment(seg);
-      const inner = seg.replace(/^`+|`+$/g, "");
-      const direct = byPath.get(inner) ?? byLeaf.get(inner);
-      if (direct) return linkFor(inner, resolveHit(direct, seg));
-      // cited as a code span WITH its folder path — match on the basename,
-      // but only when a known hit actually lives at that path
-      if (inner.includes("/")) {
-        const base = inner.slice(inner.lastIndexOf("/") + 1);
-        const bc = byLeaf.get(base);
-        if (bc?.some((h) => h.path === inner)) return linkFor(inner, resolveHit(bc, seg));
-      }
-      return seg;
-    })
-    .join("");
-}
-
-/** One chat message. Memoized: typing in the input must NOT re-run
- *  linkify + markdown + syntax-highlight for every rendered message. */
-const MessageRow = memo(function MessageRow({ m, linkify, onOpenPreview }: { m: Msg; linkify: (md: string) => string; onOpenPreview: (hash: string) => void }) {
-  // linkified markdown computed once per message content
-  const body = useMemo(() => linkify(m.content), [linkify, m.content]);
-  // stable renderer config — a fresh object every render defeats memo downstream
-  const mdComponents = useMemo(() => ({
-    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => href?.startsWith("#doc:") ? (
-      <a href="#" onClick={(e) => { e.preventDefault(); onOpenPreview(href); }}
-         style={{ color: "#7dc4ff", textDecoration: "underline dotted" }}>{children} 👁</a>
-    ) : (
-      <a href={href} target="_blank" rel="noreferrer">{children}</a>
-    ),
-  }), [onOpenPreview]);
-  return (
-    <div className="card" style={{
-      marginBottom: 8,
-      marginLeft: m.role === "user" ? "18%" : 0,
-      marginRight: m.role === "assistant" ? "12%" : 0,
-      background: m.role === "user" ? "#223049" : undefined,
-    }}>
-      <strong style={{ fontSize: 12, color: m.role === "user" ? "#2563eb" : "#059669" }}>
-        {m.role === "user" ? "you" : "assistant"}
-      </strong>
-      {m.role === "assistant" ? (
-        <div className="notes" style={{ marginTop: 4, fontSize: 14 }}>
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[[rehypeHighlight, { detect: false }]]}
-            components={mdComponents}
-          >{body}</ReactMarkdown>
-        </div>
-      ) : (
-        <p style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>{m.content}</p>
-      )}
-    </div>
-  );
-});
+/** sensible static starters — the chat API has no suggestions endpoint */
+const SUGGESTED_COURSE = [
+  "Summarize the most recent lecture",
+  "What's due next in this course?",
+  "Quiz me on this week's material",
+];
+const SUGGESTED_ALL = [
+  "What do I have to do this week across all courses?",
+  "When is my next deadline?",
+  "Which lectures covered the last assignment's topic?",
+];
 
 export default function ChatTab({ slug, initialPrompt }: { slug?: string; initialPrompt?: string }) {
   const [messages, setMessages] = useState<Msg[]>([]);
-  const [materials, setMaterials] = useState<Material[]>([]);
+  const [materials, setMaterials] = useState<MaterialEntry[]>([]);
   const [lexicon, setLexicon] = useState<Record<string, LexHit[]>>({});
   const [hints, setHints] = useState<Record<string, string[]>>({});
+  const [srcOpen, setSrcOpen] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
@@ -206,7 +56,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     if (slug) {
       fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
         .then((r) => r.json())
-        .then((j: { materials?: Material[] }) => setMaterials(j.materials ?? []))
+        .then((j: { materials?: MaterialEntry[] }) => setMaterials(j.materials ?? []))
         .catch(() => { /* linkify just won't activate */ });
     } else {
       // all-courses chat: leaf filename → candidate courses for the linkifier
@@ -279,7 +129,11 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     setMessages([]);
   };
 
-  const openPreview = useCallback((hash: string): void => {
+  const openPreview = useCallback((course: string, path: string): void => {
+    setPreview({ course, path });
+  }, []);
+  /** citation-link handler: "#doc:<encoded course>/<path>" → preview */
+  const openPreviewHash = useCallback((hash: string): void => {
     const raw = decodeURIComponent(hash.slice(5));
     const sep = raw.indexOf("/");
     if (sep < 0) return;
@@ -302,53 +156,121 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     }
   }, [initialPrompt]);
 
+  // rough token estimate for the composer counter (≈ chars/4)
+  const tokenEstimate = Math.ceil(input.length / 4);
+  const suggestions = slug ? SUGGESTED_COURSE : SUGGESTED_ALL;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "70vh" }}>
+    <div className="chat-layout">
       {preview && <DocPreview slug={preview.course} path={preview.path} onClose={() => setPreview(null)} />}
-      <div style={{ flex: 1, overflowY: "auto", padding: "8px 4px" }}>
-        {messages.length === 0 && (
-          <div className="card" style={{ marginBottom: 8 }}>
-            <p className="muted" style={{ margin: 0 }}>
-              {slug ? (
-                <>Ask anything about this course — “what do I need to do for week 1?”, “summarize the last lecture”,
-              “explain the diagram in 1.1 Dimensional Modeling”. The assistant reads the actual documents
-              (including figures, via a vision model) and recorded sessions.</>
-              ) : (
-                <>Ask across ALL courses — “it's week 1, what do I have to do and what should I study?”,
-              “when is my next thing due?”, “which lectures covered dimensional modeling?”. The assistant
-              sweeps every course's materials, sessions and documents (figures included, via a vision model).</>
-              )}
-            </p>
+
+      {/* ── left: conversational stream ── */}
+      <section className="chat-main">
+        {slug && (
+          <div className="chat-src-head">
+            <button
+              type="button"
+              className="chat-src-head-btn"
+              onClick={() => setSrcOpen((o) => !o)}
+              aria-expanded={srcOpen}
+            >
+              <BookOpenIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
+              <span>Source Documents</span>
+              {materials.length > 0 && <span className="chat-token-count">{materials.length} Indexed</span>}
+              <ChevronDownIcon className={`heroicon chat-src-chev ${srcOpen ? "chat-src-chev--open" : ""}`.trim()} style={{ display: "inline", width: 14, height: 14 }} />
+            </button>
           </div>
         )}
-        {messages.map((m) => (
-          <MessageRow key={m.at ?? m.content.slice(0, 32)} m={m} linkify={linkify} onOpenPreview={openPreview} />
-        ))}
-        {busy && <p className="muted" style={{ margin: "4px 0" }}>thinking (may read documents / view pages{webSearch ? " / search the web" : ""})…</p>}
-        {err && <p style={{ color: "#b91c1c", margin: "4px 0" }}>{err}</p>}
-        <div ref={bottomRef} />
-      </div>
-      <div style={{ display: "flex", gap: 8, paddingTop: 8, borderTop: "1px solid #333" }}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
-          placeholder={slug ? "ask about this course…" : "ask across all courses…"}
-          style={{ flex: 1 }}
-          disabled={busy}
-        />
-        <button onClick={() => void send()} disabled={busy || !input.trim()}>Send</button>
-        <button onClick={() => void clear()} title="Clear chat history">✕</button>
-        <button
-          onClick={toggleWeb}
-          title={webSearch ? "Web search ON — the assistant may also search the public web for background (course materials still take priority)" : "Web search OFF — only course materials are used as context"}
-          style={{
-            border: webSearch ? "1px solid #059669" : "1px solid #555",
-            color: webSearch ? "#059669" : "#888",
-            fontWeight: webSearch ? 600 : 400,
-          }}
-        >🌐 {webSearch ? "Web on" : "Web off"}</button>
-      </div>
+        {slug && srcOpen && (
+          <SourceDocuments slug={slug} materials={materials} onOpenPreview={openPreview} />
+        )}
+
+        {/* thread */}
+        <div className="chat-scroll">
+          {messages.map((m) => (
+            <MessageRow key={m.at ?? m.content.slice(0, 32)} m={m} linkify={linkify} onOpenPreview={openPreviewHash} />
+          ))}
+          {busy && (
+            <p className="muted" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: "0.8125rem" }}>
+              <LiveDot static /> thinking (may read documents / view pages{webSearch ? " / search the web" : ""})…
+            </p>
+          )}
+          {err && (
+            <p className="badge badge-red" style={{ alignSelf: "flex-start" }}>{err}</p>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* suggested starters — always available just above the composer */}
+        <div className="chat-suggest-row">
+          <span className="chat-suggest-hint">Try:</span>
+          {suggestions.map((x) => (
+            <button key={x} type="button" className="chat-suggest-btn" disabled={busy} onClick={() => void send(`"${x}"`)}>{`“${x}”`}</button>
+          ))}
+        </div>
+
+        {/* composer dock */}
+        <form
+          className="chat-composer"
+          onSubmit={(e) => { e.preventDefault(); void send(); }}
+        >
+          <div className="chat-composer-row">
+            <input
+              className="chat-composer-input"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={slug ? "ask about this course…" : "ask across all courses…"}
+              disabled={busy}
+            />
+            {input && (
+              <button type="button" className="chat-composer-clear" title="Clear input" onClick={() => setInput("")}>
+                <XMarkIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
+              </button>
+            )}
+          </div>
+          <div className="chat-composer-foot">
+            <div className="chat-composer-tools">
+              <button
+                type="button"
+                className="tool-chip"
+                title="Attachments are not supported in chat — upload documents on the Materials tab; they are indexed for Ask automatically"
+                aria-label="Add file (uploads are managed on the Materials tab)"
+              >
+                <PaperClipIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
+                Add file
+              </button>
+              <button
+                type="button"
+                className={`chat-web-btn ${webSearch ? "chat-web-btn--on" : ""}`.trim()}
+                onClick={toggleWeb}
+                title={webSearch
+                  ? "Web search ON — the assistant may also search the public web for background (course materials still take priority)"
+                  : "Web search OFF — only course materials are used as context"}
+              >
+                <GlobeAltIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
+                Web {webSearch ? "on" : "off"}
+              </button>
+              <button
+                type="button"
+                className="tool-chip tool-chip--clear"
+                onClick={() => void clear()}
+                title="Clear this chat history"
+              >
+                <TrashIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
+                Clear
+              </button>
+              <span className="chat-token-count" title="rough estimate of the outgoing prompt size">
+                tokens: {tokenEstimate.toLocaleString("en-US")} / 128k
+              </span>
+            </div>
+            <button type="submit" className="btn btn-primary" disabled={busy || !input.trim()} title="Send (Enter)">
+              Send <ArrowUpIcon className="heroicon" style={{ display: "inline" }} />
+            </button>
+          </div>
+        </form>
+      </section>
+
+      {/* ── right: knowledge rail (course chat only) ── */}
     </div>
   );
 }

@@ -7,5 +7,5 @@ segments/
 notes/
 recordings/
 frontend/.next/
-frontend/node_modules/
-node_modules/
+*.tsbuildinfo
+stitch/*.zip

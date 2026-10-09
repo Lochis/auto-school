@@ -1,11 +1,13 @@
 "use client";
-
+/** Inline register form for the Registered Course Repositories panel —
+ *  for courses whose Teams meetings the bot can't join yet. Upload
+ *  materials + ingest recordings/transcripts by hand from the course page
+ *  that opens after creation. */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { FolderPlusIcon } from "@heroicons/react/24/outline";
+import { PrimaryButton } from "@/components/ui";
 
-/** Create a course shell — for courses whose Teams meetings the bot can't
- *  join yet. Upload materials + ingest recordings/transcripts by hand from
- *  the course page that opens after creation. */
 export default function CourseNew() {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -34,16 +36,29 @@ export default function CourseNew() {
   };
 
   return (
-    <div className="card" style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginTop: 12 }}>
-      <strong style={{ minWidth: 100 }}>New course</strong>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. COMP308 - Systems Programming" style={{ width: 280 }} />
-      <label className="muted" style={{ fontSize: 13 }}>
-        semester starts:
-        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} style={{ marginLeft: 6, width: 150 }} />
-      </label>
-      <button onClick={() => void submit()} disabled={busy}>Create</button>
-      <span className="muted" style={{ fontSize: 12 }}>for courses without bot access — upload materials + recordings yourself</span>
-      {err && <span style={{ color: "#b91c1c", fontSize: 13 }}>{err}</span>}
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+      <div className="register-form">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. COMP308 – Systems Programming"
+          style={{ width: 240 }}
+          aria-label="Course code and name"
+        />
+        <input
+          type="date"
+          value={start}
+          onChange={(e) => setStart(e.target.value)}
+          title="Semester starts: YYYY-MM-DD — anchors week numbering"
+          aria-label="Semester starts"
+        />
+        <PrimaryButton icon={<FolderPlusIcon className="heroicon" />} onClick={() => void submit()} disabled={busy}>
+          {busy ? "Registering…" : "Register Course"}
+        </PrimaryButton>
+      </div>
+      <span className="muted" style={{ fontSize: "0.6875rem" }}>
+        {err ? <span style={{ color: "var(--error)" }}>{err}</span> : "for courses without bot access — upload materials + recordings yourself"}
+      </span>
     </div>
   );
 }

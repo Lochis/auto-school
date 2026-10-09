@@ -1,0 +1,411 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   sessions-ui.css — Screen 2 (course_sessions_transcripts) chrome
+   Owns: course hero, ingest CTA dock, inline audio player HUD, week-grouped
+   session cards, Class Notes / Transcript collapsibles, session detail page.
+   Relies on Safe Linear System tokens + shared classes in globals.css.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.sess-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* ── Course hero ──────────────────────────────────────────────────────── */
+
+.sess-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-lg);
+}
+.sess-hero-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.sess-hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+.sess-hero-title-row h1 {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.sess-hero-sub { margin: 0; }
+
+/* hash code badge next to the title */
+.sess-hash { display: inline-flex; align-items: center; }
+.sess-hash .code-chip {
+  background: var(--surface-container-low);
+  border: 1px solid rgba(60, 74, 66, 0.4);
+  color: var(--primary-fixed-dim);
+  font-size: 0.75rem;
+  padding: 2px 6px;
+}
+
+/* restyle the CourseRename pencil inside the hero */
+.sess-hero-title-row h1 button {
+  min-height: 24px;
+  min-width: 24px;
+  padding: 2px 5px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  color: var(--outline);
+}
+.sess-hero-title-row h1 button:hover:not(:disabled) {
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+}
+
+/* ── Ingest CTA dock (wraps ingest-form's <details class="card">) ─────── */
+
+.ingest-dock { position: relative; align-self: flex-start; }
+.ingest-dock > details {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.ingest-dock > details > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 9px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--primary-container);
+  border: 1px solid var(--primary-container);
+  color: #042f2e;
+  font-weight: 600;
+  font-size: 0.875rem;
+  letter-spacing: 0.01em;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s, color 0.15s;
+}
+.ingest-dock > details > summary::-webkit-details-marker { display: none; }
+.ingest-dock > details > summary:hover { background: var(--primary); color: var(--on-primary); }
+.ingest-dock > details > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  width: min(680px, calc(100vw - 2rem));
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  padding: var(--space-md);
+}
+.ingest-dock label { font-size: 0.8125rem; font-weight: 600; color: var(--on-surface); }
+.ingest-dock input[type="checkbox"] { accent-color: var(--primary-container); }
+
+/* ── Inline audio player HUD ──────────────────────────────────────────── */
+
+.sess-player {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md);
+}
+@media (min-width: 900px) {
+  .sess-player {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+.sess-player-left { display: flex; align-items: center; gap: var(--space-md); min-width: 0; }
+.sess-play-btn {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: var(--radius-lg);
+  background: var(--primary-container);
+  border: 1px solid var(--primary-container);
+  color: #042f2e;
+  flex: none;
+}
+.sess-play-btn:hover:not(:disabled) { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.sess-play-btn .heroicon { width: 20px; height: 20px; }
+.sess-player-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sess-player-title-row { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; flex-wrap: wrap; }
+.sess-player-title {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--on-surface);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.sess-player-title:hover { color: var(--primary); }
+.sess-player-meta {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sess-player-scrub {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex: 1;
+  min-width: 200px;
+  max-width: 560px;
+  cursor: pointer;
+}
+.sess-player-scrub .progress-bar { flex: 1; }
+.sess-time {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--outline);
+  font-feature-settings: "tnum" 1;
+  flex: none;
+}
+.sess-player-right { display: flex; align-items: center; gap: var(--space-sm); flex: none; }
+.sess-speed {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-feature-settings: "tnum" 1;
+  padding: 4px 10px;
+  min-height: 30px;
+}
+.sess-square-btn { width: 30px; min-height: 30px; padding: 0; border-radius: var(--radius-md); }
+
+/* ── Week groups ──────────────────────────────────────────────────────── */
+
+.sess-week { display: flex; flex-direction: column; }
+.sess-week-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+.sess-week-head-left { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+.sess-week-dot { width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--primary-container); flex: none; }
+.sess-week-dot--archived { background: var(--outline-variant); }
+.sess-week-title { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.015em; margin: 0; }
+.sess-week-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-lg);
+  align-items: start;
+  margin-top: var(--space-md);
+}
+@media (min-width: 1000px) {
+  .sess-week-grid--multi { grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); }
+}
+
+/* ── Session card ─────────────────────────────────────────────────────── */
+
+.sess-card {
+  background: var(--surface-container-low);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+.sess-card-head { display: flex; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; }
+.sess-card-date {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--on-surface);
+  font-feature-settings: "tnum" 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--outline-variant);
+  text-underline-offset: 4px;
+}
+.sess-card-date:hover { color: var(--primary); text-decoration-color: var(--primary); }
+.sess-card-date .heroicon { color: var(--outline); }
+.sess-card-date:hover .heroicon { color: var(--primary); }
+.sess-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  color: var(--on-surface-variant);
+}
+.sess-dot { width: 6px; height: 6px; border-radius: var(--radius-full); background: var(--primary-container); flex: none; }
+.sess-dot--off { background: var(--outline-variant); }
+.sess-seg-chip { padding: 1px 6px; color: var(--tertiary); }
+.sess-meeting { font-size: 0.8125rem; display: inline-flex; align-items: center; gap: 4px; }
+.sess-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sess-actions .btn { font-size: 0.8125rem; }
+.sess-move-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.sess-move { padding: 4px 8px; font-size: 0.8125rem; min-height: 30px; max-width: 190px; text-overflow: ellipsis; }
+.sess-msg { margin: 0; font-size: 0.8125rem; color: var(--on-surface-variant); }
+.sess-msg--err { color: var(--error); }
+.sess-card video {
+  width: 100%;
+  max-height: 320px;
+  background: #000;
+  border-radius: var(--radius-lg);
+}
+.sess-close-row { display: flex; justify-content: flex-end; margin-top: 4px; }
+
+/* ── Notes / Transcript collapsibles ──────────────────────────────────── */
+
+.sess-collapse { border-radius: var(--radius-lg); overflow: hidden; }
+.sess-collapse--notes { background: var(--surface-container); border: 1px solid var(--outline-variant); }
+.sess-collapse--bare { background: var(--surface-container-lowest); border: 1px solid rgba(60, 74, 66, 0.4); }
+.panel > .sess-collapse--notes { background: var(--surface-container-lowest); }
+.sess-collapse > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  color: var(--on-surface);
+}
+.sess-collapse > summary::-webkit-details-marker { display: none; }
+.sess-collapse > summary:hover { background: var(--surface-container-low); }
+.sess-collapse--bare > summary:hover { background: var(--surface-container-low); }
+.sess-collapse[open] > summary { border-bottom: 1px solid var(--outline-variant); }
+.sess-collapse-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--on-surface);
+  min-width: 0;
+}
+.sess-collapse--bare .sess-collapse-label { font-weight: 500; color: var(--on-surface-variant); }
+.sess-collapse--bare[open] .sess-collapse-label { color: var(--on-surface); }
+.sess-chev { color: var(--primary); transition: transform 0.15s; flex: none; }
+.sess-collapse--bare .sess-chev { color: var(--outline); }
+.sess-collapse:not([open]) .sess-chev { transform: rotate(-90deg); }
+.sess-collapse-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  color: var(--outline);
+  font-feature-settings: "tnum" 1;
+}
+.sess-collapse-body { padding: var(--space-md); display: flex; flex-direction: column; gap: var(--space-md); }
+.sess-collapse-body .err { color: var(--error); margin: 0; font-size: 0.8125rem; }
+
+/* notes sections inside the collapsible */
+.sess-section { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sess-section .notes { margin: 0; }
+
+/* notes markdown headings → uppercase micro-labels */
+.sess-notes-scope .notes h1,
+.sess-notes-scope .notes h2,
+.sess-notes-scope .notes h3 {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-low);
+  margin: 14px 0 4px;
+}
+.sess-notes-scope .notes h1:first-child,
+.sess-notes-scope .notes h2:first-child,
+.sess-notes-scope .notes h3:first-child { margin-top: 0; }
+
+/* the notes' document title heading ("Class Notes — …") reads as a heading,
+   not an uppercase eyebrow */
+.sess-doc-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--on-surface);
+}
+
+/* inline transcript timestamps ("[10:00]") */
+.sess-ts {
+  color: var(--tertiary);
+  font-weight: 600;
+  font-feature-settings: "tnum" 1;
+  margin-right: 2px;
+}
+
+/* KEY MILESTONES & ACTIONS item cards */
+.sess-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-sm);
+  margin-top: 4px;
+}
+.sess-action-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border-radius: var(--radius-md);
+  background: var(--surface-container-low);
+  border: 1px solid rgba(60, 74, 66, 0.4);
+  min-width: 0;
+}
+.sess-action-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sess-action-title { font-size: 0.8125rem; font-weight: 600; color: var(--on-surface); line-height: 1.25rem; }
+.sess-action-desc { font-size: 0.8125rem; color: var(--on-surface-variant); line-height: 1.25rem; overflow-wrap: break-word; }
+
+/* ── Session detail: transcript timeline ──────────────────────────────── */
+
+.tl-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin: var(--space-sm) 0;
+}
+.tl-list { list-style: none; padding: 0; margin: 0; }
+.tl-row {
+  padding: 8px 10px;
+  margin: 4px 0;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.tl-row:hover { background: var(--surface-container-low); }
+.tl-row--active { background: rgba(6, 78, 59, 0.12); border-left-color: var(--primary); }
+.tl-stamp {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--primary);
+  font-feature-settings: "tnum" 1;
+}
+.tl-stamp--dim { color: var(--outline); }
+.tl-text { color: var(--on-surface-variant); font-size: 0.875rem; }
+.tl-visual { list-style: none; padding: 0; margin: 6px 0 0 14px; }
+.tl-visual li { color: var(--text-low); font-size: 0.8125rem; margin: 2px 0; }
+
+/* detail page hero */
+.sess-detail-meta { margin: 4px 0 0; }

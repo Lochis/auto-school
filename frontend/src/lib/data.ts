@@ -60,6 +60,14 @@ export function courses(): string[] {
   return [...new Set([...dirs("recordings"), ...dirs("notes")])].sort();
 }
 
+/** icon key chosen in the course settings modal (courses/<slug>/course.json) */
+export function courseIcon(slug: string): string | null {
+  try {
+    const cfg = JSON.parse(readFileSync(join(DATA_DIR, "courses", slug, "course.json"), "utf8"));
+    return typeof cfg.icon === "string" ? cfg.icon : null;
+  } catch { return null; }
+}
+
 export function semesterStartOf(slug: string): string | null {
   try {
     const cfg = JSON.parse(readFileSync(join(DATA_DIR, "courses", slug, "course.json"), "utf8"));

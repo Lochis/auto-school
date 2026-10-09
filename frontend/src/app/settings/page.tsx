@@ -1,14 +1,11 @@
-import SettingsPanel from "../settings-panel";
-import ModelQuotas from "./model-quotas";
+import SettingsScreen from "@/components/settings/settings-screen";
 
 export const dynamic = "force-dynamic";
 
 export default function SettingsPage() {
   return (
     <main>
-      <h1>Settings</h1>
-      <SettingsPanel />
-      <ModelQuotas />
+      <SettingsScreen />
     </main>
   );
 }

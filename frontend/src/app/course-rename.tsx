@@ -1,9 +1,9 @@
 "use client";
-
+/** ✎ next to a course name — renames folders + remaps meetings. */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { PencilIcon } from "@heroicons/react/24/outline";
 
-/** ✎ next to a course name — renames folders + remaps meetings. */
 export default function CourseRename({ course }: { course: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -30,5 +30,15 @@ export default function CourseRename({ course }: { course: string }) {
     }
   };
 
-  return <button onClick={() => void go()} disabled={busy} title="Rename course (folders + meeting mappings follow)" style={{ fontSize: 12 }}>✎</button>;
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); void go(); }}
+      disabled={busy}
+      className="iconbtn"
+      title="Rename course (folders + meeting mappings follow)"
+      aria-label={`Rename ${course}`}
+    >
+      <PencilIcon className="heroicon" />
+    </button>
+  );
 }
