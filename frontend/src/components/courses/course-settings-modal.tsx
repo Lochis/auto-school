@@ -46,11 +46,17 @@ export default function CourseSettingsModal({
         else if (!r.ok) { alert(j.error ?? `rename failed (HTTP ${r.status})`); setBusy(false); return; }
       }
       if (sel) {
-        await fetch(`/api/courses/${encodeURIComponent(next)}/config`, {
+        const r = await fetch(`/api/courses/${encodeURIComponent(next)}/config`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ icon: sel }),
         });
+        if (!r.ok) {
+          const j = (await r.json().catch(() => ({}))) as { error?: string };
+          alert(j.error ?? `icon save failed (HTTP ${r.status})`);
+          setBusy(false);
+          return;
+        }
       }
       router.refresh();
       onClose();

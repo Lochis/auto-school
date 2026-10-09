@@ -947,10 +947,20 @@ function startController(): void {
         const body = await new Promise<Record<string, unknown>>((res) => {
           let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
         });
-        const s = String(body.semesterStart ?? "");
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return send(400, { error: "semesterStart must be YYYY-MM-DD" });
-        const cfg = setCourseConfig(slug, { semesterStart: s });
-        pushEvent(`course config: ${slug} semester starts ${s}`);
+        const patch: { semesterStart?: string; icon?: string } = {};
+        if ("semesterStart" in body) {
+          const s = String(body.semesterStart ?? "");
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return send(400, { error: "semesterStart must be YYYY-MM-DD" });
+          patch.semesterStart = s;
+        }
+        if ("icon" in body) {
+          const ic = String(body.icon ?? "");
+          if (ic.length > 16) return send(400, { error: "icon must be ≤16 chars" });
+          patch.icon = ic;
+        }
+        if (patch.semesterStart === undefined && patch.icon === undefined) return send(400, { error: "provide semesterStart and/or icon" });
+        const cfg = setCourseConfig(slug, patch);
+        pushEvent(`course config: ${slug} updated (${Object.keys(patch).join(", ")})`);
         return send(200, cfg);
       }
     }

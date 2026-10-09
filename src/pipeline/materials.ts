@@ -29,6 +29,8 @@ export interface MaterialEntry {
 export interface CourseConfig {
   /** Monday-ish anchor: Week 1 = the week containing this date (YYYY-MM-DD) */
   semesterStart: string;
+  /** Emoji key chosen in the course icon picker (frontend course-icons.tsx) */
+  icon?: string;
 }
 
 // ── week math (Toronto-local weeks; dates are plain YYYY-MM-DD) ─────────────
