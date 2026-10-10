@@ -7,7 +7,6 @@ import { UserIcon } from "@heroicons/react/24/outline";
 const NAV = [
   { href: "/", label: "Schedule" },
   { href: "/courses", label: "Courses & Deadlines" },
-  { href: "/settings", label: "Settings" },
 ];
 
 export default function Navbar() {
