@@ -111,7 +111,9 @@ export function rebuildTree(course: string): MaterialEntry[] {
     let entries: string[] = [];
     try { entries = readdirSync(abs); } catch { return; }
     for (const name of entries.sort()) {
-      if (name === "materials.json") continue;
+      // skip the manifest + anything hidden — the .index/ page cache is a
+      // machine artifact (extracted text/PNGs), never a human material
+      if (name === "materials.json" || name.startsWith(".")) continue;
       const childRel = rel ? `${rel}/${name}` : name;
       let st;
       try { st = statSync(join(abs, name)); } catch { continue; }
@@ -169,6 +171,37 @@ function saveManifest(course: string, entries: MaterialEntry[]): void {
 export function listMaterials(course: string): MaterialEntry[] {
   // live tree is the source of truth; rebuild cheaply on every list
   return rebuildTree(course);
+}
+
+/** The derived text-page cache (materials/.index/**) as pseudo-entries —
+ *  NEVER part of the default listing; the API appends these only for the
+ *  explicit "show indexed cache" toggle. Not persisted in materials.json. */
+export function listIndexFiles(course: string): MaterialEntry[] {
+  const root = join(MATERIALS_DIR(course), ".index");
+  const out: MaterialEntry[] = [];
+  const walk = (rel: string): void => {
+    let names: string[] = [];
+    try { names = readdirSync(join(root, rel)); } catch { return; }
+    for (const name of names.sort()) {
+      const childRel = rel ? `${rel}/${name}` : name;
+      let st;
+      try { st = statSync(join(root, childRel)); } catch { continue; }
+      if (st.isDirectory()) walk(childRel);
+      else if (/^page-\d+\.(txt|png)$/.test(name)) {
+        out.push({
+          path: `.index/${childRel}`,
+          filename: name,
+          week: null,
+          category: "other",
+          description: "indexed page cache (machine-extracted)",
+          uploadedAt: st.mtime.toISOString(),
+          size: st.size,
+        });
+      }
+    }
+  };
+  walk("");
+  return out;
 }
 
 /** Register a freshly placed file (upload path) — merge into the manifest. */

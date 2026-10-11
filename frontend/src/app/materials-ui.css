@@ -137,6 +137,7 @@
 }
 .mat-linkbtn:hover { color: var(--primary); }
 .mat-linkbtn .heroicon { width: 0.9em; height: 0.9em; }
+.mat-linkbtn--on { color: var(--primary); font-weight: 600; }
 
 /* ── File explorer table ──────────────────────────────────────────────── */
 

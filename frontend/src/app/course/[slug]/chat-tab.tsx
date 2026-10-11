@@ -36,6 +36,12 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   const [lexicon, setLexicon] = useState<Record<string, LexHit[]>>({});
   const [hints, setHints] = useState<Record<string, string[]>>({});
   const [srcOpen, setSrcOpen] = useState(false);
+  // machine-extracted .index/ page cache: hidden by default, explicit toggle
+  const [showIndexed, setShowIndexed] = useState(false);
+  useEffect(() => { setShowIndexed(localStorage.getItem("askShowIndexed") === "1"); }, []);
+  const toggleIndexed = (): void => {
+    setShowIndexed((s) => { localStorage.setItem("askShowIndexed", s ? "0" : "1"); return !s; });
+  };
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
@@ -54,7 +60,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
       .then((j: { messages?: Msg[] }) => setMessages(j.messages ?? []))
       .catch(() => setErr("backend unreachable"));
     if (slug) {
-      fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
+      fetch(`/api/courses/${encodeURIComponent(slug)}/materials${showIndexed ? "?indexed=1" : ""}`)
         .then((r) => r.json())
         .then((j: { materials?: MaterialEntry[] }) => setMaterials(j.materials ?? []))
         .catch(() => { /* linkify just won't activate */ });
@@ -68,7 +74,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
         })
         .catch(() => { /* linkify just won't activate */ });
     }
-  }, [slug]);
+  }, [slug, showIndexed]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -182,7 +188,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           </div>
         )}
         {slug && srcOpen && (
-          <SourceDocuments slug={slug} materials={materials} onOpenPreview={openPreview} />
+          <SourceDocuments slug={slug} materials={materials} onOpenPreview={openPreview} showIndexed={showIndexed} onToggleIndexed={toggleIndexed} />
         )}
 
         {/* thread */}

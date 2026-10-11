@@ -194,6 +194,13 @@ const pagesOnDisk = (dir: string): number => {
 
 /** Read a page (1-based) or the whole doc. Caps output so one huge PDF can't eat the context. */
 export async function readDoc(course: string, rel: string, page?: number, cap = 48_000): Promise<{ pages: number; page: number | null; text: string } | { error: string }> {
+  // .index/ page-cache files are already extracted text — serve directly
+  // (never index the index: no nested .index/.index/ bundles)
+  if (rel.startsWith(".index/")) {
+    try {
+      return { pages: 1, page: page === undefined ? null : 1, text: readFileSync(join(MATERIALS_DIR(course), rel), "utf8").slice(0, cap) };
+    } catch { return { error: `no such file: ${rel}` }; }
+  }
   if (!supportsIndex(rel)) return { error: `${rel}: ${extname(rel) || "unknown"} files aren't readable` };
   if (!existsSync(join(MATERIALS_DIR(course), rel))) return { error: `no such file: ${rel} — list_materials shows the exact paths` };
   const pages = await ensureIndex(course, rel);

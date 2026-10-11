@@ -19,7 +19,7 @@ was deferred — **do not re-implement the already-shipped list at the bottom.**
 | "Add file" chat attachment | course_ai_assistant_knowledge_chat | no attachment support in `/api/courses/[slug]/chat`. A visual `📎 Add file` chip exists; wire to real upload when supported. |
 | Real caption/subtitle rendering in audio player | course_sessions_transcripts | player has the caption button + transcript data; subtitle overlay rendering inside the <video> was not implemented. |
 | Word counts on transcript rows (`12 segments · 1,480 words`) | course_sessions_transcripts | counts only segments now; word count needs transcript text length (easy — split on whitespace). |
-| `.index` hidden/system folder row in materials tree | course_materials_file_explorer | only shows when the backend index cache dir exists under a course. Nothing to do app-side. |
+| `.index` hidden/system folder rows in materials tree | course_materials_file_explorer | **resolved** — backend now excludes `.index/` from the default listing; a "Show indexed cache" toggle (Materials tab + Ask Source Documents, `?indexed=1`) reveals the extracted page cache on demand. |
 | Autopilot Target / `attended — persisted` / `not joined · queued` badges | schedule_automation_dashboard | fully data-driven from the daemon calendar scan (`out/calendar-events.txt`). Renders when a live daemon has scan data. |
 | Timeline strip day-view + current-time red line + legend | schedule_automation_dashboard | same — gap is data (live scan), not UI. Verify with the real daemon before touching. |
 | Activity Stream mini-stats (GEMINI TOKENS TODAY / STORAGE USED) | schedule_automation_dashboard | hidden when `/api/backend` detail lacks those keys. Screen renders them if present. |
@@ -53,6 +53,9 @@ emphasis, drop zone + semester-anchor toolbar + expand-all/select-visible, "Ask 
 materials" CTA, daemon status bar with pause/scan controls, completed-sessions list, automation
 directives toggles, day/3-day calendar switcher, failover-chain editor + RAW_LIST, stepper
 fields, masked API vault, quota monitor table + 429 explainer, config-state bar.
+Ask-AI `[[path]]` citation links (strict prompt format + tolerant linkifier: case-insensitive,
+extension-less), `.index/` page-cache hidden by default with explicit "Show indexed cache"
+toggles (Materials tab + Ask Source Documents).
 
 ## Descoped on ui-overhaul (removed — do NOT re-add without a design decision)
 

@@ -40,6 +40,13 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   const [renameTo, setRenameTo] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [dragOver, setDragOver] = useState(false);
+  // machine-extracted .index/ page cache: hidden by default, explicit toggle
+  const [showIndexed, setShowIndexed] = useState(false);
+  useEffect(() => { setShowIndexed(localStorage.getItem("matShowIndexed") === "1"); }, []);
+  const toggleIndexed = (): void => {
+    setSel(new Set()); // hidden rows must not linger in the selection
+    setShowIndexed((s) => { localStorage.setItem("matShowIndexed", s ? "0" : "1"); return !s; });
+  };
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
 
@@ -86,7 +93,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   };
 
   const reload = (): void => {
-    fetch(`/api/courses/${encodeURIComponent(slug)}/materials`)
+    fetch(`/api/courses/${encodeURIComponent(slug)}/materials${showIndexed ? "?indexed=1" : ""}`)
       .then((r) => r.json())
       .then((j: { materials?: Entry[]; error?: string }) => {
         if (j.materials) {
@@ -96,7 +103,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
       })
       .catch(() => setLoadErr("backend unreachable"));
   };
-  useEffect(reload, [slug]);
+  useEffect(reload, [slug, showIndexed]);
 
   const upload = async (files: FileList, subpaths?: string[]): Promise<void> => {
     if (!files.length) return;
@@ -256,23 +263,19 @@ export default function MaterialsTab({ slug }: { slug: string }) {
     }
   };
 
-  // ── derived stats ──
+  // ── derived stats (real uploads only — the .index cache never counts) ──
+  const realEntries = useMemo(() => entries.filter((e) => !e.path.startsWith(".index/")), [entries]);
   const tree = useMemo(() => buildTree(entries), [entries]);
-  const fileCount = entries.length;
+  const fileCount = realEntries.length;
   const folderCount = useMemo(() => {
-    let c = 0;
-    const walk = (n: TNode): void => {
-      for (const ch of n.children.values()) {
-        if (!ch.file) {
-          c++;
-          walk(ch);
-        }
-      }
-    };
-    walk(tree);
-    return c;
-  }, [tree]);
-  const totalSize = useMemo(() => entries.reduce((n, e) => n + e.size, 0), [entries]);
+    const dirs = new Set<string>();
+    for (const e of realEntries) {
+      const segs = e.path.split("/");
+      segs.slice(0, -1).forEach((_, i) => dirs.add(segs.slice(0, i + 1).join("/")));
+    }
+    return dirs.size;
+  }, [realEntries]);
+  const totalSize = useMemo(() => realEntries.reduce((n, e) => n + e.size, 0), [realEntries]);
   // the drop zone accepts archives too — surface the accepted formats, not the
   // extension histogram of what happens to be stored already
   const formats = "ZIP / PDF / DOCX / MP4";
@@ -284,7 +287,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   }, [semStart]);
 
   // ── tree visibility / bulk actions ──
-  const allPaths = useMemo(() => entries.map((e) => e.path), [entries]);
+  const allPaths = useMemo(() => realEntries.map((e) => e.path), [realEntries]);
   const visiblePaths = useMemo(() => {
     const out: string[] = [];
     const walk = (n: TNode, hidden: boolean): void => {
@@ -427,6 +430,10 @@ export default function MaterialsTab({ slug }: { slug: string }) {
               <span className="mat-sem-help">— calculates dynamic week offsets &amp; associates session recordings</span>
             </div>
             <div className="mat-sem-right">
+              <button type="button" className={`mat-linkbtn ${showIndexed ? "mat-linkbtn--on" : ""}`.trim()} onClick={toggleIndexed} title="Toggle the machine-extracted .index page cache — plain text/PNG pages the Ask AI pipeline derives from your documents">
+                <CircleStackIcon className="heroicon" />
+                {showIndexed ? "Hide" : "Show"} indexed cache
+              </button>
               <button type="button" className="mat-linkbtn" onClick={() => setCollapsed(new Set())}>
                 <ChevronUpDownIcon className="heroicon" />
                 Expand All

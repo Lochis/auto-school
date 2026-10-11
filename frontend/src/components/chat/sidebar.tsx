@@ -4,7 +4,7 @@
  *  chat thread. */
 import { useMemo, type ComponentType } from "react";
 import {
-  ArrowTopRightOnSquareIcon, BookOpenIcon, CodeBracketIcon,
+  ArrowTopRightOnSquareIcon, BookOpenIcon, CircleStackIcon, CodeBracketIcon,
   DocumentTextIcon, MusicalNoteIcon, PhotoIcon, VideoCameraIcon,
 } from "@heroicons/react/24/outline";
 import { Panel } from "@/components/ui";
@@ -32,10 +32,13 @@ function fileGlyph(filename: string): { Icon: IconCmp; tone: string } {
 
 /* ── Source Documents ────────────────────────────────────────────────── */
 
-export function SourceDocuments({ slug, materials, onOpenPreview }: {
+export function SourceDocuments({ slug, materials, onOpenPreview, showIndexed = false, onToggleIndexed }: {
   slug: string;
   materials: MaterialEntry[];
   onOpenPreview: (course: string, path: string) => void;
+  /** show the machine-extracted .index/ page cache too (default hidden) */
+  showIndexed?: boolean;
+  onToggleIndexed?: () => void;
 }) {
   // newest uploads first — the freshest context is what the chat indexes
   const rows = useMemo(
@@ -46,7 +49,22 @@ export function SourceDocuments({ slug, materials, onOpenPreview }: {
     <Panel
       icon={<BookOpenIcon className="heroicon" />}
       title="Source Documents"
-      actions={<span className="chat-token-count">{rows.length} Indexed</span>}
+      actions={
+        <span style={{ display: "inline-flex", gap: 10, alignItems: "center" }}>
+          {onToggleIndexed && (
+            <button
+              type="button"
+              className={`chat-web-btn ${showIndexed ? "chat-web-btn--on" : ""}`.trim()}
+              onClick={onToggleIndexed}
+              title="Toggle the machine-extracted .index page cache — plain text/PNG pages the Ask AI pipeline derives from your documents"
+            >
+              <CircleStackIcon className="heroicon" style={{ display: "inline", width: 14, height: 14 }} />
+              Indexed {showIndexed ? "on" : "off"}
+            </button>
+          )}
+          <span className="chat-token-count">{rows.length} Indexed</span>
+        </span>
+      }
     >
       <div className="chat-src-list">
         {rows.length === 0 && (
@@ -56,6 +74,11 @@ export function SourceDocuments({ slug, materials, onOpenPreview }: {
         )}
         {rows.map((m) => {
           const { Icon, tone } = fileGlyph(m.filename);
+          // .index cache rows: "page-3.txt" alone is meaningless — show the
+          // source doc it was extracted from
+          const label = m.path.startsWith(".index/")
+            ? m.path.split("/").slice(-2).join(" · ")
+            : m.filename;
           const meta = [
             fmtSize(m.size),
             m.uploadedAt ? `updated ${new Date(m.uploadedAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}` : m.category,
@@ -71,7 +94,7 @@ export function SourceDocuments({ slug, materials, onOpenPreview }: {
               <span className="chat-src-main">
                 <span className={`icon-tile ${tone}`.trim()}><Icon className="heroicon" /></span>
                 <span style={{ minWidth: 0 }}>
-                  <span className="chat-src-name">{m.filename}</span>
+                  <span className="chat-src-name">{label}</span>
                   <span className="chat-src-meta">{meta || m.path}</span>
                 </span>
               </span>

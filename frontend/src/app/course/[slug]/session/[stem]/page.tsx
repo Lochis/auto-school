@@ -5,6 +5,7 @@ import { DATA_DIR, sessions } from "@/lib/data";
 import LazyNotes from "../../lazy-notes";
 import AudioPlayer from "@/components/sessions/audio-player";
 import TranscriptTimeline, { type TimelineEntry } from "./transcript-timeline";
+import { SessionSyncProvider } from "./session-sync";
 import { CodeChip, Eyebrow } from "@/components/ui";
 import { t12 } from "@/lib/format";
 import "../../../../sessions-ui.css";
@@ -32,6 +33,7 @@ export default async function SessionPage({ params }: { params: Promise<{ slug: 
   const timeLabel = s.time ? ` · ${t12(s.time)}` : "";
 
   return (
+    <SessionSyncProvider>
     <main>
       <div className="sess-page">
         <div className="breadcrumb">
@@ -60,7 +62,7 @@ export default async function SessionPage({ params }: { params: Promise<{ slug: 
           </header>
           <div style={{ height: 12 }} />
           {entries.length > 0 && s.audio ? (
-            <TranscriptTimeline src={`/api/media/${s.audio}`} entries={entries} />
+            <TranscriptTimeline entries={entries} />
           ) : (
             <p className="muted" style={{ margin: 0 }}>
               {s.audio ? "no transcript for this session — run “Transcribe” from the course page" : "no recording"}
@@ -75,5 +77,6 @@ export default async function SessionPage({ params }: { params: Promise<{ slug: 
         )}
       </div>
     </main>
+    </SessionSyncProvider>
   );
 }

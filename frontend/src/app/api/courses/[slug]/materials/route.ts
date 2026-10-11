@@ -4,10 +4,13 @@ export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 const base = (slug: string) => `${BASE}/courses/${encodeURIComponent(slug)}/materials`;
 
-export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  // forward opt-in flags (?indexed=1 shows the .index/ page cache)
+  const q = new URL(req.url).searchParams;
+  const flag = q.get("indexed") === "1" ? "?indexed=1" : "";
   try {
-    const res = await fetch(base(slug), { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(base(slug) + flag, { signal: AbortSignal.timeout(5000) });
     return NextResponse.json(await res.json());
   } catch { return NextResponse.json({ materials: [] }); }
 }

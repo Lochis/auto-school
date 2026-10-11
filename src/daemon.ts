@@ -30,7 +30,7 @@ import { notify } from "./notify.ts";
 import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, applySettingsPatch } from "./status.ts";
 import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
-import { listMaterials, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
+import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
 import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
 import { ensureIndex, indexDir, bundleFresh } from "./pipeline/docindex.ts";
@@ -875,7 +875,12 @@ function startController(): void {
     const mm = url.pathname.match(MATERIALS_RE);
     if (mm) {
       const slug = decodeURIComponent(mm[1]);
-      if (req.method === "GET") return send(200, { materials: listMaterials(slug) });
+      if (req.method === "GET") {
+        // ?indexed=1 appends the derived .index/ page cache — opt-in only
+        // (machine-extracted text, not meant for human browsing by default)
+        const withIndex = url.searchParams.get("indexed") === "1";
+        return send(200, { materials: withIndex ? [...listMaterials(slug), ...listIndexFiles(slug)] : listMaterials(slug) });
+      }
       if (req.method === "POST") {
         try {
           // streaming multipart — multi-file with optional subpaths
@@ -896,7 +901,8 @@ function startController(): void {
             const rawSub = field(`path${fi}`) || f.filename!;
             const rel = sanitizeRelPath(rawSub);
             const leaf = rel?.split("/").pop();
-            if (!rel || !leaf || leaf === "materials.json") {
+            if (!rel || !leaf || leaf === "materials.json" || rel.split("/").some((s) => s.startsWith("."))) {
+              // hidden/derived paths (.index/…) are not user materials
               discardPart(f.path!);
               continue;
             }
@@ -1298,7 +1304,7 @@ function startController(): void {
                   let names: string[] = [];
                   try { names = readdirSync(join(root, rel)); } catch { return; }
                   for (const n of names.sort()) {
-                    if (n === "materials.json") continue;
+                    if (n === "materials.json" || n.startsWith(".")) continue; // derived caches / registry
                     const child = rel ? `${rel}/${n}` : n;
                     let st;
                     try { st = statSync(join(root, child)); } catch { continue; }
@@ -1863,7 +1869,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
 Start broad: list_deadlines, week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
-Read enough of the actual materials to answer concretely — never guess what a file contains. Cite EXACT file names so they can be previewed. If nothing exists for a week/course, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
+Read enough of the actual materials to answer concretely — never guess what a file contains. CITATIONS: every file you reference in your answer MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link. Cite each file at first mention; never invent or shorten paths. If nothing exists for a week/course, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
             const convo: ChatMsg[] = [
               { role: "system", content: systemPrompt },
@@ -1950,7 +1956,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar for THIS course (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
-Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. When you reference a file, cite its EXACT file name (e.g. 1.1_ Data Warehousing - Dimensional Modeling.pdf) so it can be linked. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
+Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. CITATIONS: every material file you reference MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link — the exact filename alone is fine when it is unambiguous. Cite each file at first mention; never invent or shorten paths. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 
             const convo: ChatMsg[] = [

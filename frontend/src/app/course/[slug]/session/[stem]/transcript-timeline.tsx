@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { SearchInput } from "@/components/ui";
+import { useSessionSync } from "./session-sync";
 import "../../../../sessions-ui.css";
 
 export interface TimelineEntry {
@@ -18,28 +19,13 @@ const fmt = (s: number): string => {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 };
 
-/** Transcript timeline synced to the player: click a topic → audio seeks
- *  (#t= fragments also work when linking from elsewhere). Visual notes from
+/** Transcript timeline synced to the AudioPlayer at the top of the page
+ *  (via session-sync): click a topic → the player seeks. Visual notes from
  *  the Gemini batches sit under each entry. */
-export default function TranscriptTimeline({ src, entries }: { src: string; entries: TimelineEntry[] }) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [t, setT] = useState(0);
+export default function TranscriptTimeline({ entries }: { entries: TimelineEntry[] }) {
+  const sync = useSessionSync();
   const [filter, setFilter] = useState("");
-
-  useEffect(() => {
-    const a = audioRef.current;
-    if (!a) return;
-    const onTime = () => setT(a.currentTime);
-    a.addEventListener("timeupdate", onTime);
-    return () => a.removeEventListener("timeupdate", onTime);
-  }, []);
-
-  const seek = (s: number) => {
-    const a = audioRef.current;
-    if (!a) return;
-    a.currentTime = s;
-    a.play().catch(() => {});
-  };
+  const t = sync?.t ?? 0;
 
   // highlight the entry covering the current playhead
   const activeIdx = entries.findIndex((e, i) =>
@@ -52,11 +38,10 @@ export default function TranscriptTimeline({ src, entries }: { src: string; entr
 
   return (
     <div>
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <audio ref={audioRef} src={src} controls preload="metadata" style={{ width: "100%" }} />
       <div className="tl-toolbar">
         <span className="sess-time">
-          {entries.length} segment{entries.length === 1 ? "" : "s"} · playing {fmt(t)}
+          {entries.length} segment{entries.length === 1 ? "" : "s"}
+          {sync ? <> · playing {fmt(t)}</> : null}
         </span>
         <SearchInput
           value={filter}
@@ -70,7 +55,7 @@ export default function TranscriptTimeline({ src, entries }: { src: string; entr
           <li
             key={i}
             className={`tl-row ${i === activeIdx && !filter ? "tl-row--active" : ""}`}
-            onClick={() => seek(e.offsetSec)}
+            onClick={() => sync?.seek(e.offsetSec)}
           >
             <span className="tl-stamp">{fmt(e.offsetSec)}</span>{" "}
             <span className="tl-text">{e.transcript}</span>

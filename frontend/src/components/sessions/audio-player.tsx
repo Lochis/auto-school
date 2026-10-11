@@ -6,6 +6,7 @@ import type { Session } from "@/lib/data";
 import { t12 } from "@/lib/format";
 import { CodeChip } from "@/components/ui";
 import { PauseIcon, PlayIcon, SpeakerWaveIcon, SpeakerXMarkIcon } from "@heroicons/react/24/outline";
+import { useSessionSync } from "@/app/course/[slug]/session/[stem]/session-sync";
 import "../../app/sessions-ui.css";
 
 const SPEEDS = [1, 1.25, 1.5, 2] as const;
@@ -29,6 +30,7 @@ export default function AudioPlayer({ course, session }: {
   session: Session & { audio: string };
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const sync = useSessionSync(); // null when mounted without a provider (course page)
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
   const [dur, setDur] = useState(0);
@@ -47,12 +49,24 @@ export default function AudioPlayer({ course, session }: {
       on("play", () => setPlaying(true)),
       on("pause", () => setPlaying(false)),
       on("ended", () => setPlaying(false)),
-      on("timeupdate", () => setT(v.currentTime)),
+      on("timeupdate", () => {
+        setT(v.currentTime);
+        sync?.setTime(v.currentTime);
+      }),
       on("loadedmetadata", () => setDur(v.duration)),
       on("durationchange", () => setDur(v.duration)),
       on("error", () => setBroken(true)),
     ];
-    return () => offs.forEach((off) => off());
+    sync?.registerSeek((s) => {
+      if (ref.current) {
+        ref.current.currentTime = s;
+        ref.current.play().catch(() => {});
+      }
+    });
+    return () => {
+      offs.forEach((off) => off());
+      sync?.registerSeek(null);
+    };
   }, []);
 
   const toggle = (): void => {

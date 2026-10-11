@@ -506,3 +506,22 @@ export function SearchInput({ well = true, className = "", ...rest }: SearchInpu
     </label>
   );
 }
+
+export interface SkeletonProps {
+  h?: number | string;
+  w?: number | string;
+  radius?: number;
+  className?: string;
+}
+
+/** Loading placeholder block — pair with route loading.tsx files so
+ *  navigation is instant and content streams in behind a shimmer. */
+export function Skeleton({ h = 16, w, radius = 10, className = "" }: SkeletonProps) {
+  return (
+    <div
+      className={`skeleton ${className}`.trim()}
+      style={{ height: h, width: w, borderRadius: radius }}
+      aria-hidden="true"
+    />
+  );
+}

@@ -31,19 +31,60 @@ export function makeLinkifier(byPath: Map<string, LexHit[]>, byLeaf: Map<string,
   };
   const linkFor = (leaf: string, hit: LexHit): string =>
     `[${leaf}](#doc:${encodeURIComponent(hit.course + "/" + hit.path)})`;
-  // all known citations (full paths + bare leaves), longest first — a
-  // single left-to-right scan never re-enters inserted link text, so a
-  // leaf that's part of a longer path can't nest inside its own link
-  const targets = [...byPath, ...byLeaf].sort((a, b) => b[0].length - a[0].length);
+  // all known citations (full paths, bare leaves, and those without the
+  // extension — the model often drops ".pdf"), longest first — a single
+  // left-to-right scan never re-enters inserted link text, so a leaf that's
+  // part of a longer path can't nest inside its own link
+  const tset = new Map<string, LexHit[]>();
+  const lset = new Map<string, LexHit[]>(); // lowercase name → cands
+  const add = (name: string, cands: LexHit[]): void => {
+    if (!name || name.length < 3 || tset.has(name)) return;
+    tset.set(name, cands);
+    const low = name.toLowerCase();
+    if (low.length === name.length && !lset.has(low)) lset.set(low, cands);
+  };
+  for (const [p, c] of byPath) add(p, c);
+  for (const [l, c] of byLeaf) add(l, c);
+  // extension-less variants — only meaningful names, so ordinary words never
+  // turn into stray links
+  for (const name of [...tset.keys()]) {
+    const stem = name.slice(0, name.lastIndexOf("."));
+    if (stem.length >= 8) add(stem, tset.get(name)!);
+  }
+  const targets = [...tset].map(([name, cands]) => ({ name, lname: name.toLowerCase(), cands }))
+    .sort((a, b) => b.name.length - a.name.length);
+  // resolve a [[citation]] body: exact path/leaf, then stem, then case-insensitive
+  const findCands = (raw: string): LexHit[] | undefined =>
+    byPath.get(raw) ?? byLeaf.get(raw) ?? tset.get(raw) ?? lset.get(raw.toLowerCase());
   const linkifySegment = (seg: string): string => {
+    const lseg = seg.toLowerCase();
     let out = "";
     let i = 0;
     while (i < seg.length) {
+      // model citation syntax [[path]] → link when it resolves; unmatched
+      // ones degrade to plain text (no stray brackets)
+      if (seg.startsWith("[[", i)) {
+        const end = seg.indexOf("]]", i + 2);
+        if (end > 0) {
+          const inner = seg.slice(i + 2, end).trim();
+          const cands = findCands(inner);
+          out += cands ? linkFor(inner, resolveHit(cands, seg.slice(0, i))) : inner;
+          i = end + 2;
+          continue;
+        }
+      }
       let hit = false;
-      for (const [name, cands] of targets) {
-        if (name && seg.startsWith(name, i)) {
-          out += linkFor(name, resolveHit(cands, seg.slice(0, i)));
-          i += name.length;
+      for (const t of targets) {
+        if (seg.startsWith(t.name, i)) {
+          out += linkFor(seg.slice(i, i + t.name.length), resolveHit(t.cands, seg.slice(0, i)));
+          i += t.name.length;
+          hit = true;
+          break;
+        }
+        // case-insensitive fallback (length-preserving lowercasing only)
+        if (t.lname.length === t.name.length && lseg.startsWith(t.lname, i)) {
+          out += linkFor(seg.slice(i, i + t.name.length), resolveHit(t.cands, seg.slice(0, i)));
+          i += t.name.length;
           hit = true;
           break;
         }
@@ -57,7 +98,7 @@ export function makeLinkifier(byPath: Map<string, LexHit[]>, byLeaf: Map<string,
     .map((seg, i) => {
       if (i % 2 === 0) return linkifySegment(seg);
       const inner = seg.replace(/^`+|`+$/g, "");
-      const direct = byPath.get(inner) ?? byLeaf.get(inner);
+      const direct = findCands(inner);
       if (direct) return linkFor(inner, resolveHit(direct, seg));
       // cited as a code span WITH its folder path — match on the basename,
       // but only when a known hit actually lives at that path
