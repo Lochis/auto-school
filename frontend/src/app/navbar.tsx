@@ -22,7 +22,7 @@ function AvatarImg({ src, size }: { src?: string; size: number }) {
   if (!src || err) return <UserIcon className="heroicon" style={{ display: "inline", width: size, height: size }} />;
   return (
     // eslint-disable-next-line @next/next/no-img-element -- external/data-URI from the identity provider
-    <img src={src} alt="" width={size} height={size} className="avatar-img" onError={() => setErr(true)} />
+    <img src={src} alt="" className="avatar-img" onError={() => setErr(true)} />
   );
 }
 
