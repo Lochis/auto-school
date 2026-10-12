@@ -1,10 +1,10 @@
-# Authentik Phase 0 — edge (Traefik) configuration.  ✏️ EDIT EDGE_SECRET BEFORE APPLYING
+# Authentik Phase 0 — edge (Traefik) configuration.
+# ⚠ VERIFIED IN-CLUSTER 2026-10: the live `authentik-forwardauth` middleware
+# (ns auto-school) ALREADY forwards the full X-authentik-* header list via
+# authResponseHeaders and points at authentik-server (which proxies the
+# embedded outpost). DO NOT APPLY this file over it — it is OPTIONAL
+# hardening (edge-secret marker) only. App is live on school.vanderloch.com:2459.
 # Companion: docs/planning/authentik-federation.md (branch plan/postgres-migration).
-#
-# Cluster facts (verified 2026-04): outpost service is
-#   ak-outpost-authentik-embedded-outpost.authentik.svc.cluster.local:9000
-#
-# Apply BOTH middlewares, then chain them in the IngressRoute (Step 3).
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
