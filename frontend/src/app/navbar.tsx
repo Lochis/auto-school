@@ -118,10 +118,12 @@ export default function Navbar() {
                   </Link>
                   <div className="user-menu-divider" role="separator" />
                   {/* full navigation: clears the outpost session cookie via the
-                      edge-routed /outpost.goauthentik.io/signout endpoint */}
+                      edge-routed outpost endpoint — NOTE underscore (sign_out):
+                      current Rust outpost registers /outpost.goauthentik.io/sign_out;
+                      the old /signout spelling 404s (verified live 2026-10) */}
                   <a
                     role="menuitem"
-                    href={`${typeof window !== "undefined" ? window.location.origin : ""}/outpost.goauthentik.io/signout`}
+                    href={`${typeof window !== "undefined" ? window.location.origin : ""}/outpost.goauthentik.io/sign_out`}
                     className="user-menu-item user-menu-item--danger"
                   >
                     <ArrowRightStartOnRectangleIcon className="heroicon" style={{ width: 16, height: 16 }} />
