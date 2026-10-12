@@ -15,6 +15,17 @@ const NAV = [
   { href: "/courses", label: "Courses & Deadlines" },
 ];
 
+/** Avatar image from Authentik (proxied via /api/me/avatar); falls back to
+ *  the user icon when unavailable (local dev, API not configured). */
+function AvatarImg({ size }: { size: number }) {
+  const [err, setErr] = useState(false);
+  if (err) return <UserIcon className="heroicon" style={{ display: "inline", width: size, height: size }} />;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- proxied dynamic route, not a static asset
+    <img src="/api/me/avatar" alt="" width={size} height={size} className="avatar-img" onError={() => setErr(true)} />
+  );
+}
+
 export default function Navbar() {
   const pathname = usePathname() ?? "/";
   const isActive = (href: string) =>
@@ -88,7 +99,7 @@ export default function Navbar() {
                 title={user.email || user.username}
               >
                 <span className="avatar-btn" aria-hidden="true">
-                  <UserIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
+                  <AvatarImg size={16} />
                 </span>
                 <span className="nav-user">
                   {user.role === "admin" && <span className="nav-user-role" title="admin">admin</span>}

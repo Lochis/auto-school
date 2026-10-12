@@ -757,6 +757,9 @@ input:focus, select:focus, textarea:focus {
 }
 .avatar-btn:hover { background: var(--primary); }
 
+/* Authentik avatar image (proxied via /api/me/avatar) */
+.avatar-img { border-radius: 50%; object-fit: cover; display: inline-block; }
+
 /* Logged-in identity label next to the avatar (Phase 0 authentik) */
 .nav-user {
   font-size: 12px;

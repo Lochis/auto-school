@@ -6,6 +6,16 @@ import { Badge, Panel, PanelHeader } from "@/components/ui";
 import type { AuthUser } from "@/lib/auth";
 import "../profile-ui.css";
 
+/** Authentik avatar (proxied via /api/me/avatar) with initials fallback */
+function ProfileAvatar({ fallback }: { fallback: string }) {
+  const [err, setErr] = useState(false);
+  if (err) return <>{fallback}</>;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- proxied dynamic route, not a static asset
+    <img src="/api/me/avatar" alt="" className="profile-avatar-img" onError={() => setErr(true)} />
+  );
+}
+
 /** Profile — identity as seen by the Authentik edge (Phase 0). Read-only;
  *  changes happen in authentik (password, name, groups), not here. */
 export default function ProfilePage() {
@@ -34,7 +44,9 @@ export default function ProfilePage() {
         ) : (
           <>
             <div className="profile-head">
-              <span className="profile-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span>
+              <span className="profile-avatar" aria-hidden="true">
+                <ProfileAvatar fallback={user.username.slice(0, 1).toUpperCase()} />
+              </span>
               <div>
                 <h1 className="profile-name">{user.name || user.username}</h1>
                 <p className="profile-sub">
