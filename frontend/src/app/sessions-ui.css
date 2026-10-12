@@ -206,7 +206,7 @@
   display: grid;
   grid-template-columns: 1fr;
   gap: var(--space-lg);
-  align-items: start;
+  align-items: stretch; /* equal-height cards — sections line up across the row */
   margin-top: var(--space-md);
 }
 @media (min-width: 1000px) {
@@ -215,16 +215,32 @@
 
 /* ── Session card ─────────────────────────────────────────────────────── */
 
+/* the card is a stack of flush sections: padded head → full-bleed action
+   strip → notes/transcript collapsibles (clipped to the rounded corners) */
 .sess-card {
   background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
   border-radius: var(--radius-lg);
-  padding: var(--space-lg);
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: 0;
+  overflow: hidden; /* full-bleed children get the rounded bottom for free */
 }
-.sess-card-head { display: flex; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; }
+.sess-card-inner { display: flex; flex-direction: column; flex: 1; }
+.sess-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-md) var(--space-lg) var(--space-sm);
+}
+.sess-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-width: 0;
+}
 .sess-card-date {
   font-size: 1rem;
   font-weight: 600;
@@ -255,20 +271,76 @@
 .sess-dot { width: 6px; height: 6px; border-radius: var(--radius-full); background: var(--primary-container); flex: none; }
 .sess-dot--off { background: var(--outline-variant); }
 .sess-seg-chip { padding: 1px 6px; color: var(--tertiary); }
-.sess-meeting { font-size: 0.8125rem; display: inline-flex; align-items: center; gap: 4px; }
-.sess-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sess-meeting { font-size: 0.8125rem; display: inline-flex; align-items: center; gap: 4px; flex: none; }
+
+/* action strip — always the same reading order: utility buttons → spacer →
+   destructive → primary, no matter which of them exist for this session */
+.sess-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-lg);
+  border-top: 1px solid var(--outline-variant);
+  background: var(--surface-container);
+  margin-top: auto; /* pins to the card bottom when collapsibles are absent */
+}
 .sess-actions .btn { font-size: 0.8125rem; }
+.sess-actions-spacer { flex: 1 1 auto; }
+.sess-del-btn { padding-inline: 10px; }
 .sess-move-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.sess-move { padding: 4px 8px; font-size: 0.8125rem; min-height: 30px; max-width: 190px; text-overflow: ellipsis; }
-.sess-msg { margin: 0; font-size: 0.8125rem; color: var(--on-surface-variant); }
+/* the move-to select matches the ghost-button family it sits between */
+.sess-move {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: var(--btn-h);
+  padding: 4px 26px 4px 10px;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-hi);
+  background-color: var(--component-surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%2386948a' stroke-width='1.6' stroke-linecap='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 11px;
+  border: 1px solid var(--line-hover);
+  border-radius: var(--radius);
+  max-width: 170px;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.sess-move:hover:not(:disabled) { background-color: var(--surface-container-highest); }
+.sess-msg {
+  margin: 0;
+  padding: var(--space-sm) var(--space-lg);
+  border-top: 1px solid var(--outline-variant);
+  font-size: 0.8125rem;
+  color: var(--on-surface-variant);
+}
 .sess-msg--err { color: var(--error); }
+.sess-player-pad {
+  padding: var(--space-sm) var(--space-lg) var(--space-md);
+  border-top: 1px solid var(--outline-variant);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .sess-card video {
   width: 100%;
   max-height: 320px;
   background: #000;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius);
 }
-.sess-close-row { display: flex; justify-content: flex-end; margin-top: 4px; }
+.sess-close-row { display: flex; justify-content: flex-end; }
+
+/* notes / transcript collapsibles become flush card sections */
+.sess-card .sess-collapse {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+}
 
 /* ── Notes / Transcript collapsibles ──────────────────────────────────── */
 

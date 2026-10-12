@@ -9,7 +9,6 @@ import MaterialsTab from "./materials-tab";
 import IngestForm from "./ingest-form";
 import ChatTab from "./chat-tab";
 import CourseRename from "../../course-rename";
-import AudioPlayer from "@/components/sessions/audio-player";
 import { CodeChip, Eyebrow, SegmentedTabs } from "@/components/ui";
 import "../../sessions-ui.css";
 
@@ -94,8 +93,6 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
   const codePart = dashParts.length >= 3 ? dashParts.slice(0, 2).join("-") : "";
   const namePart = (codePart ? dashParts.slice(2).join("-") : slug).replace(/_/g, " ").trim() || slug.replace(/_/g, " ");
 
-  const latestAudio = list.find((s) => s.audio);
-
   return (
     <main>
       <div className="sess-page">
@@ -146,8 +143,6 @@ export default async function CoursePage({ params, searchParams }: { params: Pro
                 </span>
               </div>
             )}
-
-            {latestAudio?.audio && <AudioPlayer course={slug} session={{ ...latestAudio, audio: latestAudio.audio }} />}
 
             {list.length === 0 && (
               <section className="panel">

@@ -75,11 +75,18 @@ export default function SessionCard({ session, course, courses = [] }: { session
   const hasText = Boolean(session.transcript || session.timeline);
 
   return (
-    <div>
+    <div className="sess-card-inner">
       <div className="sess-card-head">
-        <Link className="sess-card-date" href={`/course/${course}/session/${session.stem}`}>
-          {session.date}{session.time ? ` · ${t12(session.time)}` : ""} <ArrowUpRightIcon className="heroicon" />
-        </Link>
+        <div className="sess-card-title-row">
+          <Link className="sess-card-date" href={`/course/${course}/session/${session.stem}`}>
+            {session.date}{session.time ? ` · ${t12(session.time)}` : ""} <ArrowUpRightIcon className="heroicon" />
+          </Link>
+          {session.joinUrl && (
+            <a className="sess-meeting" href={session.joinUrl} target="_blank" rel="noreferrer" title="Open this meeting in Teams">
+              <LinkIcon className="heroicon" /> meeting
+            </a>
+          )}
+        </div>
         <div className="sess-status">
           <span className={`sess-dot ${session.audio ? "" : "sess-dot--off"}`} />
           <span>{session.audio ? "recorded" : "no recording"}</span>
@@ -96,13 +103,9 @@ export default function SessionCard({ session, course, courses = [] }: { session
             </>
           ) : null}
         </div>
-        {session.joinUrl && (
-          <a className="sess-meeting" href={session.joinUrl} target="_blank" rel="noreferrer" title="Open this meeting in Teams">
-            <LinkIcon className="heroicon" /> meeting
-          </a>
-        )}
       </div>
 
+      {/* fixed order regardless of what exists: utilities → spacer → destructive → primary */}
       <div className="sess-actions">
         {session.audio && (
           <button className="btn" onClick={transcribe} disabled={busy} title="Run the Gemini model chain over this recording — transcript + notes">
@@ -118,8 +121,9 @@ export default function SessionCard({ session, course, courses = [] }: { session
             {moveTo && <button className="btn btn-micro" onClick={move} disabled={busy}>{busy ? "moving…" : "Move →"}</button>}
           </span>
         )}
-        <button className="btn btn-destructive" onClick={purge} disabled={busy} title="Delete the recording and its transcript/notes/timeline">
-          <TrashIcon className="heroicon" /> {busy ? "deleting…" : "Delete"}
+        <span className="sess-actions-spacer" />
+        <button className="btn btn-destructive sess-del-btn" onClick={purge} disabled={busy} title="Delete the recording and its transcript/notes/timeline" aria-label="Delete session">
+          <TrashIcon className="heroicon" /> Delete
         </button>
         {session.audio && !broken && !open && (
           <button className="btn btn-primary" onClick={() => setOpen(true)}>
@@ -128,10 +132,11 @@ export default function SessionCard({ session, course, courses = [] }: { session
         )}
       </div>
 
-      {moveMsg && <p className="sess-msg sess-msg--err">{moveMsg}</p>}
-      {job && <p className="sess-msg">{job}</p>}
+      {(moveMsg || job) && (
+        <p className={`sess-msg ${moveMsg ? "sess-msg--err" : ""}`.trim()}>{moveMsg || job}</p>
+      )}
       {session.audio && !broken && open && (
-        <div>
+        <div className="sess-player-pad">
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
           <video
             controls
