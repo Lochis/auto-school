@@ -1,0 +1,84 @@
+# Authentik Phase 0 — edge (Traefik) configuration.
+# Companion: docs/planning/authentik-federation.md (branch plan/postgres-migration).
+#
+# The IngressRoute (auto-school-ingress.yaml) already references a middleware
+# named `authentik-forwardauth`. Auth WORKS today; what's missing is that the
+# outpost's identity headers (X-authentik-*) are dropped before reaching the
+# app. Two changes below fix that. Apply from wherever you run kubectl.
+#
+# ── STEP 1 — patch the existing forwardAuth middleware ────────────────────
+# Find your outpost service (adjust namespace if not `authentik`):
+#   kubectl -n authentik get svc | grep -i outpost
+#
+# The middleware must live in the SAME namespace as the IngressRoute
+# (auto-school — that's how the bare `authentik-forwardauth` reference
+# resolves). Keep YOUR existing `address:` from the current middleware —
+# typical shape (note :9000, the container port, not :80/:9443):
+#   http://authentik-outpost.authentik.svc.cluster.local:9000/outpost.goauthentik.io/auth/traefik
+#
+# The two lines that MATTER (added vs a stock authentik template):
+#   trustForwardHeader: true          # forwards X-Forwarded-Host/Proto/Uri so
+#                                     # outpost redirects stay on the real host
+#   authResponseHeadersRegex: "^X-authentik.*"
+#                                     # copies the outpost's identity headers
+#                                     # onto the proxied request AND strips any
+#                                     # client-supplied spoofs first
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: authentik-forwardauth
+  namespace: auto-school
+spec:
+  forwardAuth:
+    address: http://authentik-outpost.authentik.svc.cluster.local:9000/outpost.goauthentik.io/auth/traefik  # ← keep your existing value
+    trustForwardHeader: true
+    authResponseHeadersRegex: "^X-authentik.*"
+---
+# ── STEP 2 (optional hardening, recommended) — edge-secret marker ────────
+# A static secret stamped by the edge; the app strips X-authentik-* from any
+# request that lacks it (frontend/src/middleware.ts), closing the
+# port-forward/direct-pod spoofing path. Generate one:
+#   openssl rand -hex 32
+# then store it in BOTH places:
+#   kubectl -n auto-school create secret generic auto-school-env --from-env-file=.env \
+#     --dry-run=client -o yaml | kubectl apply -f -   # with EDGE_SECRET=<hex>
+# ...or: kubectl -n auto-school patch secret auto-school-env \
+#   -p '{"stringData":{"EDGE_SECRET":"<hex>"}}'
+# and set the same value in the middleware below.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: auto-school-edge-marker
+  namespace: auto-school
+spec:
+  headers:
+    customRequestHeaders:
+      X-Edge-Secret: "REPLACE_WITH_SAME_HEX_AS_SECRET"
+---
+# ── STEP 3 — chain both middlewares in the IngressRoute ───────────────────
+# Edit auto-school-ingress.yaml's `middlewares:` list to:
+#   middlewares:
+#     - name: authentik-forwardauth
+#     - name: auto-school-edge-marker
+# (order is irrelevant; both run before the service)
+#
+# ── AUTHENTIK UI CHECKLIST (provider for school.vanderloch.com) ───────────
+# 1. Applications → Providers → <the proxy provider> → Protocol settings:
+#    mode must be "Forward auth (single application)".
+# 2. Scope mappings: the defaults (ak_proxy etc.) send
+#    X-authentik-uid/-username/-email/-name/-groups/-entitlements/-jwt.
+#    If X-authentik-uid is absent on verify (below), re-add the default
+#    "autentik default OAuth Mapping: Proxy..." scope mappings here.
+# 3. Optional role model: create group `auto-school-admins` and add yourself
+#    (or set AUTHENTIK_ADMIN_GROUP in the deployment to an existing group).
+#
+# ── VERIFY ────────────────────────────────────────────────────────────────
+#   kubectl -n auto-school rollout restart deploy/auto-school   # new env vars
+#   # log into school.vanderloch.com in a browser, then:
+#   curl -s https://school.vanderloch.com/api/me | jq
+#     → { "authenticated": true, "user": { "uid": "...", "username": "lochis", ... } }
+#   # spoofing check (direct pod, no edge marker) — identity must vanish:
+#   kubectl -n auto-school port-forward deploy/auto-school 3000:3000
+#   curl -s -H 'X-Authentik-Uid: fake' -H 'X-Authentik-Username: fake' localhost:3000/api/me | jq
+#     → { "authenticated": false, "user": null }

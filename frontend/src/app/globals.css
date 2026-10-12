@@ -757,6 +757,27 @@ input:focus, select:focus, textarea:focus {
 }
 .avatar-btn:hover { background: var(--primary); }
 
+/* Logged-in identity label next to the avatar (Phase 0 authentik) */
+.nav-user {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface-variant);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-user-role {
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* ── Header chrome (navbar) ───────────────────────────────────────────── */
 
 .app-header {
