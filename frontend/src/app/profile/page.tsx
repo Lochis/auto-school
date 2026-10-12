@@ -6,13 +6,13 @@ import { Badge, Panel, PanelHeader } from "@/components/ui";
 import type { AuthUser } from "@/lib/auth";
 import "../profile-ui.css";
 
-/** Authentik avatar (proxied via /api/me/avatar) with initials fallback */
-function ProfileAvatar({ fallback }: { fallback: string }) {
+/** Authentik avatar (JWT picture claim) with initials fallback */
+function ProfileAvatar({ src, fallback }: { src?: string; fallback: string }) {
   const [err, setErr] = useState(false);
-  if (err) return <>{fallback}</>;
+  if (!src || err) return <>{fallback}</>;
   return (
-    // eslint-disable-next-line @next/next/no-img-element -- proxied dynamic route, not a static asset
-    <img src="/api/me/avatar" alt="" className="profile-avatar-img" onError={() => setErr(true)} />
+    // eslint-disable-next-line @next/next/no-img-element -- external/data-URI from the identity provider
+    <img src={src} alt="" className="profile-avatar-img" onError={() => setErr(true)} />
   );
 }
 
@@ -45,7 +45,7 @@ export default function ProfilePage() {
           <>
             <div className="profile-head">
               <span className="profile-avatar" aria-hidden="true">
-                <ProfileAvatar fallback={user.username.slice(0, 1).toUpperCase()} />
+                <ProfileAvatar src={user.avatarUrl} fallback={user.username.slice(0, 1).toUpperCase()} />
               </span>
               <div>
                 <h1 className="profile-name">{user.name || user.username}</h1>

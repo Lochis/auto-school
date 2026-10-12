@@ -25,12 +25,28 @@ export interface AuthUser {
   email?: string;
   groups: string[];
   role: "admin" | "member";
+  /** avatar from the X-authentik-jwt `picture` claim (set via a scope mapping
+   *  on the provider): an http(s) URL or data URI, or undefined → UI initials. */
+  avatarUrl?: string;
 }
 
 const ADMIN_GROUP = process.env.AUTHENTIK_ADMIN_GROUP || "auto-school-admins";
 
 export function trustAuthentikHeaders(): boolean {
   return process.env.TRUST_AUTHENTIK_HEADERS === "1";
+}
+
+/** Decode the unverified JWT payload from X-authentik-jwt. Same trust model
+ *  as the sibling headers (they only arrive via the trusted Traefik edge);
+ *  JWKS verification via X-authentik-meta-jwks is a later hardening step. */
+function jwtClaims(jwt: string | null): Record<string, unknown> | null {
+  const part = jwt?.split(".")[1];
+  if (!part) return null;
+  try {
+    return JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
 }
 
 /** Resolve the logged-in user from the edge-injected headers, or null. */
@@ -43,6 +59,11 @@ export async function getAuthUser(): Promise<AuthUser | null> {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const picture = jwtClaims(h.get("x-authentik-jwt"))?.picture;
+  const avatarUrl =
+    typeof picture === "string" && /^(https?:\/\/|data:image\/)/i.test(picture) && picture.length < 8192
+      ? picture
+      : undefined;
   return {
     uid,
     username: h.get("x-authentik-username") ?? uid,
@@ -50,5 +71,6 @@ export async function getAuthUser(): Promise<AuthUser | null> {
     email: h.get("x-authentik-email") || undefined,
     groups,
     role: groups.includes(ADMIN_GROUP) ? "admin" : "member",
+    avatarUrl,
   };
 }

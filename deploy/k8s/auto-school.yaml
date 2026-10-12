@@ -131,9 +131,9 @@ spec:
             # (see docs/planning/authentik-federation.md + deploy/k8s/authentik-edge.yaml)
             - { name: TRUST_AUTHENTIK_HEADERS, value: "1" }
             - { name: AUTHENTIK_ADMIN_GROUP, value: auto-school-admins }
-            # avatar proxy: core API needs a service token with view_user perm
-            # (Directory → Roles → "autoschool-user-view" → perm "Can view User",
-            #  group svc-autoschool → user svc-autoschool-avatar → its API token)
+            # OPTIONAL exact-avatar fallback: /api/me/avatar proxies authentik's
+            # core API (needs service token; dormant/404 until both are set).
+            # Primary avatar path = JWT `picture` claim — no env needed.
             - { name: AUTHENTIK_API_URL, value: "http://authentik-server.authentik.svc.cluster.local" }
             - name: AUTHENTIK_API_TOKEN
               valueFrom:
