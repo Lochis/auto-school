@@ -11,7 +11,7 @@
  *         POST /scan?reset=1   → rescan now (reset clears the handled set —
  *                                use to re-attend a same-titled test meeting)
  */
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import archiver from "archiver";
@@ -31,14 +31,14 @@ import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, 
 import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
 import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
-import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
+import { glmChatRaw, glmChatStream, type ChatMsg, type ToolCall } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
-import { ensureIndex, indexDir, bundleFresh } from "./pipeline/docindex.ts";
+import { ensureIndex, indexDir, bundleFresh, supportsIndex } from "./pipeline/docindex.ts";
 import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
-import { updateSession } from "./pipeline/sessions.ts";
+import { updateSession, listSessions } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention } from "./pipeline/retention.ts";
 
@@ -415,6 +415,113 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
   // (covers recording-never-started and stop-failed paths; the success path
   // already closed it and the double-close is swallowed)
   await page.close().catch(() => {});
+}
+
+/* ── streaming chat loop (shared by both chat endpoints) ─────────────
+ * SSE event protocol: {type:"status"} while tools run, {type:"delta"} for
+ * answer tokens, {type:"reset"} when a round turned out to be tool-preface
+ * text the client must discard, {type:"done"|"error"} to finish. Returns
+ * the final reply (null on error) so the caller can persist it. */
+function toolPhrase(tc: ToolCall): string {
+  let a: Record<string, unknown> = {};
+  try { a = JSON.parse(tc.function.arguments || "{}"); } catch { /* bad json */ }
+  const arg = typeof a.path === "string" ? a.path
+    : typeof a.query === "string" ? `"${a.query}"`
+    : typeof a.date === "string" ? a.date
+    : typeof a.course === "string" ? a.course
+    : typeof a.url === "string" ? a.url.slice(0, 60)
+    : "";
+  return `${tc.function.name.replace(/_/g, " ")}${arg ? ` · ${arg}` : ""}`;
+}
+
+async function streamChatLoop(
+  res: ServerResponse,
+  convo: ChatMsg[],
+  opts: { tools: unknown[]; webSearch: boolean; fallbackSlug?: string; maxSteps: number; toolLabel: string },
+): Promise<string | null> {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no", // Traefik/nginx: don't buffer the stream
+  });
+  const event = (o: Record<string, unknown>): void => {
+    try { res.write(`data: ${JSON.stringify(o)}\n\n`); } catch { /* client gone — finish anyway so history is kept */ }
+  };
+  // CANCEL: the client aborting the fetch closes the socket — kill the
+  // in-flight GLM call too (no wasted quota) and keep whatever streamed
+  const ac = new AbortController();
+  res.on("close", () => ac.abort());
+  const stopped = (): boolean => res.destroyed;
+  let reply = "";
+  let partial = ""; // text streamed by the round in progress
+  let webReads = 0;
+  try {
+    for (let step = 0; step < opts.maxSteps; step++) {
+      if (stopped()) break; // cancelled — stop burning model calls
+      partial = "";
+      const msg = await glmChatStream(convo, opts.tools, (t) => { partial += t; event({ type: "delta", text: t }); }, ac.signal);
+      if (msg.tool_calls?.length) {
+        // that round's streamed text was tool-preface — client discards it
+        event({ type: "reset" });
+        // tools run in PARALLEL — a read-heavy round waits on its slowest
+        // call, not the sum of all of them
+        const results = await Promise.all(msg.tool_calls.map(async (tc) => {
+          if ((tc.function.name === "web_search" || tc.function.name === "web_read") && !opts.webSearch)
+            return "web tools are disabled for this chat";
+          if (tc.function.name === "web_read" && ++webReads > 4)
+            return "web_read limit reached (4) — answer with what you have";
+          event({ type: "status", text: toolPhrase(tc) });
+          const r = await runTool(tc, opts.fallbackSlug);
+          pushEvent(`${opts.toolLabel}: ${tc.function.name} → ${String(r).slice(0, 80).replace(/\s+/g, " ")}…`);
+          return String(r).slice(0, 26_000);
+        }));
+        if (stopped()) break; // cancelled mid-tools — don't start another round
+        convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
+        msg.tool_calls.forEach((tc, i) => convo.push({ role: "tool", tool_call_id: tc.id, content: results[i]! }));
+        continue;
+      }
+      reply = msg.content;
+      break;
+    }
+  } catch (e) {
+    if (stopped() || (e instanceof Error && e.name === "AbortError")) {
+      // user cancelled: persist exactly the partial answer they saw
+      try { res.end(); } catch { /* already closed */ }
+      return partial.trim() || null;
+    }
+    event({ type: "error", error: `chat failed: ${String(e).slice(0, 150)}` });
+    res.end();
+    return null;
+  }
+  if (!reply) reply = partial.trim() || "(no answer — model hit the tool-step limit; try a more specific question)";
+  event({ type: "done", reply });
+  res.end();
+  return reply;
+}
+
+/** Background index warm-up: pre-build .index bundles for every supported
+ *  material of every course, so the first chat read of a doc never pays
+ *  pdftotext/pdftoppm. Sequential (the renderer is CPU-heavy); fresh bundles
+ *  are a cheap .src-marker check. Reschedules itself while a class is being
+ *  recorded — a browser launch mid-capture is the one real risk. */
+async function sweepIndexes(): Promise<void> {
+  if (listSessions().some((s) => s.stage === "recording")) {
+    setTimeout(() => void sweepIndexes(), 30 * 60_000).unref?.();
+    return;
+  }
+  let built = 0;
+  for (const c of allCourses()) {
+    for (const m of listMaterials(c)) {
+      if (!supportsIndex(m.path)) continue;
+      if (listSessions().some((s) => s.stage === "recording")) break; // recheck per file
+      try {
+        const pages = await ensureIndex(c, m.path);
+        if (pages > 0) { built++; pushEvent(`eager-indexed ${c}/${m.path} (${pages} pages)`); }
+      } catch { /* keep sweeping */ }
+    }
+  }
+  if (built > 0) pushEvent(`index sweep done — ${built} bundle(s) built`);
 }
 
 function startController(): void {
@@ -933,17 +1040,37 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
 - Course-SPECIFIC content only (numbers, tools, naming and examples from these actual materials), never generic textbook filler.
 - Budget: the sheet prints as ONE A4 page in two columns — prioritize ruthlessly, cut prose before cutting facts.
 - End with a "## ⚡ Rapid recall" list of the ~10 most likely exam items as one-liners.`;
-          const convo: ChatMsg[] = [{ role: "system", content: systemPrompt }];
+          const convo: ChatMsg[] = [
+            { role: "system", content: systemPrompt },
+            // GLM rejects a system-only messages array (400 code 1214) — the
+            // chat endpoints carry history, this one needs an explicit kickoff
+            { role: "user", content: `Build the "${topic}" cheat sheet now — explore with the tools first, then output only the sheet.` },
+          ];
+          // broad topics ("Test 1") legitimately need many tool rounds, but the
+          // model will happily explore forever — steering + a tool-less final
+          // round guarantee the sheet actually gets written
+          const MAX_STEPS = 18;
+          const WRITE_BY = 12;
           let reply = "";
-          for (let step = 0; step < 10; step++) {
-            const msg = await glmChatRaw(convo, TOOL_DEFS);
-            if (msg.tool_calls?.length) {
+          for (let step = 0; step < MAX_STEPS; step++) {
+            const final = step === MAX_STEPS - 1;
+            if (step === WRITE_BY) {
+              convo.push({ role: "user", content: "Tool budget is over half used. If you have the key facts, stop exploring and WRITE THE CHEAT SHEET now — at most two more tool rounds for critical gaps." });
+            }
+            if (final) {
+              convo.push({ role: "user", content: "FINAL ROUND — tool budget is exhausted. Output only the finished cheat sheet markdown now, using what you already read." });
+            }
+            const msg = await glmChatRaw(convo, final ? undefined : TOOL_DEFS);
+            if (!final && msg.tool_calls?.length) {
+              // tools in PARALLEL — read-heavy rounds finish at the slowest
+              // call, not the sum
+              const results = await Promise.all(msg.tool_calls.map(async (tc) => {
+                const r = await runTool(tc, slug);
+                pushEvent(`study-sheet tool: ${tc.function.name} → ${String(r).slice(0, 80).replace(/\s+/g, " ")}…`);
+                return String(r).slice(0, 26_000);
+              }));
               convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
-              for (const tc of msg.tool_calls) {
-                const result = await runTool(tc, slug);
-                pushEvent(`study-sheet tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
-                convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
-              }
+              msg.tool_calls.forEach((tc, i) => convo.push({ role: "tool", tool_call_id: tc.id, content: results[i]! }));
               continue;
             }
             reply = msg.content;
@@ -1024,6 +1151,19 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
           }
           if (saved.length === 0) return send(400, { error: "no usable files" });
           pushEvent(`material upload: ${saved.length} file(s) → ${slug}${saved[0]?.week ? ` (week ${saved[0].week})` : ""}`);
+          // EAGER INDEX — pay pdftotext/pdftoppm right after upload (in the
+          // background, sequential), so the first chat read of a fresh doc
+          // never stalls mid-answer. Fire-and-forget: the response is already
+          // sent; failures surface in the activity feed.
+          void (async () => {
+            for (const s of saved) {
+              if (!supportsIndex(s.path)) continue;
+              try {
+                const pages = await ensureIndex(slug, s.path);
+                if (pages > 0) pushEvent(`eager-indexed ${s.path} (${pages} pages)`);
+              } catch { /* next file */ }
+            }
+          })();
           return send(200, { ok: true, saved });
         } catch (e) { return send(500, { error: `upload failed: ${String(e).slice(0, 100)}` }); }
       }
@@ -1979,36 +2119,18 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
               { role: "system", content: systemPrompt },
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
-            let reply = "";
-            let webReads = 0;
-            for (let step = 0; step < 12; step++) {
-              const msg = await glmChatRaw(convo, tools);
-              if (msg.tool_calls?.length) {
-                convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
-                for (const tc of msg.tool_calls) {
-                  if ((tc.function.name === "web_search" || tc.function.name === "web_read") && !webSearch) {
-                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web tools are disabled for this chat" });
-                    continue;
-                  }
-                  if (tc.function.name === "web_read" && ++webReads > 4) {
-                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web_read limit reached (4) — answer with what you have" });
-                    continue;
-                  }
-                  const result = await runTool(tc);
-                  pushEvent(`global chat tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
-                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
-                }
-                continue;
-              }
-              reply = msg.content;
-              break;
+            // SSE stream: tool statuses + live answer tokens
+            const reply = await streamChatLoop(res, convo, { tools, webSearch, maxSteps: 12, toolLabel: "global chat tool" });
+            if (reply !== null) {
+              history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
+              saveChat(history);
             }
-            if (!reply) reply = "(no answer — model hit the tool-step limit; try a more specific question)";
-            history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
-            saveChat(history);
-            return send(200, { reply });
           } catch (e) {
-            return send(500, { error: `chat failed: ${String(e).slice(0, 150)}` });
+            try {
+              if (!res.headersSent) return send(500, { error: `chat failed: ${String(e).slice(0, 150)}` });
+              res.write(`data: ${JSON.stringify({ type: "error", error: `chat failed: ${String(e).slice(0, 150)}` })}\n\n`);
+              res.end();
+            } catch { /* client gone */ }
           }
         })();
         return; // async handler sends the response
@@ -2067,36 +2189,18 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
               { role: "system", content: systemPrompt },
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
-            let reply = "";
-            let webReads = 0;
-            for (let step = 0; step < 8; step++) {
-              const msg = await glmChatRaw(convo, tools);
-              if (msg.tool_calls?.length) {
-                convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
-                for (const tc of msg.tool_calls) {
-                  if ((tc.function.name === "web_search" || tc.function.name === "web_read") && !webSearch) {
-                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web tools are disabled for this chat" });
-                    continue;
-                  }
-                  if (tc.function.name === "web_read" && ++webReads > 4) {
-                    convo.push({ role: "tool", tool_call_id: tc.id, content: "web_read limit reached (4) — answer with what you have" });
-                    continue;
-                  }
-                  const result = await runTool(tc, slug);
-                  pushEvent(`chat tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
-                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
-                }
-                continue;
-              }
-              reply = msg.content;
-              break;
+            // SSE stream: tool statuses + live answer tokens
+            const reply = await streamChatLoop(res, convo, { tools, webSearch, fallbackSlug: slug, maxSteps: 8, toolLabel: "chat tool" });
+            if (reply !== null) {
+              history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
+              saveChat(history);
             }
-            if (!reply) reply = "(no answer — model hit the tool-step limit; try a more specific question)";
-            history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
-            saveChat(history);
-            return send(200, { reply });
           } catch (e) {
-            return send(500, { error: `chat failed: ${String(e).slice(0, 150)}` });
+            try {
+              if (!res.headersSent) return send(500, { error: `chat failed: ${String(e).slice(0, 150)}` });
+              res.write(`data: ${JSON.stringify({ type: "error", error: `chat failed: ${String(e).slice(0, 150)}` })}\n\n`);
+              res.end();
+            } catch { /* client gone */ }
           }
         })();
         return; // async handler sends the response
@@ -2144,6 +2248,9 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
     send(404, { error: "not found" });
   });
   server.listen(PORT, () => console.log(`[daemon] controller listening on :${PORT}`));
+  // index warm-up sweep — delayed so boot/restore stays snappy; skipped
+  // (and retried later) while a class recording is live
+  setTimeout(() => void sweepIndexes(), 45_000).unref?.();
 }
 
 export async function daemon(): Promise<void> {

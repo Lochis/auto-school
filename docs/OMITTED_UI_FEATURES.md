@@ -58,6 +58,10 @@ extension-less), `.index/` page-cache hidden by default with explicit "Show inde
 toggles (Materials tab + Ask Source Documents). AI study sheets (topic → tool-loop cheat sheet →
 `Generated/*.md` + printable two-column PDF, regenerate ↻) and "save as material" / "download .md"
 actions on assistant chat answers.
+Streaming chat (SSE end-to-end: glmChatStream → daemon streamChatLoop → Next proxies → chat tab,
+with live tool-status lines and token deltas; tool rounds run in parallel via Promise.all), eager
+indexing (ensureIndex on upload + delayed startup sweepIndexes in daemon, deferred while a
+recording is live).
 
 ## Descoped on ui-overhaul (removed — do NOT re-add without a design decision)
 

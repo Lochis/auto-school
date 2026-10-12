@@ -3,7 +3,7 @@
  *  markdown cheat sheet (+ printable PDF) under Generated/. Slow by design. */
 import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 600;
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
@@ -13,7 +13,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: await req.text(),
-      signal: AbortSignal.timeout(280_000),
+      signal: AbortSignal.timeout(550_000),
     });
     return NextResponse.json(await res.json(), { status: res.status });
   } catch {

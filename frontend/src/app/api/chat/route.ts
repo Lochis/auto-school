@@ -12,6 +12,12 @@ async function proxy(req: Request, method?: string): Promise<Response> {
       body: method === "POST" || (!method && req.method === "POST") ? await req.text() : undefined,
       signal: AbortSignal.timeout(600_000), // tool loop can take minutes
     });
+    // POST streams SSE (tool statuses + live answer tokens) — pass through
+    if (res.ok && res.body && (method ?? req.method) === "POST") {
+      return new Response(res.body, {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" },
+      });
+    }
     const body = await res.text();
     return new NextResponse(body, { status: res.status, headers: { "Content-Type": "application/json" } });
   } catch {

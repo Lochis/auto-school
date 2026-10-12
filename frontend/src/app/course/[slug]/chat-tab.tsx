@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowPathIcon, ArrowTopRightOnSquareIcon, ArrowUpIcon, BoltIcon, BookOpenIcon, ChevronDownIcon,
-  GlobeAltIcon, PaperClipIcon, TrashIcon, XMarkIcon,
+  GlobeAltIcon, PaperClipIcon, StopIcon, TrashIcon, XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { LiveDot, MicroButton, Panel } from "@/components/ui";
 import DocPreview from "@/components/chat/doc-preview";
@@ -45,12 +45,15 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   };
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const abortRef = useRef<AbortController | null>(null); // Stop button: cancels the in-flight stream
+  const abort = (): void => { abortRef.current?.abort(); };
   const [webSearch, setWebSearch] = useState(false);
   useEffect(() => { setWebSearch(localStorage.getItem("askWebSearch") === "1"); }, []);
   const toggleWeb = (): void => {
     setWebSearch((w) => { localStorage.setItem("askWebSearch", w ? "0" : "1"); return !w; });
   };
   const [err, setErr] = useState("");
+  const [status, setStatus] = useState(""); // live tool status while a streamed answer is being built
   const [note, setNote] = useState(""); // transient confirmations ("saved to …")
   useEffect(() => {
     if (!note) return;
@@ -90,7 +93,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   }, [slug, reloadMaterials]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: busy ? "auto" : "smooth" }); // instant while tokens stream in
   }, [messages, busy]);
 
   /** leaf filename → candidate {course, path} hits */
@@ -120,26 +123,84 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
    *  + sorted) — not per message per render */
   const linkify = useMemo(() => makeLinkifier(byPath, byLeaf, hints), [byPath, byLeaf, hints]);
 
+  /** patch the streaming assistant message (always the last one) */
+  const patchAssistant = (fn: (prev: string) => string): void => {
+    setMessages((ms) => {
+      if (!ms.length || ms[ms.length - 1]!.role !== "assistant") return ms;
+      const last = ms.length - 1;
+      const copy = [...ms];
+      copy[last] = { ...copy[last]!, content: fn(copy[last]!.content) };
+      return copy;
+    });
+  };
+
   const send = async (override?: string): Promise<void> => {
     const message = (override ?? input).trim();
     if (!message || busy) return;
     setInput("");
     setErr("");
+    setStatus("");
     setBusy(true);
-    setMessages((m) => [...m, { role: "user", content: message, at: new Date().toISOString() }]);
+    setMessages((m) => [
+      ...m,
+      { role: "user", content: message, at: new Date().toISOString() },
+      { role: "assistant", content: "", at: new Date().toISOString() }, // streaming placeholder
+    ]);
+    const dropPlaceholder = (): void => setMessages((m) => m.slice(0, -1));
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
       const r = await fetch(slug ? `/api/courses/${encodeURIComponent(slug)}/chat` : "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, webSearch }),
+        signal: ac.signal,
       });
-      const j = (await r.json().catch(() => ({}))) as { reply?: string; error?: string };
-      if (!r.ok || !j.reply) setErr(j.error ?? `HTTP ${r.status}`);
-      else {
-        setMessages((m) => [...m, { role: "assistant", content: j.reply!, at: new Date().toISOString() }]);
+      if (!r.ok || !r.body) {
+        // plain-JSON error — the backend never started the SSE stream
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        setErr(j.error ?? `HTTP ${r.status}`);
+        dropPlaceholder();
+        return;
       }
-    } catch { setErr("request failed"); }
-    finally { setBusy(false); }
+      // SSE: {status} tool progress → {delta} answer tokens → {done|error}
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let errored = false;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buf.indexOf("\n\n")) >= 0) {
+          const raw = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          const line = raw.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          let ev: { type?: string; text?: string; reply?: string; error?: string };
+          try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (ev.type === "delta" && ev.text) patchAssistant((c) => c + ev.text!);
+          else if (ev.type === "reset") patchAssistant(() => ""); // that text was tool-preface, not the answer
+          else if (ev.type === "status" && ev.text) setStatus(ev.text);
+          else if (ev.type === "done" && typeof ev.reply === "string") patchAssistant(() => ev.reply!); // authoritative full text
+          else if (ev.type === "error") { setErr(ev.error ?? "chat failed"); errored = true; }
+        }
+      }
+      if (errored) dropPlaceholder();
+    } catch (e) {
+      if (ac.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+        // Stop pressed: keep whatever streamed; drop the bubble only if nothing landed
+        setMessages((m) => (m.length > 0 && m[m.length - 1]!.role === "assistant" && !m[m.length - 1]!.content ? m.slice(0, -1) : m));
+      } else {
+        setErr("request failed");
+        dropPlaceholder();
+      }
+    } finally {
+      abortRef.current = null;
+      setBusy(false);
+      setStatus("");
+    }
   };
 
   const clear = async (): Promise<void> => {
@@ -354,19 +415,24 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
 
         {/* thread */}
         <div className="chat-scroll">
-          {messages.map((m) => (
-            <MessageRow
-              key={m.at ?? m.content.slice(0, 32)}
-              m={m}
-              linkify={linkify}
-              onOpenPreview={openPreviewHash}
-              onSave={slug ? handleSave : undefined}
-              onDownload={downloadMd}
-            />
-          ))}
-          {busy && (
+          {messages.map((m, i) => {
+            // streaming placeholder: invisible until its first token lands —
+            // only the status line shows while the model is still exploring
+            if (busy && i === messages.length - 1 && m.role === "assistant" && !m.content) return null;
+            return (
+              <MessageRow
+                key={m.at ? `${i}-${m.at}` : i}
+                m={m}
+                linkify={linkify}
+                onOpenPreview={openPreviewHash}
+                onSave={slug ? handleSave : undefined}
+                onDownload={downloadMd}
+              />
+            );
+          })}
+          {busy && messages.length > 0 && messages[messages.length - 1]!.role === "assistant" && !messages[messages.length - 1]!.content && (
             <p className="muted" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: "0.8125rem" }}>
-              <LiveDot static /> thinking (may read documents / view pages{webSearch ? " / search the web" : ""})…
+              <LiveDot static /> {status || `thinking (may read documents / view pages${webSearch ? " / search the web" : ""})…`}
             </p>
           )}
           {err && (
@@ -387,7 +453,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
         {/* composer dock */}
         <form
           className="chat-composer"
-          onSubmit={(e) => { e.preventDefault(); void send(); }}
+          onSubmit={(e) => { e.preventDefault(); if (busy) abort(); else void send(); }}
         >
           <div className="chat-composer-row">
             <input
@@ -438,8 +504,8 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
                 tokens: {tokenEstimate.toLocaleString("en-US")} / 128k
               </span>
             </div>
-            <button type="submit" className="btn btn-primary" disabled={busy || !input.trim()} title="Send (Enter)">
-              Send <ArrowUpIcon className="heroicon" style={{ display: "inline" }} />
+            <button type="submit" className="btn btn-primary" title={busy ? "Stop generating (keeps the partial answer)" : "Send (Enter)"}>
+              {busy ? <><StopIcon className="heroicon" style={{ display: "inline" }} /> Stop</> : <>Send <ArrowUpIcon className="heroicon" style={{ display: "inline" }} /></>}
             </button>
           </div>
         </form>

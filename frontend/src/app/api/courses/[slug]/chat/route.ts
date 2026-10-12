@@ -12,7 +12,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
   const { slug } = await params;
   try {
     const res = await fetch(base(slug), { method: "POST", headers: { "Content-Type": "application/json" }, body: await req.text(), signal: AbortSignal.timeout(600_000) }); // tool loop + docx→PDF + VLM pages = minutes
-    return NextResponse.json(await res.json(), { status: res.status });
+    // happy path: SSE stream (tool statuses + live answer tokens) — pass the
+    // body through untouched so chunks reach the client as they arrive
+    if (res.ok && res.body) {
+      return new Response(res.body, {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" },
+      });
+    }
+    // error path (or empty body): plain JSON passthrough
+    return NextResponse.json(await res.json().catch(() => ({})), { status: res.status });
   } catch { return NextResponse.json({ error: "backend unreachable" }, { status: 502 }); }
 }
 export async function DELETE(_req: Request, { params }: { params: Promise<{ slug: string }> }) {

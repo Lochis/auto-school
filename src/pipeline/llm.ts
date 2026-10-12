@@ -89,6 +89,75 @@ export interface ChatMsg {
   tool_call_id?: string;
 }
 
+/** Streaming variant of glmChatRaw — same loop-friendly return shape, but
+ *  text tokens are forwarded live via onDelta (tool-call rounds accumulate
+ *  silently; the caller only ever sees finished ToolCall[]s). Falls back to
+ *  plain JSON parsing when the endpoint answers without an event-stream. */
+export async function glmChatStream(
+  messages: ChatMsg[],
+  tools: unknown[] | undefined,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<{ content: string; tool_calls?: ToolCall[] }> {
+  const key = apiKey("GLM_API_KEY");
+  if (!key) throw new Error("GLM_API_KEY not set");
+  const model = process.env.GLM_MODEL ?? "glm-5.3";
+  const res = await fetch(glmEndpoint(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model, messages, ...(tools?.length ? { tools, tool_choice: "auto" } : {}), temperature: 0.4, stream: true }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`GLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.body || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
+    const json = (await res.json()) as any; // gateway stripped SSE — one-shot
+    const m = json?.choices?.[0]?.message ?? {};
+    const content = (m.content ?? "").trim();
+    if (content) onDelta(content);
+    return { content, ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}) };
+  }
+  let content = "";
+  const tcMap = new Map<number, ToolCall>();
+  const handle = (payload: string): void => {
+    if (!payload || payload === "[DONE]") return;
+    let j: any;
+    try { j = JSON.parse(payload); } catch { return; }
+    const d = j?.choices?.[0]?.delta;
+    if (!d) return;
+    if (typeof d.content === "string" && d.content) {
+      content += d.content;
+      onDelta(d.content);
+    }
+    if (Array.isArray(d.tool_calls)) {
+      for (const tc of d.tool_calls) {
+        const i = tc.index ?? 0;
+        const cur = tcMap.get(i) ?? { id: "", type: "function" as const, function: { name: "", arguments: "" } };
+        if (tc.id) cur.id = tc.id;
+        if (tc.function?.name) cur.function.name = tc.function.name; // name arrives whole, once
+        if (tc.function?.arguments) cur.function.arguments += tc.function.arguments; // args stream in pieces
+        tcMap.set(i, cur);
+      }
+    }
+  };
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line.startsWith("data:")) handle(line.slice(5).trim());
+    }
+  }
+  if (buf.trim().startsWith("data:")) handle(buf.trim().slice(5).trim());
+  const toolCalls = [...tcMap.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v).filter((t) => t.function.name);
+  return { content: content.trim(), ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+}
+
 /** One raw round-trip with optional OpenAI-style tools — returns the assistant
  *  message (content and/or tool_calls) so the caller drives the tool loop. */
 export async function glmChatRaw(
