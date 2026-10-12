@@ -55,7 +55,9 @@ directives toggles, day/3-day calendar switcher, failover-chain editor + RAW_LIS
 fields, masked API vault, quota monitor table + 429 explainer, config-state bar.
 Ask-AI `[[path]]` citation links (strict prompt format + tolerant linkifier: case-insensitive,
 extension-less), `.index/` page-cache hidden by default with explicit "Show indexed cache"
-toggles (Materials tab + Ask Source Documents).
+toggles (Materials tab + Ask Source Documents). AI study sheets (topic → tool-loop cheat sheet →
+`Generated/*.md` + printable two-column PDF, regenerate ↻) and "save as material" / "download .md"
+actions on assistant chat answers.
 
 ## Descoped on ui-overhaul (removed — do NOT re-add without a design decision)
 

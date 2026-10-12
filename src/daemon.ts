@@ -34,6 +34,7 @@ import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, rename
 import { glmChatRaw, type ChatMsg } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
 import { ensureIndex, indexDir, bundleFresh } from "./pipeline/docindex.ts";
+import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
@@ -870,6 +871,109 @@ function startController(): void {
       zip.finalize().catch(() => { try { res.destroy(); } catch { /* gone */ } }); // never an unhandled rejection — that would kill the daemon
       return;
     }
+    // ── save AI output (chat answer, sheet, …) as a course material ──
+    // Markdown under Generated/ — instantly indexed + previewable + citable.
+    const GEN_RE = /^\/courses\/([^/]+)\/materials\/generated$/;
+    const genM = url.pathname.match(GEN_RE);
+    if (genM && req.method === "POST") {
+      const slug = decodeURIComponent(genM[1]);
+      try {
+        let body: Record<string, unknown> = {};
+        try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
+        const markdown = String(body.markdown ?? "").trim();
+        if (!markdown) return send(400, { error: "markdown required" });
+        // single-segment name: user may type a path — take the last segment
+        let name = sanitizeRelPath(String(body.name ?? "").split("/").pop() ?? "") ?? "";
+        if (!name) name = `AI note ${new Date().toISOString().slice(0, 10)}`;
+        if (!/\.md$/i.test(name)) name += ".md";
+        const rel = `Generated/${name}`;
+        const abs = join(MATERIALS_DIR(slug), rel);
+        if (!abs.startsWith(MATERIALS_DIR(slug))) return send(400, { error: "bad name" });
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, markdown);
+        registerMaterial(slug, {
+          path: rel, filename: name, week: null, category: "other",
+          description: "saved from Ask AI", uploadedAt: new Date().toISOString(), size: markdown.length,
+        });
+        pushEvent(`saved AI answer as material: ${slug}/${rel}`);
+        return send(200, { ok: true, path: rel });
+      } catch (e) {
+        return send(500, { error: `save failed: ${String(e).slice(0, 120)}` });
+      }
+    }
+
+    // ── study-sheet generator: tool-loop LLM → dense markdown (+ PDF) ──
+    const SHEET_RE = /^\/courses\/([^/]+)\/study-sheet$/;
+    const sheetM = url.pathname.match(SHEET_RE);
+    if (sheetM && req.method === "POST") {
+      const slug = decodeURIComponent(sheetM[1]);
+      void (async () => {
+        try {
+          let body: Record<string, unknown> = {};
+          try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
+          // regenerate: topic comes from the existing sheet's header comment
+          let topic = String(body.topic ?? "").trim();
+          if (!topic && typeof body.path === "string") {
+            try {
+              const head = readFileSync(join(MATERIALS_DIR(slug), sanitizeRelPath(body.path) ?? ""), "utf8").slice(0, 300);
+              topic = head.match(/study-sheet topic:\s*(.+?)\s*-->/)?.[1]?.trim() ?? "";
+            } catch { /* gone */ }
+          }
+          if (!topic) return send(400, { error: "topic required" });
+          const stem = `study-sheet-${topic.toLowerCase().replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-").slice(0, 48).replace(/^-+|-+$/g, "") || "course"}`;
+          const rel = `Generated/${stem}.md`;
+          const cfg = getCourseConfig(slug);
+
+          const systemPrompt = `You write PRINTABLE CHEAT SHEETS for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
+TOPIC: "${topic}".
+First EXPLORE with tools: list_materials, then read_document / view_page on everything relevant; read_notes and search_transcripts for what the professor actually emphasized in class (exam hints, promised question types, lab content). Read enough for course-SPECIFIC facts — never guess.
+Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble, no closing remarks):
+- Dense and compact: tables, one-line definitions, formula boxes, micro worked examples. NO filler prose, NO study advice, NO "good luck".
+- Organized by topic with ## headings; formulas in code spans; bold the exam-critical terms.
+- Course-SPECIFIC content only (numbers, tools, naming and examples from these actual materials), never generic textbook filler.
+- Budget: the sheet prints as ONE A4 page in two columns — prioritize ruthlessly, cut prose before cutting facts.
+- End with a "## ⚡ Rapid recall" list of the ~10 most likely exam items as one-liners.`;
+          const convo: ChatMsg[] = [{ role: "system", content: systemPrompt }];
+          let reply = "";
+          for (let step = 0; step < 10; step++) {
+            const msg = await glmChatRaw(convo, TOOL_DEFS);
+            if (msg.tool_calls?.length) {
+              convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
+              for (const tc of msg.tool_calls) {
+                const result = await runTool(tc, slug);
+                pushEvent(`study-sheet tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
+                convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
+              }
+              continue;
+            }
+            reply = msg.content;
+            break;
+          }
+          if (!reply) return send(500, { error: "generation failed — model hit the tool-step limit; try a narrower topic" });
+          // models sometimes wrap the whole sheet in one fence — unwrap
+          const fence = reply.match(/^\s*```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$/);
+          if (fence) reply = fence[1]!;
+          const md = `<!-- auto-school study-sheet topic: ${topic} -->\n\n# ${slug.replace(/_/g, " ")} — ${topic}\n\n${reply.trim()}\n`;
+
+          const abs = join(MATERIALS_DIR(slug), rel);
+          mkdirSync(dirname(abs), { recursive: true });
+          writeFileSync(abs, md);
+          // PDF twin (skipped while recording — the .md still lands)
+          const pdfRel = `Generated/${stem}.pdf`;
+          const pdfOk = await mdToPdf(md, join(MATERIALS_DIR(slug), pdfRel));
+          const reg = (p: string, f: string, size: number, desc: string): void =>
+            registerMaterial(slug, { path: p, filename: f, week: null, category: "other", description: desc, uploadedAt: new Date().toISOString(), size });
+          reg(rel, `${stem}.md`, md.length, `AI study sheet — ${topic}`);
+          if (pdfOk) reg(pdfRel, `${stem}.pdf`, statSync(join(MATERIALS_DIR(slug), pdfRel)).size, `AI study sheet — ${topic} (printable)`);
+          pushEvent(`study sheet generated: ${slug}/${rel}${pdfOk ? " +pdf" : ""}`);
+          return send(200, { ok: true, path: rel, pdf: pdfOk ? pdfRel : null, topic });
+        } catch (e) {
+          return send(500, { error: `study sheet failed: ${String(e).slice(0, 150)}` });
+        }
+      })();
+      return; // async handler sends the response
+    }
+
     // ── course materials (upload / list / delete) + course config ─────
     const MATERIALS_RE = /^\/courses\/([^/]+)\/materials$/;
     const mm = url.pathname.match(MATERIALS_RE);

@@ -339,3 +339,45 @@
 .chat-src-head-btn:hover { background: var(--surface-container-high); }
 .chat-src-chev { transition: transform 0.15s ease; margin-left: auto; color: var(--outline); }
 .chat-src-chev--open { transform: rotate(180deg); }
+
+/* ── assistant-turn actions (download / save as material) ── */
+.chat-turn-actions {
+  display: flex;
+  gap: 6px;
+}
+.chat-action {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  min-height: 22px;
+  border-radius: var(--radius-md);
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+.chat-action:hover:not(:disabled) { color: var(--on-surface); background: var(--surface-container-highest); }
+.chat-action:disabled { opacity: 0.5; cursor: default; }
+
+/* ── study-sheet generator ── */
+.chat-sheet-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.chat-sheet-form .chat-composer-input { flex: 1; }
+.chat-sheet-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+.chat-sheet-row .chat-src-row { flex: 1; }
+.chat-sheet-row-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

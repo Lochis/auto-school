@@ -8,7 +8,9 @@ import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { SparklesIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowDownTrayIcon, BookmarkSquareIcon, SparklesIcon,
+} from "@heroicons/react/24/outline";
 import { clock } from "@/lib/format";
 import type { LexHit, Msg } from "./types";
 
@@ -112,7 +114,15 @@ export function makeLinkifier(byPath: Map<string, LexHit[]>, byLeaf: Map<string,
     .join("");
 }
 
-export const MessageRow = memo(function MessageRow({ m, linkify, onOpenPreview }: { m: Msg; linkify: (md: string) => string; onOpenPreview: (hash: string) => void }) {
+export const MessageRow = memo(function MessageRow({ m, linkify, onOpenPreview, onSave, onDownload }: {
+  m: Msg;
+  linkify: (md: string) => string;
+  onOpenPreview: (hash: string) => void;
+  /** save this answer as a course material (course chat only) */
+  onSave?: (content: string) => void;
+  /** download this answer as a .md file */
+  onDownload?: (content: string) => void;
+}) {
   // linkified markdown computed once per message content
   const body = useMemo(() => linkify(m.content), [linkify, m.content]);
   // stable renderer config — a fresh object every render defeats memo downstream
@@ -123,6 +133,7 @@ export const MessageRow = memo(function MessageRow({ m, linkify, onOpenPreview }
       <a href={href} target="_blank" rel="noreferrer">{children}</a>
     ),
   }), [onOpenPreview]);
+  const actions = onSave || onDownload;
 
   if (m.role === "user") {
     return (
@@ -153,6 +164,22 @@ export const MessageRow = memo(function MessageRow({ m, linkify, onOpenPreview }
             components={mdComponents}
           >{body}</ReactMarkdown>
         </div>
+        {actions ? (
+          <div className="chat-turn-actions">
+            {onDownload && (
+              <button type="button" className="chat-action" title="Download this answer as a Markdown file" onClick={() => onDownload(m.content)}>
+                <ArrowDownTrayIcon className="heroicon" style={{ display: "inline", width: 13, height: 13 }} />
+                .md
+              </button>
+            )}
+            {onSave && (
+              <button type="button" className="chat-action" title="Save this answer into Materials → Generated (indexed for future chats)" onClick={() => onSave(m.content)}>
+                <BookmarkSquareIcon className="heroicon" style={{ display: "inline", width: 13, height: 13 }} />
+                save as material
+              </button>
+            )}
+          </div>
+        ) : null}
       </div>
     </article>
   );
