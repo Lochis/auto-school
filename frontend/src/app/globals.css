@@ -778,6 +778,56 @@ input:focus, select:focus, textarea:focus {
   letter-spacing: 0.04em;
 }
 
+/* Account dropdown (avatar + username trigger) */
+.user-menu { position: relative; display: inline-flex; }
+.user-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 2px 10px 2px 2px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+.user-menu-trigger:hover, .user-menu-trigger:focus-visible { background: var(--surface-variant, rgba(127,127,127,0.12)); }
+.user-menu-list {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  min-width: 180px;
+  padding: 6px;
+  border-radius: var(--radius-lg, 12px);
+  background: var(--component-surface, var(--surface));
+  border: 1px solid var(--line-hover, rgba(127,127,127,0.35));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--on-surface, inherit);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  text-align: left;
+}
+.user-menu-item:hover, .user-menu-item:focus-visible { background: var(--surface-variant, rgba(127,127,127,0.14)); }
+.user-menu-item--danger { color: var(--error, #f87171); }
+.user-menu-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--line-hover, rgba(127,127,127,0.3));
+}
+
 /* ── Header chrome (navbar) ───────────────────────────────────────────── */
 
 .app-header {

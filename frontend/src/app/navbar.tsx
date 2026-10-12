@@ -2,8 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserIcon } from "@heroicons/react/24/outline";
-import { useEffect, useState } from "react";
+import {
+  ArrowRightStartOnRectangleIcon,
+  Cog6ToothIcon,
+  UserIcon,
+} from "@heroicons/react/24/outline";
+import { useEffect, useRef, useState } from "react";
 import type { AuthUser } from "@/lib/auth";
 
 const NAV = [
@@ -17,7 +21,7 @@ export default function Navbar() {
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   // Phase 0 identity: resolve the Authentik user via the edge headers
-  // (null in local dev / when header trust is off — avatar stays plain).
+  // (null in local dev / when header trust is off — avatar stays a plain link).
   const [user, setUser] = useState<AuthUser | null>(null);
   useEffect(() => {
     let alive = true;
@@ -27,6 +31,23 @@ export default function Navbar() {
       .catch(() => {});
     return () => { alive = false; };
   }, []);
+
+  // account dropdown (rendered only when signed in)
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenuOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
 
   return (
     <header className="app-header">
@@ -54,17 +75,55 @@ export default function Navbar() {
           ))}
         </nav>
 
-        {/* right: avatar + identity */}
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)" }}>
-          {user && (
-            <span className="nav-user" title={user.email || user.username}>
-              {user.role === "admin" && <span className="nav-user-role" title="admin">admin</span>}
-              {user.username}
-            </span>
+        {/* right: account dropdown (identity via Authentik edge headers) */}
+        <div className="user-menu" ref={menuRef}>
+          {user ? (
+            <>
+              <button
+                type="button"
+                className="user-menu-trigger"
+                onClick={() => setMenuOpen((o) => !o)}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                title={user.email || user.username}
+              >
+                <span className="avatar-btn" aria-hidden="true">
+                  <UserIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
+                </span>
+                <span className="nav-user">
+                  {user.role === "admin" && <span className="nav-user-role" title="admin">admin</span>}
+                  {user.username}
+                </span>
+              </button>
+              {menuOpen && (
+                <div className="user-menu-list" role="menu" aria-label="Account">
+                  <Link role="menuitem" href="/profile" className="user-menu-item" onClick={() => setMenuOpen(false)}>
+                    <UserIcon className="heroicon" style={{ width: 16, height: 16 }} />
+                    Profile
+                  </Link>
+                  <Link role="menuitem" href="/settings" className="user-menu-item" onClick={() => setMenuOpen(false)}>
+                    <Cog6ToothIcon className="heroicon" style={{ width: 16, height: 16 }} />
+                    Settings
+                  </Link>
+                  <div className="user-menu-divider" role="separator" />
+                  {/* full navigation: clears the outpost session cookie via the
+                      edge-routed /outpost.goauthentik.io/signout endpoint */}
+                  <a
+                    role="menuitem"
+                    href={`${typeof window !== "undefined" ? window.location.origin : ""}/outpost.goauthentik.io/signout`}
+                    className="user-menu-item user-menu-item--danger"
+                  >
+                    <ArrowRightStartOnRectangleIcon className="heroicon" style={{ width: 16, height: 16 }} />
+                    Logout
+                  </a>
+                </div>
+              )}
+            </>
+          ) : (
+            <Link href="/settings" className="avatar-btn" title="Account" aria-label="Account">
+              <UserIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
+            </Link>
           )}
-          <Link href="/settings" className="avatar-btn" title={user ? `Account — ${user.username}` : "Account"} aria-label="Account">
-            <UserIcon className="heroicon" style={{ display: "inline", width: 16, height: 16 }} />
-          </Link>
         </div>
       </div>
     </header>
