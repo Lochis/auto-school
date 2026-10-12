@@ -12,7 +12,10 @@ spec:
     - kind: Rule
       match: Host(`school.vanderloch.com`) && PathPrefix(`/outpost.goauthentik.io/`)
       services:
-        - name: authentik-outpost
+        # authentik-server fronts the embedded outpost paths (port 80); the
+        # bare `authentik-outpost` service doesn't exist in this cluster.
+        # This route is what makes Logout (/outpost.goauthentik.io/signout) work.
+        - name: authentik-server.authentik.svc.cluster.local
           port: 80
           scheme: http
     - kind: Rule
