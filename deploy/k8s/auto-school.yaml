@@ -127,6 +127,20 @@ spec:
             - { name: AUTO_SCHOOL_DATA, value: /data }
             - { name: BACKEND_URL, value: "http://localhost:7800" } # same pod
             - { name: TZ, value: America/Toronto }
+            # Authentik Phase 0: trust edge-injected X-authentik-* identity headers
+            # (see docs/planning/authentik-federation.md + deploy/k8s/authentik-edge.yaml)
+            - { name: TRUST_AUTHENTIK_HEADERS, value: "1" }
+            - { name: AUTHENTIK_ADMIN_GROUP, value: auto-school-admins }
+            # OPTIONAL exact-avatar fallback: /api/me/avatar proxies authentik's
+            # core API (needs service token; dormant/404 until both are set).
+            # Primary avatar path = JWT `picture` claim — no env needed.
+            - { name: AUTHENTIK_API_URL, value: "http://authentik-server.authentik.svc.cluster.local" }
+            - name: AUTHENTIK_API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: AUTHENTIK_API_TOKEN, optional: true }
+            - name: EDGE_SECRET
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: EDGE_SECRET, optional: true }
           ports:
             - { containerPort: 3000, name: http }
           readinessProbe:

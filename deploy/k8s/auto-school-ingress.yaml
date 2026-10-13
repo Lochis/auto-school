@@ -12,8 +12,11 @@ spec:
     - kind: Rule
       match: Host(`school.vanderloch.com`) && PathPrefix(`/outpost.goauthentik.io/`)
       services:
-        - name: authentik-outpost
-          port: 80
+        # signout/auth handshake endpoints live on the embedded OUTPOST service
+        # (port 9000) — authentik-server:80 answers /auth/* but 404s /signout.
+        # This route is what makes Logout (/outpost.goauthentik.io/signout) work.
+        - name: ak-outpost-authentik-embedded-outpost.authentik.svc.cluster.local
+          port: 9000
           scheme: http
     - kind: Rule
       match: Host(`school.vanderloch.com`)

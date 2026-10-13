@@ -1,0 +1,80 @@
+/* Profile page (Phase 0 authentik identity) */
+
+.profile-page {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-xl) var(--space-lg);
+}
+
+.profile-panel { width: min(560px, 100%); }
+
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: var(--space-lg) 0;
+}
+
+.profile-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-full);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+  font-size: 24px;
+  font-weight: 700;
+  overflow: hidden;
+}
+.profile-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.profile-name {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--on-surface);
+}
+
+.profile-sub {
+  margin: 4px 0 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+}
+
+.profile-rows {
+  margin: 0;
+  border-top: 1px solid var(--outline-variant);
+}
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.profile-row dt {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.profile-row dd {
+  margin: 0;
+  color: var(--on-surface);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.profile-hint { color: var(--on-surface-variant); padding: var(--space-lg) 0; }

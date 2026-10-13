@@ -1,0 +1,63 @@
+# Authentik Phase 0 — edge (Traefik) configuration.
+# ⚠ VERIFIED IN-CLUSTER 2026-10: the live `authentik-forwardauth` middleware
+# (ns auto-school) ALREADY forwards the full X-authentik-* header list via
+# authResponseHeaders and points at authentik-server (which proxies the
+# embedded outpost). DO NOT APPLY this file over it — it is OPTIONAL
+# hardening (edge-secret marker) only. App is live on school.vanderloch.com:2459.
+# Companion: docs/planning/authentik-federation.md (branch plan/postgres-migration).
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: authentik-forwardauth
+  namespace: auto-school
+spec:
+  forwardAuth:
+    address: http://ak-outpost-authentik-embedded-outpost.authentik.svc.cluster.local:9000/outpost.goauthentik.io/auth/traefik
+    trustForwardHeader: true            # keeps redirects on https://school.vanderloch.com
+    authResponseHeadersRegex: "^X-authentik.*"
+                                        # copies outpost identity headers onto the request
+                                        # AND strips client-supplied spoofs first
+---
+# Static marker stamped by the edge; the app strips X-authentik-* from any
+# request lacking it (frontend/src/middleware.ts) — closes the port-forward /
+# direct-pod spoofing path.
+# Generate:  openssl rand -hex 32   → put the SAME hex here AND in the secret:
+#   kubectl -n auto-school patch secret auto-school-env \
+#     -p '{"stringData":{"EDGE_SECRET":"<hex>"}}'
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: auto-school-edge-marker
+  namespace: auto-school
+spec:
+  headers:
+    customRequestHeaders:
+      X-Edge-Secret: "REPLACE_WITH_same_hex_as_secret"
+---
+# STEP 3 — chain both in deploy/k8s/auto-school-ingress.yaml:
+#   middlewares:
+#     - name: authentik-forwardauth
+#     - name: auto-school-edge-marker
+#
+# NOTE — while you're in that file: the /outpost.goauthentik.io/ route points
+# at `authentik-outpost` (bare name = auto-school ns, which doesn't exist).
+# Point it at the embedded outpost cross-namespace instead:
+#   services:
+#     - name: ak-outpost-authentik-embedded-outpost.authentik.svc.cluster.local
+#       port: 9000
+#
+# AUTHENTIK UI CHECKLIST (walkthrough in chat):
+# 1. Provider mode = Forward auth (single application), cookie domain EMPTY.
+# 2. Default scope mappings present (openid, ak_proxy, email, profile).
+# 3. Optional: group `auto-school-admins` with lochis → admin badge in navbar.
+#
+# VERIFY:
+#   kubectl -n auto-school rollout restart deploy/auto-school
+#   # browser login, then:
+#   curl -s https://school.vanderloch.com/api/me | jq
+#     → { "authenticated": true, "user": { "uid": "...", "username": "lochis", ... } }
+#   # spoof check (direct pod, no edge marker) — identity must vanish:
+#   kubectl -n auto-school port-forward deploy/auto-school 3000:3000
+#   curl -s -H 'X-Authentik-Uid: fake' -H 'X-Authentik-Username: fake' localhost:3000/api/me | jq
+#     → { "authenticated": false, "user": null }
