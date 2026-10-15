@@ -52,11 +52,16 @@ export default function CalendarList({ events, asOf }: { events: CalEvent[]; asO
     .filter((d) => new Date(d) >= new Date(now.toDateString())) // today and later only
     .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
 
-  // the one meeting the daemon will auto-join next (skip already-handled titles)
-  const handled = new Set(status?.handled ?? []);
+  // the one meeting the daemon will auto-join next. `handled` is day-scoped
+  // server-side ("<event day>|<title>") — a recurring title handled on Tuesday
+  // must not suppress Thursday's occurrence (that aimed the target at Friday).
+  // Bare-title entries (older backend) stay plain-title matches.
+  const handledKeys = new Set(status?.handled ?? []);
+  const isHandled = (e: CalEvent): boolean =>
+    handledKeys.has(`${new Date(e.start).toDateString()}|${e.title}`) || handledKeys.has(e.title);
   const targetTitle = !status?.joinPaused
     ? events
-        .filter((e) => e.online && !handled.has(e.title) && new Date(e.end).getTime() > now.getTime())
+        .filter((e) => e.online && !isHandled(e) && new Date(e.end).getTime() > now.getTime())
         .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())[0]?.title
     : undefined;
 

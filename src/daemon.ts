@@ -16,7 +16,8 @@ import { Readable } from "node:stream";
 import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import archiver from "archiver";
 import { join, dirname } from "node:path";
-import { getBrowser, invalidateBrowser, closeBrowser, authAlive, lastLoginFailedAt } from "./meetings/browser.ts";
+import { TEAMS_URL } from "./login/teams-login.ts";
+import { getBrowser, invalidateBrowser, closeBrowser, authAlive, isSharedPage, lastLoginFailedAt } from "./meetings/browser.ts";
 import { listMeetings } from "./meetings/list.ts";
 import { joinMeeting, joinMeetingByUrl } from "./meetings/join.ts";
 import { listTodayMeetings } from "./graph/meetings.ts";
@@ -55,7 +56,15 @@ function hasGraphToken(): boolean {
   return existsSync(graphTokenFile);
 }
 
+// handled is DAY-SCOPED ("<event day>|<title>"): a title given up on Tuesday
+// must not suppress Thursday's occurrence of the same recurring class (that
+// made nextActionable skip straight to Friday and killed the whole day).
+const handledKey = (title: string, startMs: number = Date.now()): string =>
+  `${new Date(startMs).toDateString()}|${title}`;
 const handled = new Set<string>();
+/** per-title count of EARLY call drops this process — bounds the auto-rejoin
+ *  loop (a permanently dead room can't ping-pong the bot until e.end) */
+const rejoinCounts = new Map<string, number>();
 let state = "idle"; // "idle" | "attending: <title>" | "error"
 let lastScan: string | null = null;
 let lastSeen = 0;
@@ -317,12 +326,14 @@ async function buildSchedule(): Promise<Sched[]> {
   return schedule;
 }
 
-/** next event whose join window (start - JOIN_EARLY) has arrived and isn't done */
+/** next event whose join window (start - JOIN_EARLY) has arrived and isn't done.
+ *  NO attendedToday check: a mid-class call drop must REJOIN until e.end
+ *  (the 15-min-leave failure mode) — only an explicit /leave or the bounded
+ *  give-up/rejoin guards add a day-scoped handled key. */
 function nextActionable(): Sched | null {
   const now = Date.now();
   return schedule.find((e) =>
-    now >= e.start - joinEarlyMs() && now < e.end && !handled.has(e.title)
-    && !attendedToday().includes(e.title) // one session per title per day — no auto-rejoin (manual /join recovers)
+    now >= e.start - joinEarlyMs() && now < e.end && !handled.has(handledKey(e.title, e.start))
   ) ?? null;
 }
 
@@ -331,6 +342,9 @@ function nextActionable(): Sched | null {
  *  cap for a meeting whose UI never dies), but never sooner than 10min in
  *  (a manual join right at/after the listed end still gets a real session). */
 async function attendAndRecord(page: import("playwright").Page, title: string, joinUrl?: string, endMs?: number): Promise<void> {
+  const sessionStart = Date.now();
+  let cappedFlag = false;
+  let leaveWasRequested = false;
   active = { page, title };
   journalEntry(title, {}); // persistent attendance — survives restarts
   setActivity("in meeting — starting recorder", { meeting: title });
@@ -364,12 +378,14 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
       else misses++;
     }
     const capped = !leaveRequested && Date.now() >= hardEnd; // hit the runaway cap
+    cappedFlag = capped;
     const leftRequested = leaveRequested; // capture why this session ended (manual vs natural)
+    leaveWasRequested = leftRequested;
     if (leaveRequested) {
       pushEvent(`leave requested — wrapping up ${title}`);
       console.log("[daemon] leave requested via UI");
       recordLeftToday(title); // persist: no auto re-join for the rest of today
-      handled.add(title);
+      handled.add(handledKey(title));
       leaveRequested = false;
       // immediate webhook — consolidation/transcription continue in background
       void notify(`🚪 Left **${title}** (manual leave) — consolidating & transcribing in background`).catch(() => {});
@@ -378,8 +394,12 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
       // quick stop (~2s): stops MediaRecorder + flushes audio, then LEAVE immediately
       const handle = await quickStopRecording(page);
       if (handle) {
-        // close the browser tab NOW — leave the meeting instantly
-        await page.close().catch(() => {});
+        // leave the meeting NOW — close the tab, unless the call ended up on
+        // the SHARED calendar tab (card-click join fallback): closing that
+        // kills the singleton home page and every later join dies with
+        // "Target page, context or browser has been closed". Navigate it
+        // back to the Teams home instead.
+        await leaveMeetingPage(page);
         console.log(`[daemon] left ${title}`);
         // heavy post-processing runs in the background (no page needed)
         const { result: done, postProcess } = handle;
@@ -403,17 +423,46 @@ async function attendAndRecord(page: import("playwright").Page, title: string, j
   // Leave hit before/without recording (flag not consumed by the watch loop)
   if (leaveRequested) {
     recordLeftToday(title);
-    handled.add(title);
+    handled.add(handledKey(title));
     leaveRequested = false;
   }
-  // session complete — terminal for the day (no auto-rejoin; manual /join
-  // or the next schedule window is the recovery path)
-  handled.add(title);
+  // Did the call die EARLY (leave-marker gone long before the scheduled
+  // end — Teams reconnect glitch, professor re-hosting the call)? Then this
+  // is NOT terminal: the autopilot must rejoin until e.end. Only an explicit
+  // /leave, a natural end (window over) or an exhausted rejoin budget parks
+  // the title for the rest of the day.
+  const earlyExit = !leaveWasRequested && !cappedFlag && endMs !== undefined && Date.now() < endMs - 2 * 60_000;
+  if (earlyExit) {
+    const n = (rejoinCounts.get(title) ?? 0) + 1;
+    rejoinCounts.set(title, n);
+    if (n >= 5) {
+      handled.add(handledKey(title));
+      pushEvent(`meeting dropped early ${n}× — giving up on "${title}" until the next window`);
+      void notify(`⚠️ **${title}** keeps dropping early — gave up rejoining (manual Join is available)`).catch(() => {});
+    } else {
+      pushEvent(`meeting dropped early after ${Math.round((Date.now() - sessionStart) / 60_000)} min — autopilot will rejoin (${n}/5)`);
+    }
+  } else {
+    handled.add(handledKey(title)); // session ran its window (or /leave) — done for the day
+    rejoinCounts.delete(title); // a full session resets the drop counter
+  }
   journalEntry(title, { leftAt: Date.now() });
   active = null;
   // persistent browser: this flow OWNS the meeting page — always close it
   // (covers recording-never-started and stop-failed paths; the success path
-  // already closed it and the double-close is swallowed)
+  // already closed it and the double-close is swallowed) — but NEVER the
+  // shared home page (see leaveMeetingPage)
+  await leaveMeetingPage(page);
+}
+
+/** Close a meeting tab — or, if the call ended up living on the shared
+ *  singleton calendar page, navigate that back to the Teams home instead of
+ *  closing it (a closed singleton page poisons every future join). */
+async function leaveMeetingPage(page: import("playwright").Page): Promise<void> {
+  if (isSharedPage(page)) {
+    await page.goto(TEAMS_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+    return;
+  }
   await page.close().catch(() => {});
 }
 
@@ -527,7 +576,7 @@ async function sweepIndexes(): Promise<void> {
 function startController(): void {
   // manually-left meetings (today) are seeded into `handled` so a restart
   // doesn't auto-join them again — manual Join via /join still overrides
-  for (const t of loadLeftToday()) handled.add(t);
+  for (const t of loadLeftToday()) handled.add(handledKey(t));
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
     const send = (code: number, body: unknown) => {
@@ -711,6 +760,13 @@ function startController(): void {
           leaveRequested = false; // void any leave pressed mid-join — no session to leave
           pushEvent(`manual join failed: ${String(e).slice(0, 120)}`);
           console.warn(`[daemon] manual join failed: ${String(e).slice(0, 200)}`);
+          // browser-level failure (page/context closed under us) → recycle so
+          // the user's NEXT Join click relaunches instead of dying forever
+          if (/Target closed|Browser.*(closed|crashed)|context destroyed|Target page, context or browser has been closed/i.test(String(e))) {
+            pushEvent("browser context was closed — recycling; retry Join (fresh login if the session expired)");
+            invalidateBrowser();
+            return;
+          }
           // if the session died, recycle so the user's NEXT Join click logs in fresh
           const bb = await getBrowser().catch(() => null);
           if (bb && !active && !(await authAlive(bb.page).catch(() => true))) {
@@ -2336,7 +2392,7 @@ console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock re
           const fails = prevFails?.day === today ? prevFails.n + 1 : 1;
           joinFails.set(next.title, { n: fails, day: today });
           if (fails >= 3) {
-            handled.add(next.title);
+            handled.add(handledKey(next.title, next.start));
             pushEvent(`gave up joining "${next.title}" after ${fails} attempts`);
             void notify(`⚠️ Gave up joining **${next.title}** after ${fails} attempts — manual Join is available`).catch(() => {});
           } else {

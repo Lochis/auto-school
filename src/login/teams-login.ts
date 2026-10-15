@@ -30,7 +30,7 @@ import {
   handleUnknown,
 } from "./auth-state.ts";
 
-const TEAMS_URL = "https://teams.microsoft.com";
+export const TEAMS_URL = "https://teams.microsoft.com";
 const POLL_MS = 800;
 
 export interface LoginResult {

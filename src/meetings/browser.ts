@@ -14,7 +14,7 @@
  * invalidateBrowser() so the next getBrowser() relaunches + relogs in.
  */
 import type { BrowserContext, Page } from "playwright";
-import { loginTeams } from "../login/teams-login.ts";
+import { loginTeams, TEAMS_URL } from "../login/teams-login.ts";
 
 let cached: { ctx: BrowserContext; page: Page } | null = null;
 let inflight: Promise<{ ctx: BrowserContext; page: Page } | null> | null = null;
@@ -26,11 +26,25 @@ function alive(c: { ctx: BrowserContext }): boolean {
   try { void c.ctx.pages(); return true; } catch { return false; }
 }
 
-/** Get the shared logged-in browser (launching + logging in on first use). */
+/** Get the shared logged-in browser (launching + logging in on first use).
+ *  A closed singleton PAGE (e.g. a join flow ran the meeting on the calendar
+ *  tab and closed it) must not poison the whole context — spawn a fresh page
+ *  in the same logged-in context instead of paying a full re-login. */
 export async function getBrowser(): Promise<{ ctx: BrowserContext; page: Page } | null> {
-  if (cached && alive(cached)) return cached;
-  cached?.ctx.close().catch(() => {}); // stale context — drop it
-  cached = null;
+  if (cached && alive(cached)) {
+    if (!cached.page.isClosed()) return cached;
+    try {
+      const p = await cached.ctx.newPage();
+      await p.goto(TEAMS_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+      cached = { ctx: cached.ctx, page: p };
+      console.log("[browser] singleton page was closed — spawned a fresh one (no re-login)");
+      return cached;
+    } catch {
+      /* fall through to a full relaunch */
+    }
+    cached?.ctx.close().catch(() => {}); // page AND context unusable — drop it
+    cached = null;
+  }
   inflight ??= (async () => {
     try {
       const r = await loginTeams({ keepOpen: true });
@@ -54,6 +68,7 @@ export async function getBrowser(): Promise<{ ctx: BrowserContext; page: Page } 
  *  working browser. Same markers the login heuristic itself trusts. */
 export async function authAlive(page: Page): Promise<boolean> {
   try {
+    if (page.isClosed()) return false; // a dead page is NOT "alive" (probe errors used to mask this)
     const url = page.url();
     if (/login\.microsoftonline|\/commonauth|aka\.ms\/|authenticationendpoint/i.test(url)) return false;
     const hasForm = await page.locator('input[type="email"], input[type="password"]').first().isVisible({ timeout: 500 }).catch(() => false);
@@ -64,6 +79,13 @@ export async function authAlive(page: Page): Promise<boolean> {
   } catch {
     return true; // can't tell → assume alive
   }
+}
+
+/** Is this the shared singleton calendar/home page? Join flows must never
+ *  close it — navigate it back to the Teams home instead (see daemon's
+ *  leaveMeetingPage). */
+export function isSharedPage(page: Page): boolean {
+  return cached?.page === page;
 }
 
 /** Drop the shared context (next getBrowser() relaunches). Use on browser-level errors. */

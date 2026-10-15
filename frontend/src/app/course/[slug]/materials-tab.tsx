@@ -105,15 +105,15 @@ export default function MaterialsTab({ slug }: { slug: string }) {
   };
   useEffect(reload, [slug, showIndexed]);
 
-  const upload = async (files: FileList, subpaths?: string[]): Promise<void> => {
+  // shared POST path for every upload source (picker inputs + drag-drop)
+  const postFiles = async (files: File[], paths: string[]): Promise<void> => {
     if (!files.length) return;
     setBusy(true);
     setLoadErr("");
     try {
       const fd = new FormData();
-      for (const f of Array.from(files)) fd.append("file", f);
+      for (const f of files) fd.append("file", f);
       // per-file subpaths (folder drop → webkitRelativePath), else bare names
-      const paths = subpaths ?? Array.from(files).map((f) => f.name);
       paths.forEach((p, i) => fd.append(`path${i}`, p));
       if (week !== "") fd.append("week", String(week));
       const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials`, { method: "POST", body: fd });
@@ -130,68 +130,91 @@ export default function MaterialsTab({ slug }: { slug: string }) {
     }
   };
 
+  const upload = async (files: FileList, subpaths?: string[]): Promise<void> => {
+    if (!files.length) return;
+    await postFiles(Array.from(files), subpaths ?? Array.from(files).map((f) => f.name));
+  };
+
   const onDrop = async (e: React.DragEvent): Promise<void> => {
     e.preventDefault();
     setDragOver(false);
+    // Folders only expose structure via the (async) entries API — a plain
+    // file drop also works through it. Everything must resolve SYNCHRONOUSLY
+    // off dataTransfer.items (the browser invalidates them after dispatch).
     const items = Array.from(e.dataTransfer.items).filter((i) => i.webkitGetAsEntry?.());
+    const entriesList = items.map((i) => i.webkitGetAsEntry!()).filter(Boolean) as FileSystemEntry[];
     const files: File[] = [];
     const paths: string[] = [];
-    // resolve directory entries recursively (folder drop)
+    let walkFailed = false;
     const walk = (entry: FileSystemEntry, prefix: string, done: () => void): void => {
       if (entry.isFile) {
-        (entry as FileSystemFileEntry).file((f) => {
-          files.push(f);
-          paths.push(prefix + f.name);
-          done();
-        });
+        // error callback is MANDATORY: without it one unreadable file hangs
+        // the whole drop forever (silent no-op — no upload, no error shown)
+        (entry as FileSystemFileEntry).file(
+          (f) => {
+            files.push(f);
+            paths.push(prefix + f.name);
+            done();
+          },
+          () => {
+            walkFailed = true;
+            done();
+          },
+        );
       } else if (entry.isDirectory) {
         const reader = (entry as FileSystemDirectoryEntry).createReader();
         const readBatch = (): void => {
-          reader.readEntries(async (batch) => {
-            if (!batch.length) {
+          // readEntries returns ≤100 entries per call — loop until an empty batch
+          reader.readEntries(
+            (batch) => {
+              if (!batch.length) {
+                done();
+                return;
+              }
+              let pending = batch.length;
+              const childDone = (): void => {
+                if (--pending === 0) readBatch();
+              };
+              for (const child of batch) walk(child, `${prefix}${entry.name}/`, childDone);
+            },
+            () => {
+              walkFailed = true;
               done();
-              return;
-            }
-            let pending = batch.length;
-            const childDone = (): void => {
-              if (--pending === 0) readBatch();
-            };
-            for (const child of batch) walk(child, `${prefix}${entry.name}/`, childDone);
-          });
+            },
+          );
         };
         readBatch();
       } else done();
     };
-    const entriesList = items.map((i) => i.webkitGetAsEntry!()).filter(Boolean) as FileSystemEntry[];
     let pending = entriesList.length;
     await new Promise<void>((resolve) => {
       if (!pending) return resolve();
+      // watchdog: an entry that never resolves (browser quirk, revoked handle)
+      // must degrade to a partial upload instead of hanging silently
+      const timer = setTimeout(resolve, 30_000);
       for (const en of entriesList) {
         walk(en, "", () => {
-          if (--pending === 0) resolve();
+          if (--pending === 0) {
+            clearTimeout(timer);
+            resolve();
+          }
         });
       }
     });
     if (files.length) {
-      const fd = new FormData();
-      for (const f of files) fd.append("file", f);
-      paths.forEach((p, i) => fd.append(`path${i}`, p));
-      if (week !== "") fd.append("week", String(week));
-      setBusy(true);
-      try {
-        const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials`, { method: "POST", body: fd });
-        const j = (await r.json().catch(() => ({}))) as { error?: string };
-        if (!r.ok) setLoadErr(j.error ?? `HTTP ${r.status}`);
-        else {
-          reload();
-          router.refresh();
-        }
-      } catch {
-        setLoadErr("upload failed");
-      } finally {
-        setBusy(false);
-      }
+      await postFiles(files, paths);
+      return;
     }
+    // entries API yielded nothing (synthetic drops, some browsers/apps) —
+    // fall back to the flat file list so single/multi-file drops always work
+    const flat = Array.from(e.dataTransfer.files);
+    if (flat.length) {
+      await postFiles(flat, flat.map((f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name));
+      return;
+    }
+    setLoadErr(walkFailed || entriesList.length
+      ? "couldn't read the dropped folder — try the Pick Folder button instead"
+      : "nothing to upload");
   };
 
   const rename = async (from: string): Promise<void> => {
@@ -412,7 +435,7 @@ export default function MaterialsTab({ slug }: { slug: string }) {
               Upload
             </PrimaryButton>
             <GhostButton icon={<FolderPlusIcon className="heroicon" />} onClick={() => folderRef.current?.click()} disabled={busy} title="pick a whole folder — subpaths are preserved">
-              New Folder
+              Pick Folder
             </GhostButton>
             {busy && <span className="muted">working…</span>}
           </div>
