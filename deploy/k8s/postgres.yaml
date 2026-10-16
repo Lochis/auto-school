@@ -1,0 +1,94 @@
+# Plain single-instance Postgres 17 + pgvector for auto-school.
+# Decision 2026-10 (plan §5): no CNPG — one pod, one Longhorn PVC, cloudreve pattern.
+# Recordings stay on the app PVC (auto-school-data); this holds metadata + embeddings only.
+#
+# Bootstrapping (no creds in git):
+#   kubectl -n auto-school create secret generic auto-school-pg \
+#     --from-literal=PGUSER=autoschool \
+#     --from-literal=PGPASSWORD="$(openssl rand -hex 24)"
+#   kubectl -n auto-school apply -f postgres.yaml
+#
+# Extensions (vector, pg_trgm) are created by the first drizzle migration, not here.
+# The app Deployment consumes: envFrom secretRef auto-school-pg + PGHOST/PGDATABASE env vars.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: auto-school-pgdata
+  namespace: auto-school
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auto-school-pg
+  namespace: auto-school
+  labels:
+    app: auto-school-pg
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO PVC — a rolling update would deadlock on the old mount
+  selector:
+    matchLabels:
+      app: auto-school-pg
+  template:
+    metadata:
+      labels:
+        app: auto-school-pg
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg17
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: auto-school-pg
+          env:
+            - name: POSTGRES_DB
+              value: autoschool
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: auto-school-pg, key: PGUSER }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: auto-school-pg, key: PGPASSWORD }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: auto-school-pg-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-school-pg
+  namespace: auto-school
+spec:
+  selector:
+    app: auto-school-pg
+  ports:
+    - port: 5432
+      targetPort: 5432
