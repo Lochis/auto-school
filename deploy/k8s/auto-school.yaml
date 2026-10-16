@@ -76,6 +76,10 @@ metadata:
 spec:
   replicas: 1
   strategy: { type: Recreate } # RWO PVC + profile lock — never two pods
+  # Pin to one node: image is ~2.9GB; Recreate + free scheduling kept landing cold
+  # nodes (full multi-minute ghcr re-pull each rollout). Cache accumulates here.
+  # If migrating: pre-seed the new node first (ctr -n k8s.io images import).
+  nodeSelector: { kubernetes.io/hostname: k3s-worker-02 }
   selector:
     matchLabels:
       app: auto-school
