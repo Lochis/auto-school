@@ -1,0 +1,203 @@
+%% auto-school — PostgreSQL migration architecture (branch plan/postgres-migration)
+%% Companion to docs/planning/postgres-migration.md
+%% draw.io: Extras > Insert > Advanced > Mermaid — paste ONE diagram at a time
+%% (the %% separators below just split the pages; mermaid CLI users can split on them).
+
+%% ============================ PAGE 1 — ER DIAGRAM ============================
+
+erDiagram
+    users ||--o{ courses : owns
+    users ||--o{ meeting_mappings : manages
+    users ||--o{ sessions : owns
+    users ||--o{ deadlines : owns
+    courses ||--o{ meeting_mappings : resolves
+    courses ||--o{ sessions : has
+    courses ||--o{ documents : has
+    courses ||--o{ deadlines : has
+    sessions ||--o{ session_artifacts : produces
+    sessions ||--o{ transcript_segments : produces
+    sessions ||--o{ documents : backfills
+    documents ||--o{ document_chunks : chunked_into
+    deadlines ||--o{ deadline_parts : has
+    deadlines ||--o{ deadline_folds : parent_of
+    deadlines ||--o{ deadline_folds : child_of
+    deadlines ||--o{ checklist_items : has
+
+    users {
+        uuid id PK
+        text authentik_sub UK
+        text email
+        text role
+    }
+    courses {
+        bigint id PK
+        text slug UK
+        text name
+        text code
+        text icon
+        date semester_start
+        uuid owner_user_id FK
+    }
+    meeting_mappings {
+        bigint id PK
+        text match_title UK
+        text norm_title
+        bigint course_id FK
+        text source
+    }
+    sessions {
+        bigint id PK
+        bigint course_id FK
+        text stem
+        date session_date
+        time start_time
+        text title
+        text join_url
+        text stage
+        text stage_note
+        numeric duration_sec
+        uuid owner_user_id FK
+    }
+    session_artifacts {
+        bigint id PK
+        bigint session_id FK
+        text kind
+        text storage_uri
+        text rel_path
+        bigint bytes
+        text checksum
+        text content
+        timestamptz retained_until
+        timestamptz deleted_at
+    }
+    transcript_segments {
+        bigint id PK
+        bigint session_id FK
+        int seg_index
+        int offset_sec
+        text transcript
+        jsonb visual_notes
+    }
+    documents {
+        bigint id PK
+        bigint course_id FK
+        bigint session_id FK
+        text kind
+        text rel_path
+        text filename
+        int week
+        text category
+        bigint size_bytes
+        text checksum
+        timestamptz indexed_at
+    }
+    document_chunks {
+        bigint id PK
+        bigint document_id FK
+        int page
+        int chunk_index
+        text content
+        vector embedding
+        text embedding_model
+    }
+    deadlines {
+        bigint id PK
+        text legacy_id
+        bigint course_id FK
+        text title
+        date due
+        boolean due_manual
+        boolean spread
+        text confidence
+        boolean done
+        uuid owner_user_id FK
+    }
+    deadline_parts {
+        bigint id PK
+        bigint deadline_id FK
+        text title
+        date due
+        boolean done
+    }
+    deadline_folds {
+        bigint id PK
+        bigint parent_id FK
+        bigint child_id FK
+        bigint chosen_parent_id FK
+        text status
+        jsonb added_item_ids
+        jsonb child_snapshot
+    }
+    checklist_items {
+        bigint id PK
+        bigint deadline_id FK
+        text legacy_key
+        text item_text
+        boolean done
+        boolean manual
+        int position
+    }
+    activity_events {
+        bigint id PK
+        timestamptz ts
+        text msg
+    }
+    app_settings {
+        text key PK
+        jsonb value
+    }
+
+%% ======================= PAGE 2 — TARGET DATA FLOW ==========================
+
+flowchart LR
+    subgraph K8S["k3s homelab - CloudNativePG"]
+        subgraph DAEMON["auto-school daemon :7800"]
+            REC["Recorder segments/*.webm"] --> SEG["segment.ts batch Gemini + audio"]
+            SEG --> TLJ["out/timeline.jsonl crash journal"]
+            SEG --> TSEG[("transcript_segments")]
+            SEG --> NOTES["notes.ts fold + finalize"]
+            NOTES --> ART[("session_artifacts notes md, timeline")]
+            REC --> CONS["consolidate.ts webm stream-copy"]
+            CONS --> BLOB["Blob storage recordings/ PVC now, S3/MinIO later"]
+            CONS --> ART
+            CAL["calendar scan"] --> MAP[("meeting_mappings")]
+            MAP --> REC
+            SEG --> PIPE[("sessions stage updates")]
+            NOTES --> PIPE
+            CONS --> PIPE
+            RET["retention job retained_until / deleted_at"] --> BLOB
+            RET --> ART
+            MAT["materials upload courses/<slug>/materials"] --> DOCS[("documents")]
+            MAT --> PAGES[".index page bundles pdftotext, pdftoppm"]
+            PAGES --> EMB["embedding backfill materials, notes, transcripts"]
+            EMB --> CHUNKS[("document_chunks pgvector HNSW")]
+            DL["deadline rebuild daemon routes"] --> DLT[("deadlines, folds, checklist_items")]
+        end
+
+        PG[("PostgreSQL 17 + pgvector CloudNativePG Cluster")]
+        PITR["Barman backups S3/MinIO PITR"]
+
+        subgraph FE["Next.js frontend :3000"]
+            UI["Courses / sessions / notes server components"]
+            CHAT["Course chat semantic_search + read_document"]
+            MEDIA["Media player HTTP Range"]
+        end
+
+        AUTH["Authentik OIDC users.id owner_user_id"]
+    end
+
+    TSEG --> PG
+    ART --> PG
+    PIPE --> PG
+    MAP --> PG
+    CHUNKS --> PG
+    DOCS --> PG
+    DLT --> PG
+    PG --> PITR
+    BLOB --> MEDIA
+    PG --> UI
+    PG --> CHAT
+    PAGES --> CHAT
+    AUTH --> UI
+    AUTH --> CHAT
+    AUTH --> PG

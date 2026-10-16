@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { courses, sessions, DATA_DIR, type Session } from "@/lib/data";
+import { listCourses, listSessions, semesterStartOf } from "@/lib/backend";
+import type { Session } from "@/lib/data";
 import SessionCard from "./session-card";
 import LazyNotes from "./lazy-notes";
 import MaterialsTab from "./materials-tab";
@@ -23,12 +22,6 @@ function weekOf(dstr: string, start: string): number {
   const a = Date.parse(`${weekMonday(dstr)}T00:00:00Z`), b = Date.parse(`${weekMonday(start)}T00:00:00Z`);
   return Math.max(1, Math.floor((a - b) / 604_800_000) + 1);
 }
-function semesterStart(slug: string): string | null {
-  try {
-    const cfg = JSON.parse(readFileSync(join(DATA_DIR, "courses", slug, "course.json"), "utf8"));
-    return typeof cfg.semesterStart === "string" ? cfg.semesterStart : null;
-  } catch { return null; }
-}
 
 /** Week (or month, when no semester anchor exists) grouping for the list. */
 interface Group { key: string; title: string; label: string | null; current: boolean; sessions: Session[] }
@@ -36,14 +29,14 @@ interface Group { key: string; title: string; label: string | null; current: boo
 export default async function CoursePage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ tab?: string; prompt?: string }> }) {
   const { slug } = await params;
   const { tab, prompt } = await searchParams;
-  if (!courses().includes(slug)) notFound();
-  const all = courses(); // for the session move-to dropdown
-  const list = sessions(slug);
+  const all = await listCourses(); // for the session move-to dropdown
+  if (!all.includes(slug)) notFound();
+  const list = await listSessions(slug);
   const showMaterials = tab === "materials";
   const showAsk = tab === "ask";
   const activeTab = showMaterials ? "materials" : showAsk ? "ask" : "sessions";
 
-  const start = semesterStart(slug);
+  const start = await semesterStartOf(slug);
   const today = new Date().toISOString().slice(0, 10);
   const groups: Group[] = [];
 

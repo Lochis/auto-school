@@ -141,6 +141,16 @@ spec:
             - name: EDGE_SECRET
               valueFrom:
                 secretKeyRef: { name: auto-school-env, key: EDGE_SECRET, optional: true }
+            # PostgreSQL reads (plan/postgres-migration): DB_READS=1 switches the
+            # frontend data APIs from fs scans to PG queries (fs stays fallback-safe:
+            # unset → byte-identical legacy behavior). Creds come from auto-school-pg
+            # secret (PGUSER/PGPASSWORD); host/db point at the in-cluster PG.
+            - { name: DB_READS, value: "1" }
+            - { name: PGHOST, value: auto-school-pg }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: autoschool }
+          envFrom:
+            - secretRef: { name: auto-school-pg }
           ports:
             - { containerPort: 3000, name: http }
           readinessProbe:

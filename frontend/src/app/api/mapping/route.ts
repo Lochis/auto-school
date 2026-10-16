@@ -5,11 +5,14 @@
  *  DELETE ?title= → remove one mapping */
 import { NextResponse } from "next/server";
 import { candidateTitles, folders, readMapping } from "@/lib/mapping";
+import { dbReads, mappingSnap } from "@/lib/backend";
+import * as db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET() {
+  if (dbReads()) return NextResponse.json(await db.mappingSnap());
   const mapping = readMapping();
   return NextResponse.json({ mapping, folders: folders(), candidates: candidateTitles(mapping) });
 }
