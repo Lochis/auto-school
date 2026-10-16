@@ -139,7 +139,7 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "list_sessions",
-      description: "List recorded class sessions for the course (date, which artifacts exist: recording/transcript/notes/timeline).",
+      description: "List recorded class sessions for the course (date, display name if the student titled one, which artifacts exist: recording/transcript/notes/timeline).",
       parameters: { type: "object", properties: { course: COURSE_PARAM }, required: [] },
     },
   },
@@ -147,10 +147,10 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "read_notes",
-      description: "Read session notes / running notes / transcript for a session date. Omit date for the most recent session.",
+      description: "Read session notes / running notes / transcript for a session. 'date' is the YYYY-MM-DD from list_sessions, or part of a session's display name.",
       parameters: {
         type: "object",
-        properties: { course: COURSE_PARAM, date: { type: "string", description: "YYYY-MM-DD from list_sessions" }, kind: { type: "string", description: "notes | running | transcript (default notes)" } },
+        properties: { course: COURSE_PARAM, date: { type: "string", description: "YYYY-MM-DD or (part of) the session name" }, kind: { type: "string", description: "notes | running | transcript (default notes)" } },
         required: [],
       },
     },
@@ -171,9 +171,9 @@ export const TOOL_DEFS_WITH_WEB = [...TOOL_DEFS, ...WEB_TOOL_DEFS];
 
 /** Scan the notes + recordings dirs (NOT sessions.json — the journal only
  *  tracks recordings, and pruned/failed sessions would vanish from chat). */
-export function scanCourseSessions(slug: string): { stem: string; recording?: string; notes?: string; running?: string; transcript?: string; timeline?: string }[] {
-  const out = new Map<string, { stem: string; recording?: string; notes?: string; running?: string; transcript?: string; timeline?: string }>();
-  const add = (stem: string, patch: Partial<{ recording: string; notes: string; running: string; transcript: string; timeline: string }>) => {
+export function scanCourseSessions(slug: string): { stem: string; title?: string; recording?: string; notes?: string; running?: string; transcript?: string; timeline?: string }[] {
+  const out = new Map<string, { stem: string; title?: string; recording?: string; notes?: string; running?: string; transcript?: string; timeline?: string }>();
+  const add = (stem: string, patch: Partial<{ title: string; recording: string; notes: string; running: string; transcript: string; timeline: string }>) => {
     const s = out.get(stem) ?? { stem };
     out.set(stem, { ...s, ...patch });
   };
@@ -186,6 +186,13 @@ export function scanCourseSessions(slug: string): { stem: string; recording?: st
     for (const f of readdirSync(join(NOTES_DIR, slug))) {
       const m = f.match(/^(.+)__(notes|running|transcript|timeline)\.(md|json)$/);
       if (m) add(m[1]!, { ...(m[2] === "notes" ? { notes: f } : m[2] === "running" ? { running: f } : m[2] === "transcript" ? { transcript: f } : { timeline: f }) });
+      // user-given display name (ingest "Title" field) — chat matches on it
+      if (f.endsWith("__title.txt")) {
+        try {
+          const t = readFileSync(join(NOTES_DIR, slug, f), "utf8").trim();
+          if (t) add(f.replace(/__title\.txt$/, ""), { title: t });
+        } catch { /* unreadable */ }
+      }
     }
   } catch { /* none */ }
   return [...out.values()].sort((a, b) => b.stem.localeCompare(a.stem));
@@ -274,7 +281,7 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
         lines.push(sess.length
           ? sess.map((s) => {
               const what = [s.recording && "recording", s.transcript && "transcript", s.notes && "notes", s.timeline && "timeline"].filter(Boolean).join(", ");
-              return `- session ${s.stem} (${what})`;
+              return `- session ${s.stem}${s.title ? ` — “${s.title}”` : ""} (${what})`;
             }).join("\n")
           : "- no recorded session in this week");
         lines.push(mats.length
@@ -363,7 +370,7 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
       if (!sess.length) return "no recorded sessions";
       return sess.map((s) => {
         const what = [s.recording && "recording", s.transcript && "transcript", s.notes && "notes", s.timeline && "timeline"].filter(Boolean).join(", ");
-        return `- ${s.stem} (${what})`;
+        return `- ${s.stem}${s.title ? ` — “${s.title}”` : ""} (${what})`;
       }).join("\n");
     }
     case "read_notes": {
@@ -371,7 +378,10 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
       if (!sess.length) return "no sessions";
       const kind = String(args.kind ?? "notes") as "notes" | "running" | "transcript";
       const want = String(args.date ?? "");
-      const hit = want ? sess.find((s) => s.stem.startsWith(want)) : sess[0]!;
+      // stem-date match first; else a display-name match ("the git workshop")
+      const hit = want
+        ? sess.find((s) => s.stem.startsWith(want)) ?? sess.find((s) => s.title?.toLowerCase().includes(want.toLowerCase()))
+        : sess[0]!;
       const file = hit && (kind === "running" ? hit.running : kind === "transcript" ? hit.transcript : hit.notes);
       if (!file) return `no ${kind} for ${want || hit?.stem || "latest"} (available: notes=${!!hit?.notes}, running=${!!hit?.running}, transcript=${!!hit?.transcript})`;
       return readFileSync(join(NOTES_DIR, slug, file), "utf8").slice(0, 20_000);
@@ -386,7 +396,7 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
             const txt = readFileSync(join(NOTES_DIR, slug, f), "utf8");
             if (txt.toLowerCase().includes(q)) {
               const idx = txt.toLowerCase().indexOf(q);
-              hits.push(`- ${s.stem} (${f.endsWith(".json") ? "timeline" : "transcript"}): …${txt.slice(Math.max(0, idx - 150), idx + 350).replace(/\s+/g, " ")}…`);
+              hits.push(`- ${s.stem}${s.title ? ` — “${s.title}”` : ""} (${f.endsWith(".json") ? "timeline" : "transcript"}): …${txt.slice(Math.max(0, idx - 150), idx + 350).replace(/\s+/g, " ")}…`);
             }
           } catch { /* gone */ }
         }

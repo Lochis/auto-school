@@ -35,5 +35,13 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // CAUTION: keep the streaming upload proxies OUT of the matcher. Next 15.5
+  // buffers every request body routed through middleware and caps it at 10MB
+  // (middlewareClientMaxBodySize) — a lecture-sized video got silently
+  // truncated to its first 10MB and the daemon answered "file and course
+  // required". Safe to skip here: neither route reads X-authentik-* headers
+  // (only /api/me* do), so there is nothing to strip.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|api/ingest|api/courses/[^/]+/materials).*)",
+  ],
 };

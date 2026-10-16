@@ -258,6 +258,19 @@
 .sess-card-date:hover { color: var(--primary); text-decoration-color: var(--primary); }
 .sess-card-date .heroicon { color: var(--outline); }
 .sess-card-date:hover .heroicon { color: var(--primary); }
+.sess-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--on-surface-variant);
+  background: var(--surface-variant);
+  border: 1px solid var(--outline-variant);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
 .sess-status {
   display: flex;
   align-items: center;

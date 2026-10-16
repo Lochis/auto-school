@@ -30,6 +30,8 @@ export interface Session {
   hasTimeline: boolean;
   /** Teams meeting join URL for this session (if known) */
   joinUrl?: string;
+  /** user-given display name (ingest "Title" — notes/<course>/<stem>__title.txt) */
+  title?: string;
 }
 
 /** joinUrls recorded by the live pipeline (out/sessions.json) — map from
@@ -121,6 +123,12 @@ export function sessions(course: string): Session[] {
         add(stem, { notes: `notes/${course}/${f}`, time: timeFromStem(stem) ?? `${hh}:${mm}` });
       }
       if (f.endsWith("__transcript.md")) add(f.replace(/__transcript\.md$/, ""), { transcript: `notes/${course}/${f}` });
+      if (f.endsWith("__title.txt")) {
+        try {
+          const t = readFileSync(join(DATA_DIR, "notes", course, f), "utf8").trim();
+          if (t) add(f.replace(/__title\.txt$/, ""), { title: t.slice(0, 80) });
+        } catch { /* unreadable */ }
+      }
       if (f.endsWith("__timeline.json")) {
         let n: number | undefined;
         try { n = JSON.parse(readFileSync(join(DATA_DIR, "notes", course, f), "utf8")).length; } catch { /* unreadable */ }

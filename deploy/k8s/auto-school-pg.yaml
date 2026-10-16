@@ -1,0 +1,106 @@
+# Postgres + pgvector for auto-school (modeled on quickticket/postgres-dev.yaml,
+# which has been running cleanly on this cluster).
+#
+# History: the original ad-hoc `kubectl apply` used PVC `auto-school-pg-data`,
+# which was deleted 2 min after creation (Oct 13) and deadlocked in
+# Terminating — pvc-protection kept it because the deployment's pod referenced
+# it, and the pod could never start because the PVC was terminating. Fix: a
+# FRESH claim name (auto-school-pgdata) below; the stuck PVC must be cleaned
+# up separately (see the header comment in deploy/k8s/ or the README).
+#
+# The secret `auto-school-pg` (PGUSER / PGPASSWORD) already exists in the
+# namespace and is reused as-is.
+#
+# Apply: kubectl apply -f auto-school-pg.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auto-school-pg
+  namespace: auto-school
+  labels:
+    app: auto-school-pg
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO longhorn volume — never two pods on one claim
+  selector:
+    matchLabels:
+      app: auto-school-pg
+  template:
+    metadata:
+      labels:
+        app: auto-school-pg
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg17 # postgres 17 + the vector extension preinstalled
+          ports:
+            - containerPort: 5432
+              name: pg
+          env:
+            - name: POSTGRES_DB
+              value: "autoschool"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: auto-school-pg
+                  key: PGUSER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: auto-school-pg
+                  key: PGPASSWORD
+            # subdirectory under the mount — longhorn volumes contain
+            # lost+found at the root which breaks initdb
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: auto-school-pgdata # fresh name — the old auto-school-pg-data is deadlocked
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-school-pg
+  namespace: auto-school
+spec:
+  selector:
+    app: auto-school-pg
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: pg
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: auto-school-pgdata
+  namespace: auto-school
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 10Gi

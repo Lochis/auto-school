@@ -81,6 +81,9 @@ export default function SessionCard({ session, course, courses = [] }: { session
           <Link className="sess-card-date" href={`/course/${course}/session/${session.stem}`}>
             {session.date}{session.time ? ` · ${t12(session.time)}` : ""} <ArrowUpRightIcon className="heroicon" />
           </Link>
+          {session.title && (
+            <span className="sess-title" title="recording name (set at ingest)">{session.title}</span>
+          )}
           {session.joinUrl && (
             <a className="sess-meeting" href={session.joinUrl} target="_blank" rel="noreferrer" title="Open this meeting in Teams">
               <LinkIcon className="heroicon" /> meeting

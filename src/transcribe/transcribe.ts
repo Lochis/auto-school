@@ -49,7 +49,11 @@ const REQ_BYTES_CAP = 14 * 1024 * 1024; // stay clear of the 20MB inline ceiling
 
 const fmtMs = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 
-/** Transcribe a batch of clips in ONE request; returns text per chunk index. */
+/** Transcribe a batch of clips in ONE request; returns text per chunk index.
+ *  Self-healing: dense batches can blow the model's output ceiling and come
+ *  back cut off mid-JSON or with clips missing — on any malformed/incomplete
+ *  response the batch bisects and each half retries (down to 1 clip per
+ *  request, which is far under any output limit). */
 async function transcribeBatch(files: string[], offsets: number[]): Promise<Map<number, string>> {
   const parts: any[] = [];
   for (let i = 0; i < files.length; i++) {
@@ -63,16 +67,25 @@ async function transcribeBatch(files: string[], offsets: number[]): Promise<Map<
       `Output ONLY a JSON array, one object per clip in order: ` +
       `[{"idx": <clip number>, "transcript": "..."}]. ` +
       `No preamble, no timestamps inside the transcript; use 'Speaker A:' prefixes only if multiple speakers are obvious. ` +
-      `If a clip has no speech, use an empty string.`,
+      `If a clip has no speech, use an empty string. Return an object for EVERY clip, ${files.length} in total.`,
   });
   const raw = await geminiCall(parts, { json: true });
   const out = new Map<number, string>();
   try {
     const m = raw.match(/\[[\s\S]*\]/); // tolerate prose wrappers
     const parsed = JSON.parse(m ? m[0] : raw);
-    for (const p of parsed) out.set(p.idx, String(p.transcript ?? "").trim());
-  } catch {
-    throw new Error(`unparseable transcript batch response: ${raw.slice(0, 120)}`);
+    if (!Array.isArray(parsed)) throw new Error("response is not a JSON array");
+    for (const p of parsed) out.set(Number(p.idx), String(p.transcript ?? "").trim());
+    // completeness: every clip must be answered (truncation can otherwise
+    // parse fine while silently dropping the tail clips)
+    for (let i = 1; i <= files.length; i++) if (!out.has(i)) throw new Error(`no answer for clip ${i}`);
+  } catch (e) {
+    if (files.length === 1) throw new Error(`unparseable transcript batch response: ${raw.slice(0, 120)}`);
+    pushEvent(`transcribe: batch of ${files.length} clips came back malformed (${String(e).slice(0, 60)}) — splitting and retrying`);
+    const mid = Math.ceil(files.length / 2);
+    const first = await transcribeBatch(files.slice(0, mid), offsets.slice(0, mid));
+    const second = await transcribeBatch(files.slice(mid), offsets.slice(mid));
+    return new Map([...first, ...second]);
   }
   return out;
 }

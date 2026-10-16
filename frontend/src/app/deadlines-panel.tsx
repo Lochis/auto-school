@@ -625,7 +625,10 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
             <CodeChip title={it.course}>{courseCode(it.course)}</CodeChip>
           </Link>
           <span className="tabular" style={{ fontSize: "0.6875rem", color: "var(--secondary)" }}>
-            Start: {it.startBy ?? "anytime"}
+            {it.startBy ? <>Start: {it.startBy}</> : null}
+            {it.startBy && it.due ? " · " : null}
+            {it.due ? <>Due: {dueChipLabel(it.due)}</> : null}
+            {!it.startBy && !it.due ? "anytime" : null}
           </span>
           <input
             type="checkbox"
@@ -696,9 +699,17 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
   };
 
   const winText = `${fmtWindow(new Date())} — ${fmtWindow(new Date(Date.now() + 6 * 86_400_000))}`;
-  // milestone cards: every open spread-out item, even when it also carries a
-  // hard due date (those still show as dated rows in the tabs above)
-  const milestones = f(open.filter((i) => i.spread || i.startBy));
+  // milestone cards: spread-out items whose horizon is MORE than a week out.
+  // Horizon = due date (startBy as fallback); undated items always qualify.
+  // Near-term spread items (due ≤7d, or startBy ≤7d) are already surfaced as
+  // dated rows / This Week — "spreading out" a 3-day deadline is noise, and
+  // duplicating them here put Oct-18 items in both Immediate and Milestones.
+  const isMilestone = (i: DeadEntry): boolean => {
+    if (!i.spread && !i.startBy) return false;
+    const horizon = i.due ?? i.startBy;
+    return horizon == null || daysUntil(horizon) > 7;
+  };
+  const milestones = f(open.filter(isMilestone));
 
   return (
     <>

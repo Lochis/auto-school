@@ -662,7 +662,7 @@ function startController(): void {
             mkdirSync(toN, { recursive: true });
             try {
               for (const f of readdirSync(fromN)) {
-                if (["__notes.md", "__running.md", "__timeline.json", "__transcript.md"].some((s) => f === `${base}${s}`)) { renameSync(join(fromN, f), join(toN, f)); moved++; }
+                if (["__notes.md", "__running.md", "__timeline.json", "__transcript.md", "__title.txt"].some((s) => f === `${base}${s}`)) { renameSync(join(fromN, f), join(toN, f)); moved++; }
               }
             } catch { /* dir absent */ }
           }
@@ -703,7 +703,7 @@ function startController(): void {
         const ndir = join(NOTES_DIR, course);
         try {
           for (const f of readdirSync(ndir)) {
-            if (["__notes.md", "__running.md", "__timeline.json", "__transcript.md"].some((s) => f === `${base}${s}`)) rm(join(ndir, f));
+            if (["__notes.md", "__running.md", "__timeline.json", "__transcript.md", "__title.txt"].some((s) => f === `${base}${s}`)) rm(join(ndir, f));
           }
         } catch { /* dir absent */ }
       }
@@ -802,7 +802,13 @@ function startController(): void {
           const t = await transcribeFile(mp4);
           const realFile = mp4.split(/[\\/]/).pop()!;
           const realStem = realFile.replace(/\.(mp4|webm)$/, "");
-          const title = realStem.replace(/^\d{4}-\d{2}-\d{2}__/, "").replace(/__T?\d{6}$/, "").replace(/_/g, " ");
+          let title = realStem.replace(/^\d{4}-\d{2}-\d{2}__/, "").replace(/__T?\d{6}$/, "").replace(/_/g, " ");
+          // ingested recordings may carry a user-given name (sidecar) — it
+          // wins over the stem-derived title so workshops etc. show their name
+          try {
+            const nt = readFileSync(join(NOTES_DIR, course, `${realStem}__title.txt`), "utf8").trim();
+            if (nt) title = nt;
+          } catch { /* no name sidecar */ }
           // file under the course the USER clicked — never re-parse the title
           // (a filename-derived title files under a bogus slug like
           // testing_autoschool_180137)
@@ -917,6 +923,9 @@ function startController(): void {
         const field = (n: string): string => parts.find((x) => x.name === n)?.text ?? "";
         const file = { name: fileP?.filename };
         const course = field("course").replace(/[^\w -]/g, "").trim().replace(/\s+/g, "_");
+        // optional display name (e.g. "Git workshop") — stored as a sidecar
+        // so sessions/chat can reference the recording by name, not just stem
+        const name = field("name").replace(/[\\/\u0000-\u001f]/g, "").replace(/\s+/g, " ").trim().slice(0, 80);
         if (!file?.name || !course) {
           for (const p of parts) if (p.path) discardPart(p.path);
           return send(400, { error: "file and course required" });
@@ -965,16 +974,17 @@ function startController(): void {
 
         // move the streamed temp files into place (no RAM copies)
         placePart(fileP!.path!, join(rdir, mp4name));
+        if (name) writeFileSync(join(NOTES_DIR, course, `${stem}__title.txt`), name);
         let wroteTranscript = false;
         if (tfileP) {
           const txt = (await import("node:fs/promises")).readFile(tfileP.path!, "utf8");
           writeFileSync(join(NOTES_DIR, course, `${stem}__transcript.md`),
-            `# Transcript — ${course.replace(/_/g, " ")} (${date})\n\n${await txt}`);
+            `# ${name || "Transcript"}${name ? " — transcript" : ""} — ${course.replace(/_/g, " ")} (${date})\n\n${await txt}`);
           discardPart(tfileP.path!);
           wroteTranscript = true;
         }
-        pushEvent(`ingest: ${mp4name} (${((fileP?.bytes ?? 0) / 1e6).toFixed(0)} MB)${wroteTranscript ? " + uploaded transcript" : ""}`);
-        return send(200, { ok: true, mp4: mp4name, stem, date, course, transcript: wroteTranscript });
+        pushEvent(`ingest: ${mp4name}${name ? ` — "${name}"` : ""} (${((fileP?.bytes ?? 0) / 1e6).toFixed(0)} MB)${wroteTranscript ? " + uploaded transcript" : ""}`);
+        return send(200, { ok: true, mp4: mp4name, stem, date, course, ...(name ? { name } : {}), transcript: wroteTranscript });
       } catch (e) { return send(500, { error: `ingest failed: ${String(e).slice(0, 120)}` }); }
     }
     // ── material download: one file streamed, many files/folders zipped ──
@@ -2169,6 +2179,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
 Start broad: list_deadlines, week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
+Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date' (e.g. "the git workshop").
 Read enough of the actual materials to answer concretely — never guess what a file contains. CITATIONS: every file you reference in your answer MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link. Cite each file at first mention; never invent or shorten paths. If nothing exists for a week/course, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
             const convo: ChatMsg[] = [
@@ -2238,7 +2249,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar for THIS course (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
-Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. CITATIONS: every material file you reference MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link — the exact filename alone is fine when it is unambiguous. Cite each file at first mention; never invent or shorten paths. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
+Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date'. CITATIONS: every material file you reference MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link — the exact filename alone is fine when it is unambiguous. Cite each file at first mention; never invent or shorten paths. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 
             const convo: ChatMsg[] = [

@@ -24,6 +24,7 @@ export default function IngestForm({ slug, courses, semesterStart }: {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [transcript, setTranscript] = useState<File | null>(null);
+  const [name, setName] = useState("");
   const [course, setCourse] = useState(slug);
   const [week, setWeek] = useState<number>(1);
   const [autoTranscribe, setAutoTranscribe] = useState(true);
@@ -45,7 +46,7 @@ export default function IngestForm({ slug, courses, semesterStart }: {
   }, [semesterStart, hasStart]);
 
   const derivedDate = weekOptions.find((w) => w.week === week)?.date ?? new Date().toISOString().slice(0, 10);
-  const preview = file ? `${derivedDate}__${course || "?"}__<time>.mp4` : null;
+  const preview = file ? `${derivedDate}__${course || "?"}__<time>${name.trim() ? ` — “${name.trim()}”` : ""}` : null;
 
   const submit = async () => {
     if (!file || !course.trim()) { setMsg("pick a video and course"); return; }
@@ -54,6 +55,7 @@ export default function IngestForm({ slug, courses, semesterStart }: {
       const fd = new FormData();
       fd.append("file", file);
       if (transcript) fd.append("transcript", transcript);
+      if (name.trim()) fd.append("name", name.trim());
       fd.append("course", course.trim().replace(/\s+/g, "_"));
       fd.append("week", String(week));
       const res = await fetch("/api/ingest", { method: "POST", body: fd });
@@ -66,7 +68,7 @@ export default function IngestForm({ slug, courses, semesterStart }: {
         await fetch(`/api/transcribe?course=${encodeURIComponent(j.course)}&stem=${encodeURIComponent(j.stem)}`, { method: "POST" }).catch(() => {});
         setMsg(`ingested ${j.mp4} — transcription running (see home activity feed)`);
       }
-      setFile(null); setTranscript(null);
+      setFile(null); setTranscript(null); setName("");
       router.refresh();
     } catch {
       setMsg("upload failed — backend unreachable");
@@ -84,6 +86,12 @@ export default function IngestForm({ slug, courses, semesterStart }: {
             onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
           <span className="ig-lbl">Transcript (optional)</span>
           <input type="file" accept=".txt,.md,.vtt" onChange={(e) => setTranscript(e.target.files?.[0] ?? null)} />
+        </div>
+        <div className="ig-row">
+          <label htmlFor="ig-name" className="ig-lbl">Title (optional)</label>
+          <input id="ig-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Git workshop — rebasing"
+            maxLength={80} style={{ padding: "4px 8px", width: 220 }} title="Name this recording so you can reference it by name when asking about its transcript" />
+          <span className="muted">named recordings show up by name in Ask and session lists</span>
         </div>
         <div className="ig-row">
           <label htmlFor="ig-course" className="ig-lbl">Course folder</label>

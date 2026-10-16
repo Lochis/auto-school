@@ -44,6 +44,42 @@ export function parseMultipart(req: IncomingMessage, tempDir: string): Promise<P
     let curBytes = 0;
     let seq = 0;
     let done = false;
+    let settled = false;
+
+    // write streams still flushing to disk — the promise may only resolve
+    // once every temp file has quiesced, otherwise the caller renames a
+    // HALF-WRITTEN file into recordings/ (truncated video, no error)
+    const openStreams = new Set<import("node:fs").WriteStream>();
+    let reqEnded = false;
+    const FLUSH_TIMEOUT = 60_000; // a stalled disk must not hang the request forever
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      if (flushTimer) clearTimeout(flushTimer);
+      resolve(parts);
+    };
+    const maybeSettle = (): void => {
+      if (reqEnded && openStreams.size === 0) settle();
+    };
+
+    /** clean up every temp file, then reject — failure paths must not leak
+     *  half-written parts onto the volume */
+    const fail = (e: unknown): void => {
+      if (settled) return;
+      settled = true;
+      if (flushTimer) clearTimeout(flushTimer);
+      const streams = new Set(openStreams);
+      if (ws) streams.add(ws); // current part isn't in openStreams-based `parts` yet
+      for (const s of streams) {
+        try { s.destroy(); } catch { /* noop */ }
+        // the create-open() may still be in flight and re-create the file
+        // after the immediate rmSync — remove again once the fd is closed
+        s.once("close", () => { try { rmSync(String(s.path)); } catch { /* already gone */ } });
+      }
+      for (const p of parts) if (p.path) { try { rmSync(p.path); } catch { /* already gone */ } }
+      reject(e instanceof Error ? e : new Error(String(e)));
+    };
 
     const finishPart = (): void => {
       if (!cur) return;
@@ -68,10 +104,29 @@ export function parseMultipart(req: IncomingMessage, tempDir: string): Promise<P
       cur = { name, filename: filename || undefined, headers };
       if (filename) {
         const tmp = `${tempDir}/part-${Date.now()}-${seq++}`;
-        ws = createWriteStream(tmp, { flags: "w" });
-        // ws errors shouldn't kill the request mid-stream silently
-        ws.on("error", (e) => reject(e));
+        const s = createWriteStream(tmp, { flags: "w" });
+        openStreams.add(s);
+        // "close" = fully flushed + fd released → safe to rename; it also
+        // resumes a paused request stream if the part ended mid-backpressure
+        s.on("close", () => {
+          openStreams.delete(s);
+          req.resume();
+          maybeSettle();
+        });
+        s.on("drain", () => req.resume()); // backpressure release — without this a large upload deadlocks
+        s.on("error", (e) => fail(e));
+        ws = s;
       }
+    };
+
+    /** backpressure: without this the write stream queues the WHOLE video in
+     *  RAM (undici keeps delivering) — a 600MB upload pushed the daemon to
+     *  1.7GB RSS; GB-scale lectures OOM the pod */
+    const writeData = (out: Buffer): void => {
+      if (ws) {
+        if (!ws.write(out)) req.pause(); // "drain"/"close" resumes
+      } else textAcc.push(out);
+      curBytes += out.length;
     };
 
     const consume = (chunk: Buffer): void => {
@@ -84,7 +139,7 @@ export function parseMultipart(req: IncomingMessage, tempDir: string): Promise<P
           const hi = pending.indexOf(Buffer.concat([CRLF, CRLF]));
           if (hi === -1) {
             // headers not complete; but bound the header buffer (sanity)
-            if (pending.length > 64 * 1024) return reject(new Error("part headers too large"));
+            if (pending.length > 64 * 1024) return fail(new Error("part headers too large"));
             return;
           }
           const headers = pending.subarray(0, hi).toString("utf8");
@@ -101,10 +156,7 @@ export function parseMultipart(req: IncomingMessage, tempDir: string): Promise<P
           // across chunks must never be written into part data
           const safe = pending.length - boundary.length;
           if (safe > 0) {
-            const out = pending.subarray(0, safe);
-            if (ws) ws.write(out);
-            else textAcc.push(out);
-            curBytes += out.length;
+            writeData(pending.subarray(0, safe));
             pending = pending.subarray(safe);
           }
           return;
@@ -112,10 +164,7 @@ export function parseMultipart(req: IncomingMessage, tempDir: string): Promise<P
         // boundary found: data ends at bi (strip the CRLF before it)
         let dataEnd = bi;
         if (dataEnd >= 2 && pending[dataEnd - 2] === 13 && pending[dataEnd - 1] === 10) dataEnd -= 2;
-        const out = pending.subarray(0, dataEnd);
-        if (ws) ws.write(out);
-        else textAcc.push(out);
-        curBytes += out.length;
+        writeData(pending.subarray(0, dataEnd));
         pending = pending.subarray(bi);
 
         // pending now starts with the boundary — check what follows
@@ -138,30 +187,22 @@ export function parseMultipart(req: IncomingMessage, tempDir: string): Promise<P
     };
 
     req.on("data", (c: Buffer) => consume(c));
-    req.on("error", (e) => {
-      try { ws?.end(); } catch { /* noop */ }
-      reject(e);
-    });
+    req.on("error", (e) => fail(e));
     req.on("end", () => {
       try {
+        // no terminating boundary seen → truncated upload: fail loudly
+        // (the middleware body cap truncated videos at exactly this point)
         if (!done) {
-          // no terminating boundary seen — treat as complete anyway if a part is open
-          finishPart();
-        } else finishPart();
-        // wait for write streams to flush before resolving
-        const open = parts.filter((p) => p.path).length;
-        let waited = 0;
-        const check = (): void => {
-          // crude but effective: poll until the temp files quiesce
-          const anyOpen = parts.some((p) => p.path);
-          if (!anyOpen || waited > 5000) {
-            resolve(parts);
-          } else { waited += 50; setTimeout(check, 50); }
-        };
-        // ensure final ws flushed (ws.end already called; node flushes async)
-        setTimeout(() => resolve(parts), 50);
+          return fail(new Error("truncated multipart body — no closing boundary"));
+        }
+        finishPart();
+        reqEnded = true;
+        // resolve only once every temp file is flushed; bounded by a timer so
+        // a stalled disk can't hang the caller forever
+        flushTimer = setTimeout(settle, FLUSH_TIMEOUT);
+        maybeSettle();
       } catch (e) {
-        reject(e);
+        fail(e);
       }
     });
   });
