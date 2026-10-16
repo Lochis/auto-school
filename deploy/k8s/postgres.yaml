@@ -79,7 +79,7 @@ spec:
       volumes:
         - name: pgdata
           persistentVolumeClaim:
-            claimName: auto-school-pg-data
+            claimName: auto-school-pgdata
 ---
 apiVersion: v1
 kind: Service
