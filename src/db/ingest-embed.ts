@@ -74,6 +74,9 @@ export async function materialChunks(abs: string, filename: string): Promise<Chu
 /** extension whitelist — everything else is skipped as unembeddable */
 export const EMBEDDABLE = new Set([".pdf", ".docx", ".txt", ".md", ".csv", ".json"]);
 
+/** documents.category CHECK whitelist — manifest categories outside it coerce to "other" */
+const DOC_CATEGORIES = new Set(["syllabus", "assignment", "lecture-notes", "reference", "rubric", "transcript", "other"]);
+
 export interface EmbedSweepResult {
   ok: boolean;
   reason?: "pg-not-configured" | "no-key" | string;
@@ -132,7 +135,7 @@ export async function embedPendingMaterials(opts: {
             filename=excluded.filename, week=excluded.week, category=excluded.category,
             description=excluded.description, size_bytes=excluded.size_bytes`,
           [cid, rel, (m.filename as string) ?? rel.split("/").pop()!, (m.week as number) ?? null,
-            (m.category as string) ?? "other", (m.description as string) ?? "", size,
+            DOC_CATEGORIES.has(m.category as string) ? (m.category as string) : "other", (m.description as string) ?? "", size,
             m.uploadedAt ? new Date(String(m.uploadedAt)) : null, OWNER, mtime]);
         ensured++;
       }

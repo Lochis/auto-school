@@ -149,7 +149,7 @@ export const documents = pgTable("documents", {
   check("documents_kind_check", sql`${t.kind} IN ('material','notes','transcript','timeline')`),
   check("documents_week_check", sql`${t.week} BETWEEN 1 AND 15`),
   check("documents_category_check",
-    sql`${t.category} IN ('syllabus','assignment','lecture-notes','reference','rubric','other')`),
+    sql`${t.category} IN ('syllabus','assignment','lecture-notes','reference','rubric','transcript','other')`),
   unique("documents_course_id_kind_rel_path_key").on(t.courseId, t.kind, t.relPath),
   index("documents_course_week_idx").on(t.courseId, sql`${t.week} NULLS LAST`),
 ]);

@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS documents (
   filename     text NOT NULL,
   week         int CHECK (week BETWEEN 1 AND 15),
   category     text NOT NULL DEFAULT 'other'
-               CHECK (category IN ('syllabus','assignment','lecture-notes','reference','rubric','other')),
+               CHECK (category IN ('syllabus','assignment','lecture-notes','reference','rubric','transcript','other')),
   description  text NOT NULL DEFAULT '',
   size_bytes   bigint,
   checksum     text,                            -- mtimeMs:size → sha256 parity with .src marker

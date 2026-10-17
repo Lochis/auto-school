@@ -74,6 +74,25 @@ let waker: (() => void) | null = null;
 let leaveRequested = false;
 /** non-null while a manual (web UI) transcription job runs — "course/stem" */
 let transcribeJob: string | null = null;
+/** in-flight material transcription jobs — keyed `${slug}|${relVideoPath}`;
+ *  prevents double-transcription when the UI re-posts (or polls) mid-job. */
+const materialTranscribeJobs = new Map<string, Promise<void>>();
+
+/** "[m:ss]" timestamp render — the recordings timeline convention
+ *  (notes.ts / segment.ts fmt). */
+export function transcriptTs(offsetSec: number): string {
+  return `${Math.floor(offsetSec / 60)}:${String(Math.floor(offsetSec % 60)).padStart(2, "0")}`;
+}
+
+/** Render a material transcript to markdown: header + one "[m:ss] text"
+ *  line per non-empty chunk. Exported so the convention is unit-testable. */
+export function transcriptToMd(filename: string, chunks: { offsetSec: number; text: string }[]): string {
+  const lines = chunks
+    .map((c) => ({ s: c.offsetSec, t: c.text.trim() }))
+    .filter((c) => c.t.length > 0)
+    .map((c) => `[${transcriptTs(c.s)}] ${c.t}`);
+  return `# Transcript — ${filename}\n\n${lines.join("\n")}`;
+}
 /** the active meeting's page, for graceful shutdown */
 let active: { page: import("playwright").Page; title: string } | null = null;
 
@@ -1258,6 +1277,61 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         const ok = deleteMaterial(slug, rel);
         if (ok) { pushEvent(`material deleted: ${rel} from ${slug}`); return send(200, { ok: true }); }
         return send(404, { error: "not found" });
+      }
+    }
+    // ── optional video transcription → sibling .transcript.md material ──
+    // POST /courses/<slug>/materials/transcribe {path} — starts background job
+    // GET  /courses/<slug>/materials/transcribe?path=<rel> — poll status
+    const TRANSCRIBE_RE = /^\/courses\/([^/]+)\/materials\/transcribe$/;
+    const tm = url.pathname.match(TRANSCRIBE_RE);
+    if (tm) {
+      const slug = decodeURIComponent(tm[1]!);
+      const videoExtOk = (leaf: string): boolean => [".mp4", ".webm", ".mkv"].includes(leaf.slice(leaf.lastIndexOf(".")).toLowerCase());
+      const transcriptRel = (rel: string): string => `${rel}.transcript.md`;
+      if (req.method === "GET") {
+        const rel = sanitizeRelPath(url.searchParams.get("path") ?? "");
+        if (!rel) return send(400, { error: "path param required" });
+        const done = existsSync(join(MATERIALS_DIR(slug), transcriptRel(rel)));
+        return send(200, { done, inFlight: materialTranscribeJobs.has(`${slug}|${rel}`), transcript: done ? transcriptRel(rel) : null });
+      }
+      if (req.method === "POST") {
+        try {
+          let body: Record<string, unknown> = {};
+          try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
+          const rel = sanitizeRelPath(String(body.path ?? ""));
+          const leaf = rel?.split("/").pop() ?? "";
+          if (!rel || !leaf || !videoExtOk(leaf)) return send(400, { error: "path must be a .mp4/.webm/.mkv material" });
+          if (!allCourses().includes(slug)) return send(400, { error: "unknown course" });
+          const absVideo = join(MATERIALS_DIR(slug), rel);
+          if (!absVideo.startsWith(MATERIALS_DIR(slug) + "/") || !existsSync(absVideo)) return send(400, { error: "video not found" });
+          const tRel = transcriptRel(rel);
+          const absTranscript = join(MATERIALS_DIR(slug), tRel);
+          if (existsSync(absTranscript)) return send(200, { done: true, exists: true, transcript: tRel });
+          const key = `${slug}|${rel}`;
+          if (materialTranscribeJobs.has(key)) return send(202, { started: true, inFlight: true });
+          const filename = leaf;
+          const job = (async () => {
+            try {
+              const t = await transcribeFile(absVideo);
+              writeFileSync(absTranscript, transcriptToMd(filename, t.chunks));
+              registerMaterial(slug, {
+                path: tRel, filename: `${leaf}.transcript.md`, week: weekFromPath(tRel) ?? weekFromPath(rel),
+                category: "transcript", description: "", uploadedAt: new Date().toISOString(), size: statSync(absTranscript).size,
+              });
+              pushEvent(`material transcribe: ${filename} done`);
+              const er = await embedPendingMaterials({ log: (m) => pushEvent(`embed: ${m}`) });
+              if (er.ok && er.chunks) pushEvent(`embedded ${er.chunks} chunk(s) from ${er.docs} material(s) — semantic search updated`);
+            } catch (e) {
+              const msg = String(e).slice(0, 120);
+              pushEvent(`material transcribe FAILED: ${filename}: ${msg}`);
+              console.error(`[material transcribe] ${filename}: ${e}`);
+            } finally {
+              materialTranscribeJobs.delete(key);
+            }
+          })();
+          materialTranscribeJobs.set(key, job);
+          return send(202, { started: true });
+        } catch (e) { return send(500, { error: `transcribe failed: ${String(e).slice(0, 100)}` }); }
       }
     }
     const CONFIG_RE = /^\/courses\/([^/]+)\/config$/;

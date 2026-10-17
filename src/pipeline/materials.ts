@@ -13,7 +13,7 @@ import { join, dirname } from "node:path";
 import { DATA_DIR } from "../paths.ts";
 
 export type MaterialCategory =
-  | "syllabus" | "assignment" | "lecture-notes" | "reference" | "rubric" | "other";
+  | "syllabus" | "assignment" | "lecture-notes" | "reference" | "rubric" | "transcript" | "other";
 
 export interface MaterialEntry {
   /** full relative path from materials root ("Week 1/1.1 Modeling.pdf") */

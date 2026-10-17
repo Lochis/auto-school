@@ -257,6 +257,10 @@
 .mat-act { min-width: 26px; min-height: 26px; padding: 0; }
 .mat-act--del:hover:not(:disabled) { background: rgba(69, 10, 10, 0.3); color: var(--error); }
 
+/* video transcription row action (text, not a glyph) */
+.mat-transcribe { white-space: nowrap; font-size: 0.75rem; }
+.mat-transcribe:disabled { opacity: 0.5; cursor: default; }
+
 /* inline rename editor */
 .mat-rename {
   display: inline-flex;
