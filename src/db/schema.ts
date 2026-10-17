@@ -256,3 +256,56 @@ export const appSettings = pgTable("app_settings", {
   value: jsonb("value").$type<unknown>().notNull(),
   updatedAt: tstz("updated_at").notNull().defaultNow(),
 });
+
+// ── chat / attendance / left-meetings / deadlines-meta (Phase 4 completion) ──
+export const chatMessages = pgTable("chat_messages", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  scope: text("scope").notNull(),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  at: tstz("at").notNull(),
+  ownerUserId: uuid("owner_user_id").notNull()
+    .default("00000000-0000-0000-0000-000000000001").references(() => users.id),
+  createdAt: tstz("created_at").notNull().defaultNow(),
+}, (t) => [
+  check("chat_messages_role_check", sql`${t.role} IN ('user','assistant')`),
+  index("chat_messages_scope_idx").on(t.ownerUserId, t.scope, t.id),
+]);
+
+export const attendance = pgTable("attendance", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  date: text("date").notNull(),
+  title: text("title").notNull(),
+  joinedAt: bigint("joined_at", { mode: "number" }).notNull(),
+  leftAt: bigint("left_at", { mode: "number" }),
+  ownerUserId: uuid("owner_user_id").notNull()
+    .default("00000000-0000-0000-0000-000000000001").references(() => users.id),
+  createdAt: tstz("created_at").notNull().defaultNow(),
+}, (t) => [
+  unique("attendance_owner_date_title_joined_key").on(t.ownerUserId, t.date, t.title, t.joinedAt),
+  index("attendance_date_idx").on(t.ownerUserId, t.date),
+]);
+
+export const leftMeetings = pgTable("left_meetings", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  day: text("day").notNull(),
+  title: text("title").notNull(),
+  ownerUserId: uuid("owner_user_id").notNull()
+    .default("00000000-0000-0000-0000-000000000001").references(() => users.id),
+  createdAt: tstz("created_at").notNull().defaultNow(),
+}, (t) => [
+  unique("left_meetings_owner_day_title_key").on(t.ownerUserId, t.day, t.title),
+]);
+
+export const deadlinesMeta = pgTable("deadlines_meta", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  docKey: text("doc_key").notNull(),
+  mtime: bigint("mtime", { mode: "number" }).notNull(),
+  size: bigint("size", { mode: "number" }).notNull(),
+  course: text("course").notNull(),
+  ownerUserId: uuid("owner_user_id").notNull()
+    .default("00000000-0000-0000-0000-000000000001").references(() => users.id),
+  createdAt: tstz("created_at").notNull().defaultNow(),
+}, (t) => [
+  unique("deadlines_meta_owner_doc_key_key").on(t.ownerUserId, t.docKey),
+]);

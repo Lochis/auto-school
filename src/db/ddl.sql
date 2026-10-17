@@ -224,3 +224,50 @@ CREATE TABLE IF NOT EXISTS app_settings (       -- optional: replaces settings.j
   value  jsonb NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ── chat history (replaces user-data/chat.json + user-data/courses/<slug>/chat.json) ──
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id            bigserial PRIMARY KEY,
+  scope         text NOT NULL,                  -- 'global' or course slug
+  role          text NOT NULL CHECK (role IN ('user','assistant')),
+  content       text NOT NULL,
+  at            timestamptz NOT NULL,           -- message timestamp (ISO in JSON)
+  owner_user_id uuid NOT NULL REFERENCES users(id) DEFAULT '00000000-0000-0000-0000-000000000001',
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS chat_messages_scope_idx ON chat_messages (owner_user_id, scope, id);
+
+-- ── attendance journal (replaces attended.json) ───────────────────────────
+CREATE TABLE IF NOT EXISTS attendance (
+  id            bigserial PRIMARY KEY,
+  date          text NOT NULL,                  -- new Date().toDateString() e.g. 'Tue Sep 08 2026'
+  title         text NOT NULL,
+  joined_at     bigint NOT NULL,                -- epoch-ms
+  left_at       bigint,                         -- epoch-ms; NULL = entry still open
+  owner_user_id uuid NOT NULL REFERENCES users(id) DEFAULT '00000000-0000-0000-0000-000000000001',
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (owner_user_id, date, title, joined_at)  -- join+leave land on one row
+);
+CREATE INDEX IF NOT EXISTS attendance_date_idx ON attendance (owner_user_id, date);
+
+-- ── manually-left meetings (replaces left-meetings.json) ──────────────────
+CREATE TABLE IF NOT EXISTS left_meetings (
+  id            bigserial PRIMARY KEY,
+  day           text NOT NULL,                  -- 'YYYY-MM-DD' (localDate)
+  title         text NOT NULL,
+  owner_user_id uuid NOT NULL REFERENCES users(id) DEFAULT '00000000-0000-0000-0000-000000000001',
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (owner_user_id, day, title)
+);
+
+-- ── deadline rebuild manifest (replaces user-data/deadlines-meta.json) ─────
+CREATE TABLE IF NOT EXISTS deadlines_meta (
+  id            bigserial PRIMARY KEY,
+  doc_key       text NOT NULL,                  -- '<courseSlug>/<relPath>'
+  mtime         bigint NOT NULL,                -- epoch-ms
+  size          bigint NOT NULL,                -- bytes
+  course        text NOT NULL,                  -- course slug
+  owner_user_id uuid NOT NULL REFERENCES users(id) DEFAULT '00000000-0000-0000-0000-000000000001',
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (owner_user_id, doc_key)
+);

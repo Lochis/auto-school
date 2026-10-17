@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { DATA_DIR } from "./paths.ts";
 import { listSessions } from "./pipeline/sessions.ts";
 import { appendEvent, listEvents } from "./db/writes.ts";
+import { leftLoad, leftAdd, leftPruneExcept, leftClear } from "./db/state.ts";
 
 export interface StatusEvent { ts: string; msg: string }
 
@@ -246,30 +247,34 @@ function localDate(d = new Date()): string {
   catch { return d.toISOString().slice(0, 10); }
 }
 
-const LEFT_FILE = join(DATA_DIR, "left-meetings.json");
+/** Titles the user manually left today — in-memory set hydrated from Postgres
+ *  once at startup; recordLeftToday() mutates memory + fire-and-forgets the DB. */
+let leftToday: string[] = [];
+
+/** Hydrate today's manually-left titles from Postgres (no-op without PG). */
+export async function hydrateLeftToday(): Promise<void> {
+  try { leftToday = await leftLoad(localDate()); } catch { leftToday = []; }
+}
 
 /** Titles the user manually left today — never auto-joined again today, even
  *  after a restart. Different-day meetings with the same name auto-join fine. */
 export function loadLeftToday(): string[] {
-  try {
-    const all = JSON.parse(readFileSync(LEFT_FILE, "utf8")) as Record<string, string[]>;
-    return all[localDate()] ?? [];
-  } catch { return []; }
+  return leftToday;
 }
 
 export function recordLeftToday(title: string): void {
   const day = localDate();
-  let all: Record<string, string[]> = {};
-  try { all = JSON.parse(readFileSync(LEFT_FILE, "utf8")) as Record<string, string[]>; } catch { /* fresh */ }
-  const list = new Set(all[day] ?? []);
+  const list = new Set(leftToday);
   list.add(title);
-  for (const k of Object.keys(all)) if (k !== day) delete all[k]; // prune old days
-  try { writeFileSync(LEFT_FILE, JSON.stringify({ [day]: [...list] }, null, 2)); } catch { /* read-only fs */ }
+  leftToday = [...list];
+  void leftAdd(day, title).catch(() => { /* durable tail best-effort */ });
+  void leftPruneExcept(day).catch(() => { /* durable tail best-effort */ });
   pushEvent(`leave: "${title}" — won't auto-join again today`);
 }
 
 export function clearLeftToday(): void {
-  try { writeFileSync(LEFT_FILE, JSON.stringify({})); } catch { /* read-only fs */ }
+  leftToday = [];
+  void leftClear().catch(() => { /* durable tail best-effort */ });
 }
 
 const events: StatusEvent[] = [];

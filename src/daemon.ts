@@ -28,7 +28,7 @@ import { parseMultipart, placePart, discardPart } from "./http/multipart.ts";
 import { startRecording, quickStopRecording, stopRecording, stillInMeeting, rebuildSeekPoints, RECORD_DIR } from "./record/recorder.ts";
 import { consolidateSession } from "./pipeline/consolidate.ts";
 import { notify } from "./notify.ts";
-import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, applySettingsPatch } from "./status.ts";
+import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, hydrateLeftToday, applySettingsPatch } from "./status.ts";
 import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
 import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
@@ -45,6 +45,7 @@ import { runRetention } from "./pipeline/retention.ts";
 import { embedPendingMaterials, embedPendingSessions } from "./db/ingest-embed.ts";
 import { getPool } from "./db/client.ts";
 import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId, upsertArtifact } from "./db/writes.ts";
+import { chatList, chatSave, chatClear, attendanceLoad, attendanceUpsert, metaLoad, metaReplace } from "./db/state.ts";
 
 const POLL_MS = (Number(process.env.POLL_MINUTES ?? 2) || 2) * 60_000;
 const DISCOVERY_MS = (Number(process.env.DISCOVERY_SECONDS ?? 60) || 60) * 1_000; // Graph poll cadence
@@ -199,21 +200,23 @@ const nap = (ms: number): Promise<void> =>
  *  (REBUILD_MINUTES, default 360 = morning + manual only). */
 interface Sched { title: string; start: number; end: number; joinUrl?: string }
 
-const JOURNAL = join(dirname(config.userDataDir), "attended.json");
-/** attendance journal (persisted): [{date,title,joinedAt,leftAt?}] */
-function loadJournal(): { date: string; title: string; joinedAt: number; leftAt?: number }[] {
-  try { return JSON.parse(readFileSync(JOURNAL, "utf8")); } catch { return []; }
+/** attendance journal — in-memory, hydrated from Postgres once at startup
+ *  (attendedToday() is read synchronously in /status + the join loop). */
+let journal: { date: string; title: string; joinedAt: number; leftAt?: number }[] = [];
+async function hydrateAttendance(): Promise<void> {
+  try { journal = await attendanceLoad(); } catch (e) { console.warn(`[daemon] attendance hydrate failed: ${String(e).slice(0, 120)}`); }
 }
 function journalEntry(title: string, patch: Partial<{ leftAt: number }>): void {
-  const j = loadJournal();
-  let e = j.find((x) => x.title === title && x.date === new Date().toDateString() && x.leftAt === undefined);
-  if (!e) { e = { date: new Date().toDateString(), title, joinedAt: Date.now() }; j.push(e); }
+  const today = new Date().toDateString();
+  let e = journal.find((x) => x.title === title && x.date === today && x.leftAt === undefined);
+  if (!e) { e = { date: today, title, joinedAt: Date.now() }; journal.push(e); }
   Object.assign(e, patch);
-  try { writeFileSync(JOURNAL, JSON.stringify(j, null, 2)); } catch { /* read-only */ }
+  const row = { date: e.date, title: e.title, joinedAt: e.joinedAt, ...(e.leftAt !== undefined ? { leftAt: e.leftAt } : {}) };
+  void attendanceUpsert(row).catch(() => { /* durable tail best-effort */ });
 }
 function attendedToday(): string[] {
   const today = new Date().toDateString();
-  return loadJournal().filter((e) => e.date === today).map((e) => e.title);
+  return journal.filter((e) => e.date === today).map((e) => e.title);
 }
 
 let schedule: Sched[] = [];
@@ -1918,9 +1921,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
             const mode: "full" | "update" = body.mode === "full" ? "full" : "update";
             // manifest: mtime+size of every course document at last build —
             // a stat walk (no LLM) tells us exactly what changed since
-            const META = join(config.userDataDir, "deadlines-meta.json");
             type DocStat = { m: number; s: number };
-            const readMeta = (): { docs: Record<string, DocStat> } => { try { return JSON.parse(readFileSync(META, "utf8")); } catch { return { docs: {} }; } };
+            const readMeta = (): Promise<{ docs: Record<string, DocStat> }> => metaLoad();
             const snapshotDocs = (): Record<string, DocStat & { course: string }> => {
               const out: Record<string, DocStat & { course: string }> = {};
               for (const c of allCourses()) {
@@ -1941,7 +1943,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
               }
               return out;
             };
-            const prevMeta = readMeta();
+            const prevMeta = await readMeta();
             const changedDocs = new Map<string, string[]>(); // slug → rel paths changed/new
             const deletedKeys = new Set<string>();           // manifest keys whose file is gone
             let scoped = false;
@@ -2285,7 +2287,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
               }
             } catch { /* no checklists yet */ }
             await writeDl(merged);
-            writeFileSync(META, JSON.stringify({ docs: snapshotDocs(), builtAt: Date.now() }, null, 2));
+            await metaReplace(snapshotDocs());
             const changedCount = [...changedDocs.values()].reduce((n, ds) => n + ds.length, 0) + deletedKeys.size;
             pushEvent(scoped
               ? `deadlines updated: +${added.length} new, ${updatedDates.length} date(s) changed${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}${foldedCount ? `, ${foldedCount} folded` : ""}${newPending.length ? `, ${newPending.length} fold suggestion(s)` : ""}, ${changedCount} changed doc(s) scanned — ${merged.length} item(s) total`
@@ -2416,7 +2418,6 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
     // Same tool loop, no fixed course: the model must pass course= per
     // tool call (list_courses / week_overview help it navigate).
     if (url.pathname === "/chat" || url.pathname === "/chat/lexicon") {
-      const GLOBAL_CHAT = join(config.userDataDir, "chat.json");
       if (url.pathname === "/chat/lexicon" && req.method === "GET") {
         // leaf filename → ALL courses having it (ambiguous ones resolved by
         // the UI via context scoring) + per-course hint tokens for that scoring
@@ -2441,16 +2442,11 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
         } catch { /* no mappings */ }
         return send(200, { lexicon: lex, hints });
       }
-      const loadChat = (): { role: "user" | "assistant"; content: string; at: string }[] => {
-        try { return JSON.parse(readFileSync(GLOBAL_CHAT, "utf8")); } catch { return []; }
-      };
-      const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): void => {
-        mkdirSync(config.userDataDir, { recursive: true });
-        writeFileSync(GLOBAL_CHAT, JSON.stringify(msgs.slice(-100), null, 2));
-      };
-      if (req.method === "GET") return send(200, { messages: loadChat() });
+      const loadChat = (): Promise<{ role: "user" | "assistant"; content: string; at: string }[]> => chatList("global");
+      const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): Promise<void> => chatSave("global", msgs);
+      if (req.method === "GET") return send(200, { messages: await loadChat() });
       if (req.method === "DELETE") {
-        try { rmSync(GLOBAL_CHAT, { force: true }); } catch { /* gone */ }
+        await chatClear("global");
         return send(200, { ok: true });
       }
       if (req.method === "POST") {
@@ -2462,7 +2458,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
             if (!message) return send(400, { error: "message required" });
             const webSearch = body.webSearch === true;
             const tools = webSearch ? TOOL_DEFS_WITH_WEB : TOOL_DEFS;
-            const history = loadChat();
+            const history = await loadChat();
             history.push({ role: "user", content: message, at: new Date().toISOString() });
 
             const systemPrompt = `You are a study assistant for ALL of the student's courses (semester dates come from list_courses / week_overview).
@@ -2480,7 +2476,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const reply = await streamChatLoop(res, convo, { tools, webSearch, maxSteps: 12, toolLabel: "global chat tool" });
             if (reply !== null) {
               history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
-              saveChat(history);
+              await saveChat(history);
             }
           } catch (e) {
             try {
@@ -2513,15 +2509,9 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
     const chatM = url.pathname.match(CHAT_RE);
     if (chatM) {
       const slug = decodeURIComponent(chatM[1]!);
-      const CHAT_FILE = () => join(config.userDataDir, "courses", slug, "chat.json");
-      const loadChat = (): { role: "user" | "assistant"; content: string; at: string }[] => {
-        try { return JSON.parse(readFileSync(CHAT_FILE(), "utf8")); } catch { return []; }
-      };
-      const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): void => {
-        mkdirSync(join(config.userDataDir, "courses", slug), { recursive: true });
-        writeFileSync(CHAT_FILE(), JSON.stringify(msgs.slice(-100), null, 2)); // cap history
-      };
-      if (req.method === "GET") return send(200, { messages: loadChat() });
+      const loadChat = (): Promise<{ role: "user" | "assistant"; content: string; at: string }[]> => chatList(slug);
+      const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): Promise<void> => chatSave(slug, msgs);
+      if (req.method === "GET") return send(200, { messages: await loadChat() });
       if (req.method === "POST") {
         (async () => {
           try {
@@ -2531,7 +2521,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             if (!message) return send(400, { error: "message required" });
             const webSearch = body.webSearch === true;
             const tools = webSearch ? TOOL_DEFS_WITH_WEB : TOOL_DEFS;
-            const history = loadChat();
+            const history = await loadChat();
             history.push({ role: "user", content: message, at: new Date().toISOString() });
 
             // ── tool-calling loop: the model explores the course itself ──
@@ -2550,7 +2540,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const reply = await streamChatLoop(res, convo, { tools, webSearch, fallbackSlug: slug, maxSteps: 8, toolLabel: "chat tool" });
             if (reply !== null) {
               history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
-              saveChat(history);
+              await saveChat(history);
             }
           } catch (e) {
             try {
@@ -2563,7 +2553,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
         return; // async handler sends the response
       }
       if (req.method === "DELETE") {
-        try { rmSync(CHAT_FILE(), { force: true }); } catch { /* gone */ }
+        await chatClear(slug);
         return send(200, { ok: true });
       }
     }
@@ -2609,6 +2599,8 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
 
 export async function daemon(): Promise<void> {
   await refreshMappings().catch(() => { /* DB down → empty mapping cache until first write */ });
+  await hydrateAttendance();
+  await hydrateLeftToday();
   startController();
   // fresh volume guarantee: the whole dir skeleton exists before anything writes
   // (k8s PVCs start empty — compose had these pre-created by the seed volume)
