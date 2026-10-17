@@ -151,35 +151,45 @@ async function rescueOrphans(): Promise<void> {
     const paths = parts.map((p) => join(RECORD_DIR, p));
     const newest = Math.max(...paths.map((p) => statSync(p).mtimeMs));
     if (Date.now() - newest < 10 * 60_000) continue; // possibly still live
+    // audio ogg is named with the SESSION-start timestamp: <slug>__<ISO>.audio.ogg
+    const oggName = readdirSync(RECORD_DIR).find((f) => f.startsWith(`${stem}__`) && f.endsWith(".audio.ogg"));
+    const ogg = oggName ? join(RECORD_DIR, oggName) : undefined;
+    // title slug lives before the "__<ISO timestamp>" suffix — keeps
+    // rescued sessions filed under the same course folder as live ones
+    const title = stem.replace(/__\d{4}-\d{2}-\d{2}.*$/, "").replace(/_/g, " ") || stem;
+    // dedupe guard FIRST — before any updateSession: if the target course
+    // already has a consolidated file from this date, the normal pipeline
+    // handled it and rescue must not mint a "<stem>__<ts>" twin NOR leave a
+    // session row behind. Drop the raw segments (they're inside the
+    // consolidated file) and move on — they used to linger forever,
+    // re-triggering rescue (and phantom session rows) on every boot.
+    const dateTag = parts[0].match(/__(\d{4}-\d{2}-\d{2})T/)?.[1];
+    if (dateTag) {
+      const dest = join(RECORDINGS_DIR, parseCourse(title).slug);
+      // readdir in try/catch: the course folder may legitimately not exist
+      // yet (first recording / emptied course) — that means no dup, not a crash
+      let dup: string | undefined;
+      try { dup = readdirSync(dest).find((f) => f.startsWith(`${dateTag}__`) && /\.(webm|mp4)$/.test(f)); } catch { /* dir absent — nothing consolidated yet */ }
+      if (dup) {
+        console.log(`[daemon] orphan rescue: ${stem} already consolidated as ${dest}/${dup} — dropping ${parts.length} raw segment(s)`);
+        for (const p of paths) { try { rmSync(p); } catch { /* gone */ } }
+        if (ogg) { try { rmSync(ogg); } catch { /* gone */ } }
+        continue;
+      }
+    }
     setActivity("rescuing orphaned session", { meeting: stem });
     console.log(`[daemon] orphan rescue: ${parts.length} segment(s) from ${stem}`);
     updateSession(stem, { stage: "consolidating", stageNote: "orphan rescue", segCount: parts.length });
     for (const p of paths) await rebuildSeekPoints(p.split(/[\\/]/).pop()!);
-    // audio ogg is named with the SESSION-start timestamp: <slug>__<ISO>.audio.ogg
-    const oggName = readdirSync(RECORD_DIR).find((f) => f.startsWith(`${stem}__`) && f.endsWith(".audio.ogg"));
-    const ogg = oggName ? join(RECORD_DIR, oggName) : undefined;
     try {
-      // title slug lives before the "__<ISO timestamp>" suffix — keeps
-      // rescued sessions filed under the same course folder as live ones
-      const title = stem.replace(/__\d{4}-\d{2}-\d{2}.*$/, "").replace(/_/g, " ") || stem;
-      // dedupe guard: if the target course already has a consolidated file
-      // from this date, the normal pipeline handled it — rescue would only
-      // mint a "<stem>__<ts>" twin of the same class
-      const dateTag = parts[0].match(/__(\d{4}-\d{2}-\d{2})T/)?.[1];
-      if (dateTag) {
-        const dest = join(RECORDINGS_DIR, parseCourse(title).slug);
-        const dup = readdirSync(dest).find((f) => f.startsWith(`${dateTag}__`) && /\.(webm|mp4)$/.test(f));
-        if (dup) {
-          console.log(`[daemon] orphan rescue: ${stem} already consolidated as ${dest}/${dup} — skipping`);
-          updateSession(stem, { stage: "done", stageNote: "duplicate — already consolidated" });
-          continue;
-        }
-      }
       const r = await consolidateSession(title, paths, undefined, ogg && existsSync(ogg) ? ogg : undefined);
       pushEvent(r ? `orphan rescued ✓ ${r.mp4}` : `orphan rescue failed for ${stem} (segments kept)`);
       updateSession(stem, r ? { stage: "done", mp4: r.mp4, sizeMB: Math.round(r.outBytes / 1e6) } : { stage: "failed", stageNote: "rescue failed — segments kept" });
     } catch (e) {
       console.warn(`[daemon] orphan rescue failed: ${String(e).slice(0, 120)}`);
+      // mark it failed so the sessions row doesn't linger as "consolidating"
+      // forever (the row exists — updateSession ran before the failure)
+      try { await updateSession(stem, { stage: "failed", stageNote: `rescue failed — ${String(e).slice(0, 60)}` }); } catch { /* best effort */ }
     }
   }
 }
@@ -997,9 +1007,13 @@ function startController(): void {
           const fromR = join(RECORDINGS_DIR, safe(from));
           const toR = join(RECORDINGS_DIR, safe(to));
           mkdirSync(toR, { recursive: true });
-          for (const f of readdirSync(fromR)) {
-            if (mine.test(f)) { renameSync(join(fromR, f), join(toR, f)); moved++; }
-          }
+          // from-dir may be absent (rescued/transcript-only session, emptied
+          // course) — skip the recordings pass instead of failing the move
+          try {
+            for (const f of readdirSync(fromR)) {
+              if (mine.test(f)) { renameSync(join(fromR, f), join(toR, f)); moved++; }
+            }
+          } catch { /* from-dir absent — nothing to move on disk */ }
           // notes (keyed by day stem — move the whole day set if no sibling recording stays)
           const fromN = join(NOTES_DIR, safe(from));
           const toN = join(NOTES_DIR, safe(to));
