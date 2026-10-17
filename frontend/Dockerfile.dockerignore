@@ -1,0 +1,14 @@
+# BuildKit picks <Dockerfile>.dockerignore when present — this one is for the
+# REPO-ROOT build context (frontend/ + src/db siblings; see frontend/Dockerfile).
+node_modules
+.next
+.env*
+.git
+dev-data
+user-data
+segments
+recordings
+out
+notes
+stitch
+*.md

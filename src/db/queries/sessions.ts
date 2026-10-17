@@ -6,7 +6,7 @@
  *  drop). Ordering: session_date DESC, start_time DESC NULLS LAST, matching
  *  data.ts's (date + time) newest-first sort where a missing time sorts last
  *  within its date. Style: raw template SQL via the shared Pool (writes.ts). */
-import { getPool } from "../client.ts";
+import { getPool } from "../pg.ts";
 
 const q = async <T>(text: string, params: unknown[] = []): Promise<T[]> =>
   (await getPool().query(text, params)).rows as T[];

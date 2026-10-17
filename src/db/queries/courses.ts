@@ -3,7 +3,7 @@
  *  (courses() = folder-union under recordings/ + notes/, courseIcon() /
  *  semesterStartOf() = courses/<slug>/course.json). Style: raw template SQL
  *  via the shared Pool, mirroring src/db/writes.ts. */
-import { getPool } from "../client.ts";
+import { getPool } from "../pg.ts";
 
 const q = async <T>(text: string, params: unknown[] = []): Promise<T[]> =>
   (await getPool().query(text, params)).rows as T[];

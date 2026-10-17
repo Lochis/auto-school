@@ -10,7 +10,7 @@
     "meetings": "node src/index.ts meetings",
     "daemon": "node src/index.ts daemon",
     "cd": "bun run cd:build && bun run cd:push && echo '✓ built + pushed both images — now run: kubectl -n auto-school rollout restart deploy/auto-school'",
-    "cd:build": "docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school:buildcache,mode=max -t ghcr.io/lochis/auto-school:latest -f deploy/Dockerfile . && docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache,mode=max -t ghcr.io/lochis/auto-school-frontend:latest frontend/",
+    "cd:build": "docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school:buildcache,mode=max -t ghcr.io/lochis/auto-school:latest -f deploy/Dockerfile . && docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache,mode=max -t ghcr.io/lochis/auto-school-frontend:latest -f frontend/Dockerfile .",
     "cd:push": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest",
     "install-browser": "npx playwright install chromium"
   },

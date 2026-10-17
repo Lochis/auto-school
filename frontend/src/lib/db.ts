@@ -5,10 +5,10 @@
  *  deadlines/checklists/mapping have no src/db/queries equivalent yet and keep
  *  their inline SQL here.
  *
- *  Connection: shared Pool from src/db/client.ts (DATABASE_URL or PG* env). */
+ *  Connection: shared Pool from src/db/pg.ts (DATABASE_URL or PG* env). */
 import type { Session } from "./data";
 import type { DeadEntry } from "./deadlines";
-import { getPool } from "../../../src/db/client.ts";
+import { getPool } from "../../../src/db/pg.ts";
 import { listCourses, courseMeta } from "../../../src/db/queries/courses.ts";
 import { listSessions } from "../../../src/db/queries/sessions.ts";
 import {

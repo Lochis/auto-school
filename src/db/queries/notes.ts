@@ -3,7 +3,7 @@
  *  timelineToMd(), and for the timeline.json shape consumed by the session
  *  detail page (transcript-timeline.tsx). Content lives inline in
  *  session_artifacts.content — no filesystem access. */
-import { getPool } from "../client.ts";
+import { getPool } from "../pg.ts";
 import { sessionRowId } from "./sessions.ts";
 
 const q = async <T>(text: string, params: unknown[] = []): Promise<T[]> =>
