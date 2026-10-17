@@ -10,20 +10,24 @@
     "meetings": "node src/index.ts meetings",
     "daemon": "node src/index.ts daemon",
     "cd": "bun run cd:build && bun run cd:push && echo '✓ built + pushed both images — now run: kubectl -n auto-school rollout restart deploy/auto-school'",
-    "cd:build": "docker build -t ghcr.io/lochis/auto-school:latest -f deploy/Dockerfile . && docker build -t ghcr.io/lochis/auto-school-frontend:latest frontend/",
+    "cd:build": "docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school:buildcache,mode=max -t ghcr.io/lochis/auto-school:latest -f deploy/Dockerfile . && docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache,mode=max -t ghcr.io/lochis/auto-school-frontend:latest frontend/",
     "cd:push": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest",
     "install-browser": "npx playwright install chromium"
   },
   "dependencies": {
     "archiver": "^7.0.1",
+    "drizzle-orm": "^0.45.4",
     "mammoth": "^1.12.2",
     "marked": "^18.1.1",
     "otpauth": "^9.5.2",
+    "pg": "^8.23.1",
     "playwright": "^1.63.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/archiver": "^6.0.4",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
   }
 }

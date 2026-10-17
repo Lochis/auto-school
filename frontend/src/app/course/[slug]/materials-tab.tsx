@@ -264,6 +264,61 @@ export default function MaterialsTab({ slug }: { slug: string }) {
     }
   };
 
+  // ── optional video transcription → sibling .transcript.md material ──
+  const [transcribing, setTranscribing] = useState<Set<string>>(new Set());
+  const transcriptPath = (p: string): string => `${p}.transcript.md`;
+  const transcribed = useMemo(
+    () =>
+      new Set(
+        entries
+          .filter((e) => /\.(mp4|webm|mkv)$/i.test(e.filename) && entries.some((x) => x.path === transcriptPath(e.path)))
+          .map((e) => e.path),
+      ),
+    [entries],
+  );
+  const transcribe = async (path: string): Promise<void> => {
+    setTranscribing((m) => new Set(m).add(path));
+    setLoadErr("");
+    try {
+      const r = await fetch(`/api/courses/${encodeURIComponent(slug)}/materials/transcribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const j = (await r.json().catch(() => ({}))) as { done?: boolean; inFlight?: boolean; exists?: boolean; error?: string };
+      if (!r.ok && r.status !== 202) {
+        setLoadErr(j.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      if (j.done || j.exists) {
+        reload();
+        router.refresh();
+        return;
+      }
+      for (let i = 0; i < 40; i++) {
+        await new Promise((res) => setTimeout(res, 5000));
+        const p = (await fetch(`/api/courses/${encodeURIComponent(slug)}/materials/transcribe?path=${encodeURIComponent(path)}`)
+          .then((x) => x.json())
+          .catch(() => ({ done: false, inFlight: false }))) as { done?: boolean; inFlight?: boolean };
+        if (p.done) {
+          reload();
+          router.refresh();
+          return;
+        }
+        if (!p.inFlight) break; // job finished (or failed) without a transcript
+      }
+      reload();
+    } catch {
+      setLoadErr("transcribe failed");
+    } finally {
+      setTranscribing((m) => {
+        const n = new Set(m);
+        n.delete(path);
+        return n;
+      });
+    }
+  };
+
   // ── semester start anchor (config API) ──
   const [semStart, setSemStart] = useState<string | null>(null);
   useEffect(() => {
@@ -560,6 +615,9 @@ export default function MaterialsTab({ slug }: { slug: string }) {
               onRenameCancel={() => setRenaming(null)}
               onDelete={del}
               busy={busy}
+              transcribed={transcribed}
+              transcribing={transcribing}
+              onTranscribe={transcribe}
             />
           )}
         </div>

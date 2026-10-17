@@ -34,6 +34,11 @@ export interface FileTreeProps {
   onRenameCancel: () => void;
   onDelete: (path: string) => void;
   busy: boolean;
+  /** video paths that already have a sibling `<path>.transcript.md` */
+  transcribed: Set<string>;
+  /** video paths currently being transcribed */
+  transcribing: Set<string>;
+  onTranscribe: (path: string) => void;
 }
 
 export default function FileTree(props: FileTreeProps) {
@@ -66,6 +71,7 @@ export default function FileTree(props: FileTreeProps) {
 
   function FileRow({ f, depth }: { f: Entry; depth: number }) {
     const kind = kindFor(f.filename);
+    const video = /\.(mp4|webm|mkv)$/i.test(f.filename);
     return (
       <div className="mat-row mat-row--file">
         <div className="mat-name" style={{ paddingLeft: depth * 18 }}>
@@ -90,6 +96,22 @@ export default function FileTree(props: FileTreeProps) {
           <a className="iconbtn mat-act" href={dl(f.path)} title="Download this file">
             <ArrowDownTrayIcon className="heroicon" />
           </a>
+          {video &&
+            (props.transcribed.has(f.path) ? (
+              <a className="mat-linkbtn mat-transcribe" href={dl(`${f.path}.transcript.md`)} title="Open transcript (markdown)">
+                Transcript ✓
+              </a>
+            ) : (
+              <button
+                type="button"
+                className="mat-linkbtn mat-transcribe"
+                title="Transcribe video to a searchable transcript"
+                disabled={props.transcribing.has(f.path)}
+                onClick={() => props.onTranscribe(f.path)}
+              >
+                {props.transcribing.has(f.path) ? "transcribing…" : "Transcribe"}
+              </button>
+            ))}
           <button type="button" className="iconbtn mat-act" title="Rename / move" onClick={() => props.onRequestRename(f.path)}>
             <PencilIcon className="heroicon" />
           </button>

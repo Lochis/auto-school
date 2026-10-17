@@ -1,15 +1,18 @@
-/** Per-session pipeline state, persisted to /data/out/sessions.json.
+/** Per-session pipeline state, persisted to Postgres (sessions table).
  *  Every stage transition upserts one row; the UI shows a live progress line
  *  per session (recording → remuxing → transcribing k/n → noting →
- *  consolidating → done | failed). Survives restarts — answers "what is it
- *  doing to my recording?" structurally instead of via log grepping. */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { OUT_DIR } from "../paths.ts";
+ *  consolidating → done | failed). Durable state lives in PG; the synchronous
+ *  readers (status.ts /status, render.ts mdToPdf guard, docindex.ts, daemon.ts
+ *  recording guard) are served from an in-memory mirror because they are all
+ *  sync call sites and describe process-local live state anyway. */
+import { getPool } from "../db/client.ts";
+import { courseId, sessionId } from "../db/writes.ts";
+import { sessionPaths } from "./courses.ts";
 
 export type Stage = "recording" | "remuxing" | "transcribing" | "noting" | "consolidating" | "done" | "failed";
 
 export interface SessionState {
-  stem: string; // segment stem (title__ISO) — stable id for the whole pipeline
+  stem: string; // canonical stem: <localdate>__<courseSlug> (sessionPaths.stem)
   title: string;
   course?: string;
   startedAt: number;
@@ -17,38 +20,123 @@ export interface SessionState {
   stage: Stage;
   stageNote?: string; // e.g. "3/12 segments through Gemini"
   segCount?: number;
-  mp4?: string; // recordings/<course>/<file>.mp4 once done
+  mp4?: string; // recordings/<course>/<file>.webm once done (live UI only)
   durationSec?: number;
   sizeMB?: number;
   joinUrl?: string; // Teams meeting link for this session (from Graph or calendar scrape)
 }
 
-const FILE = `${OUT_DIR}/sessions.json`;
+// In-memory mirror for the synchronous readers. Durable rows live in PG.
 let sessions: SessionState[] = [];
 
-function load(): void {
-  try { sessions = JSON.parse(readFileSync(FILE, "utf8")); } catch { sessions = []; }
+/** Recover a meeting title from a stem. Live stems are "<title>__<ISO>";
+ *  rescue stems (daemon orphan rescue) are "<titleSlug>" with no ISO suffix. */
+function deriveTitle(stem: string): string {
+  return stem.replace(/__\d{4}-\d{2}-\d{2}T[\d-]+$/, "").replace(/_/g, " ").trim() || stem;
 }
-load();
 
-function save(): void {
+/** Resolve a session's DB identity from a meeting title (or an explicit
+ *  slug/stem override for manual transcription). Creates the row if missing,
+ *  but never overwrites an existing row's stage (partial-patch semantics). */
+export async function resolveSession(
+  meetingTitle: string,
+  opts: { slug?: string; stem?: string; name?: string } = {},
+): Promise<{ courseId: number; sessionId: number; slug: string; stem: string }> {
+  const paths = sessionPaths(meetingTitle);
+  const slug = opts.slug ?? paths.course.slug;
+  const stem = opts.stem ?? paths.stem;
+  const cid = await courseId(slug, opts.name);
+  const found = await getPool().query(
+    `select id from sessions where course_id = $1 and stem = $2`,
+    [cid, stem],
+  );
+  let sid = found.rows[0] ? Number(found.rows[0].id) : null;
+  if (sid == null) {
+    sid = await sessionId(cid, stem, {
+      sessionDate: stem.slice(0, 10),
+      title: meetingTitle,
+      stage: "recording",
+    });
+  }
+  return { courseId: cid, sessionId: sid, slug, stem };
+}
+
+export async function updateSession(stem: string, patch: Partial<Omit<SessionState, "stem">>): Promise<SessionState> {
+  const title = patch.title ?? deriveTitle(stem);
+  const paths = sessionPaths(title);
+  const canonicalStem = paths.stem;
+
+  // durable upsert on (course_id, stem); coalesce semantics match partial patches
   try {
-    mkdirSync(OUT_DIR, { recursive: true });
-    writeFileSync(FILE, JSON.stringify(sessions.slice(0, 100), null, 1));
-  } catch { /* read-only fs — in-memory only */ }
-}
+    const cid = await courseId(paths.course.slug);
+    await sessionId(cid, canonicalStem, {
+      sessionDate: canonicalStem.slice(0, 10),
+      title,
+      joinUrl: patch.joinUrl,
+      stage: patch.stage,
+      stageNote: patch.stageNote,
+      segCount: patch.segCount,
+      durationSec: patch.durationSec,
+      sizeMb: patch.sizeMB,
+    });
+  } catch (e) {
+    console.warn(`[sessions] DB write failed — in-memory only: ${String(e).slice(0, 120)}`);
+  }
 
-export function updateSession(stem: string, patch: Partial<Omit<SessionState, "stem">>): SessionState {
-  let s = sessions.find((x) => x.stem === stem);
+  // in-memory mirror (synchronous /status + recording guards)
+  let s = sessions.find((x) => x.stem === canonicalStem);
   if (!s) {
-    s = { stem, title: stem.replace(/__\d{4}-\d{2}-\d{2}.*$/, "").replace(/_/g, " "), startedAt: Date.now(), updatedAt: Date.now(), stage: "recording" };
+    s = { stem: canonicalStem, title, startedAt: Date.now(), updatedAt: Date.now(), stage: patch.stage ?? "recording" };
     sessions.unshift(s);
   }
-  Object.assign(s, patch, { updatedAt: Date.now() });
-  save();
+  Object.assign(s, { title, ...patch, updatedAt: Date.now() });
+  sessions = sessions.slice(0, 100);
   return s;
 }
 
 export function listSessions(): SessionState[] {
   return sessions.slice(0, 50);
+}
+
+/** Rehydrate the in-memory board from the durable sessions rows at daemon
+ *  startup. Without this the "Completed Sessions" panel (daemon /status ←
+ *  listSessions()) shows "No captures yet" after every restart even though
+ *  the classes are consolidated + indexed — the board only ever saw
+ *  process-local updates. Rows that are mid-flight stages from a previous
+ *  process (recording/consolidating/…) are surfaced as failed: that process
+ *  is gone and orphan rescue owns the recovery. */
+export async function hydrateSessions(): Promise<void> {
+  try {
+    const rows = (await getPool().query(
+      `select c.slug, s.stem, s.title, s.join_url, s.stage, s.stage_note, s.seg_count,
+              s.duration_sec, s.size_mb, extract(epoch from s.started_at)::bigint * 1000 as started_ms,
+              extract(epoch from s.updated_at)::bigint * 1000 as updated_ms
+       from sessions s join courses c on c.id = s.course_id
+       order by s.updated_at desc limit 50`,
+    )).rows as Record<string, unknown>[];
+    sessions = rows.map((r) => ({
+      stem: String(r.stem),
+      title: String(r.title ?? deriveTitle(String(r.stem))),
+      course: String(r.slug),
+      startedAt: Number(r.started_ms) || Date.now(),
+      updatedAt: Number(r.updated_ms) || Date.now(),
+      stage: (r.stage === "recording" || r.stage === "remuxing" || r.stage === "transcribing"
+        || r.stage === "noting" || r.stage === "consolidating") ? "failed" : (r.stage as Stage),
+      stageNote: r.stage === "done" || r.stage === "failed" ? (r.stage_note ?? undefined) : "interrupted by restart",
+      segCount: r.seg_count == null ? undefined : Number(r.seg_count),
+      durationSec: r.duration_sec == null ? undefined : Number(r.duration_sec),
+      sizeMB: r.size_mb == null ? undefined : Number(r.size_mb),
+      joinUrl: r.join_url == null ? undefined : String(r.join_url),
+    }));
+    if (sessions.length) console.log(`[sessions] board rehydrated: ${sessions.length} session(s) from Postgres`);
+    // persist the interrupted→failed verdict so the durable rows agree with
+    // the board (a recording/consolidating row from a dead process is failed;
+    // orphan rescue rewrites genuine rescues to done afterwards)
+    await getPool().query(
+      `update sessions set stage = 'failed', stage_note = 'interrupted by restart', updated_at = now()
+       where stage in ('recording','remuxing','transcribing','noting','consolidating')`,
+    );
+  } catch (e) {
+    console.warn(`[sessions] board rehydrate skipped: ${String(e).slice(0, 120)}`);
+  }
 }

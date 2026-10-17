@@ -1,11 +1,14 @@
 /** Checklists API — GET list, POST generate/toggle/add/remove (generation is a
  *  slow LLM sweep over course documents), DELETE clear one/all. */
 import { NextResponse } from "next/server";
+import { dbReads } from "@/lib/backend";
+import * as db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET() {
+  if (dbReads()) return NextResponse.json({ checklists: await db.checklists() });
   try {
     const res = await fetch(`${BASE}/checklists`, { signal: AbortSignal.timeout(10_000) });
     const body = await res.text();

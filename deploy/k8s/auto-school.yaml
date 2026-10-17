@@ -85,6 +85,10 @@ spec:
         app: auto-school
     spec:
       terminationGracePeriodSeconds: 300 # stop recorder + consolidate on the way out
+      # Pin to one node: image is ~2.9GB; Recreate + free scheduling kept landing cold
+      # nodes (full multi-minute ghcr re-pull each rollout). Cache accumulates here.
+      # If migrating: pre-seed the new node first (ctr -n k8s.io images import).
+      nodeSelector: { kubernetes.io/hostname: k3s-worker-02 }
       imagePullSecrets:
         - name: reg-credentials-ghcr # copied into this namespace (header step 3)
       securityContext:
@@ -100,8 +104,17 @@ spec:
           env:
             - { name: TZ, value: America/Toronto } # school-day logic is date-scoped
             - { name: REBUILD_AT, value: "07:00,19:00" } # calendar rebuild wall-clock anchors (local TZ); unset → interval mode
+            # pgvector read path for chat tools (search_transcripts / semantic_search);
+            # tools fall back to substring scan when unset (src/db/reader.ts pgConfigured).
+            - { name: PGHOST, value: auto-school-pg }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: autoschool }
+            # smoke-test identity: when set, the daemon honors `x-owner-uuid`
+            # for exactly this UUID (scripts/smoke.ts runs as this user).
+            - { name: SMOKE_OWNER_UUID, value: "00000000-0000-4000-8000-000000000002" }
           envFrom:
             - secretRef: { name: auto-school-env }
+            - secretRef: { name: auto-school-pg }
           ports:
             - { containerPort: 7800, name: ctrl }
           livenessProbe: # entrypoint clears stale Xvfb/Pulse locks, so a hung
@@ -141,6 +154,16 @@ spec:
             - name: EDGE_SECRET
               valueFrom:
                 secretKeyRef: { name: auto-school-env, key: EDGE_SECRET, optional: true }
+            # PostgreSQL reads (plan/postgres-migration): DB_READS=1 switches the
+            # frontend data APIs from fs scans to PG queries (fs stays fallback-safe:
+            # unset → byte-identical legacy behavior). Creds come from auto-school-pg
+            # secret (PGUSER/PGPASSWORD); host/db point at the in-cluster PG.
+            - { name: DB_READS, value: "1" }
+            - { name: PGHOST, value: auto-school-pg }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: autoschool }
+          envFrom:
+            - secretRef: { name: auto-school-pg }
           ports:
             - { containerPort: 3000, name: http }
           readinessProbe:

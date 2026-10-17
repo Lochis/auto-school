@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { readFileSync } from "node:fs";
-import { DATA_DIR, sessions } from "@/lib/data";
+import { listSessions, timelineEntries } from "@/lib/backend";
 import LazyNotes from "../../lazy-notes";
 import AudioPlayer from "@/components/sessions/audio-player";
 import TranscriptTimeline, { type TimelineEntry } from "./transcript-timeline";
@@ -16,17 +15,10 @@ export const dynamic = "force-dynamic";
  *  reference view — click a topic, the audio jumps there). */
 export default async function SessionPage({ params }: { params: Promise<{ slug: string; stem: string }> }) {
   const { slug, stem } = await params;
-  const s = sessions(slug).find((x) => x.stem === stem);
+  const s = (await listSessions(slug)).find((x) => x.stem === stem);
   if (!s) notFound();
 
-  let entries: TimelineEntry[] = [];
-  if (s.timeline) {
-    try {
-      entries = JSON.parse(readFileSync(`${DATA_DIR}/${s.timeline}`, "utf8"));
-    } catch {
-      entries = [];
-    }
-  }
+  const entries = s.timeline ? await timelineEntries(slug, stem, s.timeline) : [];
 
   const courseName = slug.replace(/_/g, " ");
   const meetingTitle = stem.split("__")[1]?.replace(/_/g, " ").trim();

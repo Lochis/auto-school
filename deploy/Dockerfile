@@ -9,19 +9,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-# browsers land in a shared location (installed as root during build, run as node)
+# browsers land in a shared location (installed as root during build, run as node).
+# Edge browser install is hoisted ABOVE package.json with a pinned playwright
+# version — dependency changes must never invalidate the ~1.4GB browser layer
+# (learned 2026-10-16: a dep bump forced every node to re-pull the whole layer).
+# Keep this version in sync with package.json's playwright when bumping.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-COPY package.json ./
-# deps layer (cached unless package.json changes); --with-deps pulls system libs.
+RUN npx -y playwright@1.63.0 install --with-deps msedge \
+ && rm -rf /var/lib/apt/lists/*
 # Edge only: BROWSER_CHANNEL=msedge in .env (Teams sometimes blocks vanilla
 # Chromium). If you ever switch the channel to chromium, re-add its install
 # here — otherwise the launch will fail with "browser not found".
-# Then: purge packages --with-deps drags in via recommend-chains but nothing
-# uses at runtime (C compiler, theorem prover, TTS, icon themes…), and strip
-# Edge locale packs (keep en-*) — saves ~350MB uncompressed.
-RUN npm install --omit=dev \
- && npx playwright install --with-deps msedge \
- && rm -rf /var/lib/apt/lists/*
+COPY package.json ./
+# deps layer (cached unless package.json changes). Runtime-only deps; the
+# playwright npm package itself never downloads browsers (already in /ms-playwright).
+RUN npm install --omit=dev
 
 COPY . .
 RUN chmod +x deploy/entrypoint.sh

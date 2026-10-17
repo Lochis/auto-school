@@ -9,3 +9,4 @@ recordings/
 frontend/.next/
 *.tsbuildinfo
 stitch/*.zip
+dev-data/

@@ -1,10 +1,13 @@
 /** Deadlines API — GET list, POST rebuild (LLM sweep, slow), DELETE clear. */
 import { NextResponse } from "next/server";
+import { dbReads } from "@/lib/backend";
+import * as db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET() {
+  if (dbReads()) return NextResponse.json(await db.deadlinesFeed());
   try {
     const res = await fetch(`${BASE}/deadlines`, { signal: AbortSignal.timeout(10_000) });
     const body = await res.text();

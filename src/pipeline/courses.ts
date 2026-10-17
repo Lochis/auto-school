@@ -1,22 +1,33 @@
 /** Course categorization: parse class identity out of meeting titles. */
 import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { NOTES_DIR, DATA_DIR } from "../paths.ts";
+import { NOTES_DIR } from "../paths.ts";
+import { listMappings } from "../db/writes.ts";
+import { getPool } from "../db/client.ts";
 
-/** Manual title → folder overrides from <data>/mapping.json (managed via the UI).
+/** Manual title → folder overrides, now backed by meeting_mappings (Postgres).
  *  Exact title match wins; a normalized match is the second chance — calendar
  *  chips truncate titles at ~40 chars and drop "&", so the daemon can join
  *  with "26F --Data Warehs  Predictv Anltcs SEC 4" while the mapping key is
  *  "26F --Data Warehs & Predictv Anltcs (SEC. 402)". Normalizing away
- *  punctuation/case/spacing/sections makes both land on the same entry. */
-function mappingOverrides(): Map<string, string> {
-  try {
-    const raw = JSON.parse(readFileSync(`${DATA_DIR}/mapping.json`, "utf8"));
-    return new Map(Object.entries(raw).map(([k, v]) => [k.trim(), String(v).trim()]));
-  } catch {
-    return new Map();
+ *  punctuation/case/spacing/sections makes both land on the same entry.
+ *  Rows are cached (refreshMappings) so parseCourse stays synchronous. */
+let mappingCache: Map<string, string> | null = null;
+
+/** Load meeting_mappings into the cache; DB supplies the rows. */
+export async function refreshMappings(): Promise<void> {
+  const rows = await listMappings();
+  const m = new Map<string, string>();
+  for (const r of rows) {
+    const slug = (await getPool().query(`select slug from courses where id = $1`, [r.courseId])).rows[0]?.slug;
+    if (slug) m.set(r.matchTitle.trim(), slug);
   }
+  mappingCache = m;
 }
-const normTitle = (s: string): string =>
+
+function mappingOverrides(): Map<string, string> {
+  return mappingCache ?? new Map();
+}
+export const normTitle = (s: string): string =>
   s.toLowerCase().replace(/&/g, " ").replace(/\(\s*sec\.?\s*\d+\s*\)|sec\.?\s*\d+/gi, " ").replace(/[^a-z0-9]+/g, "");
 function mappingLookup(title: string): string | undefined {
   const ex = mappingOverrides();

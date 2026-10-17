@@ -5,7 +5,7 @@
  *                 authGraph starts the one-time Graph device-code approval;
  *                 paused toggles auto-join suppression (absence mode). */
 import { NextResponse } from "next/server";
-import { courses, sessions as dataSessions } from "@/lib/data";
+import { listCourses, listSessions } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,7 @@ const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
  *  daemon data can never point at a non-existent course route. */
 const norm = (x: string): string => x.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-function canonicalizeSession(s: Record<string, unknown>, canon: Map<string, string>): void {
+function canonicalizeSession(s: Record<string, unknown>, canon: Map<string, string>, stemsByCourse: Map<string, Set<string>>): void {
   const cand =
     (typeof s.course === "string" && s.course) ||
     (typeof s.mp4 === "string" && s.mp4.match(/^recordings\/([^/]+)\//)?.[1]) ||
@@ -29,8 +29,8 @@ function canonicalizeSession(s: Record<string, unknown>, canon: Map<string, stri
   delete s.sessionStem;
   if (typeof s.mp4 === "string") {
     const file = s.mp4.split("/").pop()?.replace(/\.(mp4|webm)$/, "");
-    if (file && hit && dataSessions(hit).some((x) => x.stem === file)) s.sessionStem = file;
-    else if (typeof s.stem === "string" && /^\d{4}-\d{2}-\d{2}__/.test(s.stem) && hit && dataSessions(hit).some((x) => x.stem === s.stem)) s.sessionStem = s.stem;
+    if (file && hit && stemsByCourse.get(hit)?.has(file)) s.sessionStem = file;
+    else if (typeof s.stem === "string" && /^\d{4}-\d{2}-\d{2}__/.test(s.stem) && hit && stemsByCourse.get(hit)?.has(s.stem)) s.sessionStem = s.stem;
   }
 }
 
@@ -40,8 +40,12 @@ export async function GET() {
     const body = await res.json();
     if (body?.sessions && Array.isArray(body.sessions) && body.sessions.length) {
       const canon = new Map<string, string>();
-      for (const c of courses()) canon.set(norm(c), c);
-      for (const s of body.sessions as Record<string, unknown>[]) canonicalizeSession(s, canon);
+      const stemsByCourse = new Map<string, Set<string>>();
+      for (const c of await listCourses()) {
+        canon.set(norm(c), c);
+        stemsByCourse.set(c, new Set((await listSessions(c)).map((x) => x.stem)));
+      }
+      for (const s of body.sessions as Record<string, unknown>[]) canonicalizeSession(s, canon, stemsByCourse);
     }
     return NextResponse.json(body);
   } catch {

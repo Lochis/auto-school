@@ -1,10 +1,12 @@
 /** In-memory status board: the daemon's controller serves it at /status and
  *  the frontend renders it. Every pipeline stage reports here so the UI can
  *  show what's happening now and what happens next. */
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { DATA_DIR, OUT_DIR } from "./paths.ts";
+import { DATA_DIR } from "./paths.ts";
 import { listSessions } from "./pipeline/sessions.ts";
+import { appendEvent, listEvents } from "./db/writes.ts";
+import { leftLoad, leftAdd, leftPruneExcept, leftClear } from "./db/state.ts";
 
 export interface StatusEvent { ts: string; msg: string }
 
@@ -245,30 +247,34 @@ function localDate(d = new Date()): string {
   catch { return d.toISOString().slice(0, 10); }
 }
 
-const LEFT_FILE = join(DATA_DIR, "left-meetings.json");
+/** Titles the user manually left today — in-memory set hydrated from Postgres
+ *  once at startup; recordLeftToday() mutates memory + fire-and-forgets the DB. */
+let leftToday: string[] = [];
+
+/** Hydrate today's manually-left titles from Postgres (no-op without PG). */
+export async function hydrateLeftToday(): Promise<void> {
+  try { leftToday = await leftLoad(localDate()); } catch { leftToday = []; }
+}
 
 /** Titles the user manually left today — never auto-joined again today, even
  *  after a restart. Different-day meetings with the same name auto-join fine. */
 export function loadLeftToday(): string[] {
-  try {
-    const all = JSON.parse(readFileSync(LEFT_FILE, "utf8")) as Record<string, string[]>;
-    return all[localDate()] ?? [];
-  } catch { return []; }
+  return leftToday;
 }
 
 export function recordLeftToday(title: string): void {
   const day = localDate();
-  let all: Record<string, string[]> = {};
-  try { all = JSON.parse(readFileSync(LEFT_FILE, "utf8")) as Record<string, string[]>; } catch { /* fresh */ }
-  const list = new Set(all[day] ?? []);
+  const list = new Set(leftToday);
   list.add(title);
-  for (const k of Object.keys(all)) if (k !== day) delete all[k]; // prune old days
-  try { writeFileSync(LEFT_FILE, JSON.stringify({ [day]: [...list] }, null, 2)); } catch { /* read-only fs */ }
+  leftToday = [...list];
+  void leftAdd(day, title).catch(() => { /* durable tail best-effort */ });
+  void leftPruneExcept(day).catch(() => { /* durable tail best-effort */ });
   pushEvent(`leave: "${title}" — won't auto-join again today`);
 }
 
 export function clearLeftToday(): void {
-  try { writeFileSync(LEFT_FILE, JSON.stringify({})); } catch { /* read-only fs */ }
+  leftToday = [];
+  void leftClear().catch(() => { /* durable tail best-effort */ });
 }
 
 const events: StatusEvent[] = [];
@@ -286,23 +292,15 @@ export function setDetail(patch: Record<string, string | number>): void {
   Object.assign(board.detail, patch);
 }
 
-let eventLog: ReturnType<typeof createAppend> | null = null;
-function createAppend() {
-  try { return { file: OUT_DIR + "/events.jsonl" }; } catch { return null; }
-}
 export function pushEvent(msg: string): void {
   events.unshift({ ts: new Date().toISOString(), msg });
   if (events.length > 60) events.length = 60;
-  try { // durable tail — survives restarts, feeds the UI history
-    mkdirSync(OUT_DIR, { recursive: true });
-    appendFileSync(`${OUT_DIR}/events.jsonl`, JSON.stringify(events[0]) + "\n");
-  } catch { /* read-only */ }
+  void appendEvent(msg).catch(() => { /* durable tail best-effort */ });
 }
-(function seedEvents() { // boot: restore recent history
-  try {
-    const lines = readFileSync(`${OUT_DIR}/events.jsonl`, "utf8").trim().split("\n").slice(-60).reverse();
-    for (const l of lines) { try { events.push(JSON.parse(l)); } catch { /* skip */ } }
-  } catch { /* first boot */ }
+(function seedEvents() { // boot: restore recent history from PG (fire-and-forget)
+  listEvents(60)
+    .then((rows) => { if (events.length === 0) for (const r of rows) events.push({ ts: new Date(r.ts).toISOString(), msg: r.msg }); })
+    .catch(() => { /* DB not ready — empty feed until first event */ });
 })();
 
 export function snapshot(): { activity: string; detail: Record<string, string | number>; events: StatusEvent[]; sessions: import("./pipeline/sessions.ts").SessionState[] } {
