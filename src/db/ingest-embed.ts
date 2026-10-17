@@ -7,11 +7,12 @@
  * Shared extraction helpers live here; scripts/embed-backfill.ts imports them
  * so script and daemon can never drift apart. */
 import { execFile } from "node:child_process";
-import { readFileSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join, extname } from "node:path";
 import { getPool } from "./client.ts";
 import { embedTexts, geminiApiKey, toVectorLiteral, EMBEDDING_MODEL } from "./embeddings.ts";
 import { pgConfigured } from "./reader.ts";
+import { courseId } from "./writes.ts";
 
 /** lochis bootstrap owner (see ddl.sql seed) */
 const OWNER = "00000000-0000-0000-0000-000000000001";
@@ -34,6 +35,26 @@ export async function docxText(src: string): Promise<string> {
   const mammoth = await import("mammoth");
   const { value: html } = await mammoth.convertToHtml({ path: src });
   return html.replace(/<[^>]+>/g, " ");
+}
+
+/** PPTX → text (slide <a:t> runs, in slide order). jszip rides mammoth's
+ *  transitive dependency — no direct dep to avoid lockfile churn. */
+function decodeXml(s: string): string {
+  return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+export async function pptxText(src: string): Promise<string> {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(readFileSync(src));
+  const slides = Object.keys(zip.files)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => Number(a.match(/slide(\d+)\.xml/)![1]) - Number(b.match(/slide(\d+)\.xml/)![1]));
+  const out: string[] = [];
+  for (const f of slides) {
+    const xml = (await zip.file(f)!.async("string")) as string;
+    const line = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((m) => decodeXml(m[1])).join(" ").trim();
+    if (line) out.push(line);
+  }
+  return out.join("\n\n");
 }
 
 export interface Chunk { page: number; chunk_index: number; content: string }
@@ -60,6 +81,7 @@ export async function materialChunks(abs: string, filename: string): Promise<Chu
   let pages: string[] = [];
   if (ext === ".pdf") pages = await pdfPages(abs);
   else if (ext === ".docx") pages = [await docxText(abs)];
+  else if (ext === ".pptx") pages = [await pptxText(abs)];
   else pages = [readFileSync(abs, "utf8")]; // txt/md/csv/json
   const chunks: Chunk[] = [];
   pages.forEach((raw, i) => {
@@ -72,16 +94,56 @@ export async function materialChunks(abs: string, filename: string): Promise<Chu
 }
 
 /** extension whitelist — everything else is skipped as unembeddable */
-export const EMBEDDABLE = new Set([".pdf", ".docx", ".txt", ".md", ".csv", ".json"]);
-
-/** documents.category CHECK whitelist — manifest categories outside it coerce to "other" */
-const DOC_CATEGORIES = new Set(["syllabus", "assignment", "lecture-notes", "reference", "rubric", "transcript", "other"]);
+export const EMBEDDABLE = new Set([".pdf", ".docx", ".pptx", ".txt", ".md", ".csv", ".json"]);
 
 export interface EmbedSweepResult {
   ok: boolean;
   reason?: "pg-not-configured" | "no-key" | string;
   docs: number;
   chunks: number;
+}
+
+/** Targeted upload/transcribe embed — one material only, no fs sweep.
+ *  Metadata (week/category/size) is set by registerMaterial's upsert; this
+ *  ensures the row, chunks + embeds it, and stamps indexed_at. */
+export async function embedOneMaterial(course: string, relPath: string, opts: {
+  dataDir?: string; rpm?: number; log?: (m: string) => void;
+} = {}): Promise<EmbedSweepResult> {
+  const DATA = opts.dataDir ?? process.env.AUTO_SCHOOL_DATA ?? ".";
+  const log = opts.log ?? (() => { });
+  if (!pgConfigured()) return { ok: false, reason: "pg-not-configured", docs: 0, chunks: 0 };
+  const key = geminiApiKey(DATA);
+  if (!key) return { ok: false, reason: "no-key", docs: 0, chunks: 0 };
+  const pool = getPool();
+  const q = (text: string, params: unknown[] = []) => pool.query(text, params);
+  try {
+    const cid = await courseId(course);
+    const filename = relPath.split("/").pop()!;
+    if (!EMBEDDABLE.has(extname(filename).toLowerCase()))
+      return { ok: true, reason: "not-embeddable", docs: 1, chunks: 0 };
+    const chunks = await materialChunks(join(DATA, "courses", course, "materials", relPath), filename);
+    const row = (await q(`insert into documents (course_id, kind, rel_path, filename, owner_user_id, updated_at)
+      values ($1,'material',$2,$3,$4, now())
+      on conflict (course_id, kind, rel_path) do update set filename = excluded.filename, updated_at = now()
+      returning id`, [cid, relPath, filename, OWNER])).rows[0];
+    await q(`delete from document_chunks where document_id = $1`, [row.id]);
+    if (chunks.length) {
+      const embeddings = await embedTexts(chunks.map((c) => c.content), { apiKey: key, rpm: opts.rpm ?? 60 });
+      const params: unknown[] = [];
+      const tuples = chunks.map((c, j) => {
+        params.push(row.id, c.page, c.chunk_index, c.content, Math.ceil(c.content.length / 4), toVectorLiteral(embeddings[j]!));
+        const b = params.length - 6;
+        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6}::vector,'${EMBEDDING_MODEL}')`;
+      });
+      await q(`insert into document_chunks (document_id, page, chunk_index, content, token_count, embedding, embedding_model)
+        values ${tuples.join(",")}`, params);
+    }
+    await q(`update documents set indexed_at = now(), page_count = $2 where id = $1`, [row.id, Math.max(...chunks.map((c) => c.page), 0)]);
+    log(`embed: ${course}/${filename} → ${chunks.length} chunk(s)`);
+    return { ok: true, docs: 1, chunks: chunks.length };
+  } catch (e) {
+    return { ok: false, reason: String(e).slice(0, 200), docs: 0, chunks: 0 };
+  }
 }
 
 /** Sync documents rows for materials (fs walk × manifest overlay), then chunk +
@@ -100,62 +162,22 @@ export async function embedPendingMaterials(opts: {
   const q = (text: string, params: unknown[] = []) => pool.query(text, params);
 
   try {
-    // ── 1. sync documents rows: walk fs, overlay manifest fields ──────────
-    const courses = readdirSync(join(DATA, "courses"), { withFileTypes: true })
-      .filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name);
-    let ensured = 0;
-    for (const slug of courses) {
-      const mRoot = join(DATA, "courses", slug, "materials");
-      let manifest: Record<string, Record<string, unknown>> = {};
-      try {
-        manifest = Object.fromEntries((JSON.parse(readFileSync(join(mRoot, "materials.json"), "utf8")) as { path: string }[])
-          .map((e) => [e.path, e as unknown as Record<string, unknown>]));
-      } catch { /* no manifest — bare tree still syncs */ }
-      const walk = (d: string, rel = ""): string[] =>
-        readdirSync(d, { withFileTypes: true }).flatMap((e) => {
-          const r = rel ? `${rel}/${e.name}` : e.name;
-          if (e.isDirectory()) return e.name.startsWith(".") ? [] : walk(join(d, e.name), r);
-          if (e.name === "materials.json" || e.name.startsWith(".")) return []; // manifest ≠ material
-          return [r]; // EVERY file — non-embeddable rows exist too (import-fs-to-pg)
-        });
-      // full walk doubles as the prune oracle; the upsert loop below only
-      // takes embeddable, non-attic files
-      let seen: string[] = [];
-      try { seen = walk(mRoot); } catch { continue; } // walk aborted → never prune on partial data
-      const files = seen.filter((r) => !r.split("/").includes("attic") && EMBEDDABLE.has(extname(r).toLowerCase()));
-      await q(`insert into courses (slug, name, owner_user_id) values ($1,$2,$3)
-        on conflict (slug) do nothing`, [slug, slug.replace(/_/g, " "), OWNER]);
-      const cid = (await q(`select id from courses where slug=$1`, [slug])).rows[0]?.id as number | undefined;
-      if (!cid) continue;
-      // prune: material rows whose file vanished from the fs tree (safety net
-      // for delete/rename paths that miss the fs hooks). Chunks cascade
-      // (ddl.sql). Empty `seen` (everything deleted) clears the whole set;
-      // session-kind rows are untouched.
-      const gone = await q(`delete from documents where course_id=$1 and kind='material'
-        and rel_path <> all($2::text[])`, [cid, seen]);
-      if (gone.rowCount) log(`embed: pruned ${gone.rowCount} vanished material row(s) in ${slug}`);
-      if (!files.length) continue;
-      for (const rel of files) {
-        const m = manifest[rel] ?? {};
-        let size: number | null = null, mtime = new Date();
-        try { const st = statSync(join(mRoot, rel)); size = st.size; mtime = st.mtime; } catch { continue; }
-        await q(`insert into documents (course_id, kind, rel_path, filename, week, category, description, size_bytes, uploaded_at, owner_user_id, updated_at)
-          values ($1,'material',$2,$3,$4,$5,$6,$7,$8,$9,$10)
-          on conflict (course_id, kind, rel_path) do update set
-            filename=excluded.filename, week=excluded.week, category=excluded.category,
-            description=excluded.description, size_bytes=excluded.size_bytes`,
-          [cid, rel, (m.filename as string) ?? rel.split("/").pop()!, (m.week as number) ?? null,
-            DOC_CATEGORIES.has(m.category as string) ? (m.category as string) : "other", (m.description as string) ?? "", size,
-            m.uploadedAt ? new Date(String(m.uploadedAt)) : null, OWNER, mtime]);
-        ensured++;
+    // ── 1. prune: material rows whose fs file vanished (crash net) ────────
+    const all = (await q(`select d.id, d.rel_path, c.slug from documents d join courses c on c.id = d.course_id where d.kind='material'`)).rows;
+    let pruned = 0;
+    for (const r of all) {
+      if (!existsSync(join(DATA, "courses", String(r.slug), "materials", String(r.rel_path)))) {
+        await q(`delete from documents where id = $1`, [r.id]);
+        pruned++;
       }
     }
+    if (pruned) log(`embed: pruned ${pruned} vanished material row(s)`);
 
-    // ── 2. pending = indexed_at null or older than file mtime ─────────────
-    const { rows } = await q(`select d.id, d.rel_path, d.filename, d.indexed_at, c.slug
+    // ── 2. retry never-embedded rows (embed failed at upload, e.g. no key) ──
+    const { rows } = await q(`select d.id, d.rel_path, d.filename, c.slug
       from documents d join courses c on c.id=d.course_id
-      where d.kind='material' and c.slug <> 'attic' and d.rel_path not like '%.index/%'
-      order by c.slug, d.rel_path`);
+      where d.kind='material' and d.indexed_at is null and c.slug <> 'attic' and d.rel_path not like '%.index/%'
+      order by c.slug, d.rel_path limit 200`);
     const work: { id: string; slug: string; filename: string; rel_path: string; chunks: Chunk[]; remaining: number }[] = [];
     for (const r of rows) {
       // videos/images/code are real materials (list_materials must show them) but
@@ -165,14 +187,10 @@ export async function embedPendingMaterials(opts: {
       // dot-paths / hidden files / node_modules trees are never real materials
       if (String(r.rel_path).split("/").some((s) => s.startsWith("."))) continue;
       const abs = join(DATA, "courses", String(r.slug), "materials", String(r.rel_path));
-      let st; try { st = statSync(abs); } catch { continue; }
-      const indexed = r.indexed_at ? Date.parse(String(r.indexed_at)) : 0;
-      if (indexed >= st.mtimeMs) continue;
       let chunks: Chunk[];
       try { chunks = await materialChunks(abs, String(r.filename)); }
       catch (e) { log(`embed: extract failed ${r.slug}/${r.rel_path}: ${String(e).slice(0, 80)}`); continue; }
       work.push({ id: String(r.id), slug: String(r.slug), filename: String(r.filename), rel_path: String(r.rel_path), chunks, remaining: chunks.length });
-      if (work.length >= 200) break; // sweep guard: uploads trigger fresh passes anyway
     }
     if (!work.length) return { ok: true, reason: "fresh", docs: 0, chunks: 0 };
 

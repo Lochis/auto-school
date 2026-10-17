@@ -43,7 +43,7 @@ import { finalizeNotes } from "./pipeline/notes.ts";
 import { updateSession, listSessions, hydrateSessions, stemTimes } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention, retainedUntilFrom } from "./pipeline/retention.ts";
-import { embedPendingMaterials, embedPendingSessions } from "./db/ingest-embed.ts";
+import { embedPendingMaterials, embedPendingSessions, embedOneMaterial } from "./db/ingest-embed.ts";
 import { getPool } from "./db/client.ts";
 import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId, upsertArtifact, upsertCourseConfig } from "./db/writes.ts";
 import { chatList, chatSave, chatClear, attendanceLoad, attendanceUpsert, metaLoad, metaReplace } from "./db/state.ts";
@@ -1691,11 +1691,12 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
                 if (pages > 0) pushEvent(`eager-indexed ${s.path} (${pages} pages)`);
               } catch { /* next file */ }
             }
-            // EMBED PASS — embeddings are the standard for materials: chunk +
-            // embed fresh uploads right after eager-index so semantic search
-            // covers them immediately. Best-effort; failures surface in feed.
-            const er = await embedPendingMaterials({ log: (m) => pushEvent(`embed: ${m}`) });
-            if (er.ok && er.chunks) pushEvent(`embedded ${er.chunks} chunk(s) from ${er.docs} material(s) — semantic search updated`);
+            // EMBED PASS — targeted: embed each fresh upload right after eager-index
+            // so semantic search covers it immediately. Best-effort.
+            for (const s of saved) {
+              const er = await embedOneMaterial(slug, s.path, { log: (m) => pushEvent(`embed: ${m}`) });
+              if (er.ok && er.chunks) pushEvent(`embedded ${er.chunks} chunk(s) from ${s.path}`);
+            }
           })();
           return send(200, { ok: true, saved });
         } catch (e) { return send(500, { error: `upload failed: ${String(e).slice(0, 100)}` }); }
@@ -1761,8 +1762,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
                 category: "transcript", description: "", uploadedAt: new Date().toISOString(), size: statSync(absTranscript).size,
               });
               pushEvent(`material transcribe: ${filename} done`);
-              const er = await embedPendingMaterials({ log: (m) => pushEvent(`embed: ${m}`) });
-              if (er.ok && er.chunks) pushEvent(`embedded ${er.chunks} chunk(s) from ${er.docs} material(s) — semantic search updated`);
+              const er = await embedOneMaterial(slug, tRel, { log: (m) => pushEvent(`embed: ${m}`) });
+              if (er.ok && er.chunks) pushEvent(`embedded ${er.chunks} chunk(s) from ${tRel}`);
             } catch (e) {
               const msg = String(e).slice(0, 120);
               pushEvent(`material transcribe FAILED: ${filename}: ${msg}`);
