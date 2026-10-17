@@ -7,6 +7,7 @@
 | `postgres-migration.md` + `postgres-architecture.mmd` | DB schema, importer, cutover phases, CNPG deploy |
 | `storage-backends.md` | Pluggable per-user blob storage (`file://`/`s3://`), publish/playback/retention flows |
 | `future-product-goals.md` | Deferred product vision (onboarding, AI login recipes, BYOK, billing) |
+| `personal-not-commercial-phase3-gaps.md` | Post-Phase-3 read gaps split: personal-only (calendar, mapping candidates — deferred) vs commercial (materials single source of truth + auto-embed) |
 
 ## Recommended build order (dependency-driven)
 
