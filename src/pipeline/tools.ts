@@ -334,7 +334,7 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
         const embedding = await embedQuery(query, { apiKey: key });
         const hits = await vectorSearch({ embedding, course: slug, k });
         return hits.length
-          ? `Semantic matches for "${query}" (kind · course · source · page, most similar first; follow up with read_document/read_notes for full text):
+          ? `Semantic matches for "${query}" (kind · course · source · page, most similar first; follow up with read_document/read_notes for full text). CITE material hits inline as [[<full path from source>]] — the path shown includes its folders; cite it verbatim:
 ${chunkHitLines(hits).join("\n")}`
           : `no semantic matches for "${query}" — the embedding index may be empty; try search_transcripts (keyword) or list_materials`;
       } catch (e) { return `semantic search failed: ${String(e).slice(0, 150)}`; }

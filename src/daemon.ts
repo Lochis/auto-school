@@ -42,6 +42,7 @@ import { finalizeNotes } from "./pipeline/notes.ts";
 import { updateSession, listSessions } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention } from "./pipeline/retention.ts";
+import { embedPendingMaterials } from "./db/ingest-embed.ts";
 
 const POLL_MS = (Number(process.env.POLL_MINUTES ?? 2) || 2) * 60_000;
 const DISCOVERY_MS = (Number(process.env.DISCOVERY_SECONDS ?? 60) || 60) * 1_000; // Graph poll cadence
@@ -1229,6 +1230,11 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
                 if (pages > 0) pushEvent(`eager-indexed ${s.path} (${pages} pages)`);
               } catch { /* next file */ }
             }
+            // EMBED PASS — embeddings are the standard for materials: chunk +
+            // embed fresh uploads right after eager-index so semantic search
+            // covers them immediately. Best-effort; failures surface in feed.
+            const er = await embedPendingMaterials({ log: (m) => pushEvent(`embed: ${m}`) });
+            if (er.ok && er.chunks) pushEvent(`embedded ${er.chunks} chunk(s) from ${er.docs} material(s) — semantic search updated`);
           })();
           return send(200, { ok: true, saved });
         } catch (e) { return send(500, { error: `upload failed: ${String(e).slice(0, 100)}` }); }
@@ -2331,6 +2337,11 @@ export async function daemon(): Promise<void> {
     const r = runRetention();
     if (r && r.removed > 0)
       pushEvent(`retention: removed ${r.removed} video file(s), freed ${(r.freedBytes / 1e6).toFixed(0)} MB — transcripts & notes kept`);
+    // piggyback: incremental material embedding sweep (no-op when fresh; PG/key
+    // absent → silent skip — uploads still embed when config returns)
+    void embedPendingMaterials().then((er) => {
+      if (er.ok && er.chunks) pushEvent(`embed sweep: +${er.chunks} chunk(s) from ${er.docs} material(s)`);
+    }).catch(() => { });
   };
   setInterval(retentionPass, 6 * 3_600_000).unref();
   // background queue: rescue old segments WITHOUT blocking discovery —

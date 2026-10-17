@@ -10,7 +10,6 @@
  *  skipped; re-embedding deletes the doc's old chunks first (no dupes).
  *  Session-kind source mtime = session_artifacts.updated_at; materials use
  *  the fs file mtime. */
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 
@@ -57,73 +56,9 @@ async function connect(): Promise<Pool> {
 }
 const q = (sqlText: string, params: unknown[] = []) => pool.query(sqlText, params);
 
-// ── text extraction (mirrors src/pipeline/docindex.ts) ────────────────────
-const run = (cmd: string, argv: string[]): Promise<{ code: number | null; out: string; err: string }> =>
-  new Promise((res) => {
-    const p = spawn(cmd, argv);
-    let out = "", err = "";
-    p.stdout.on("data", (d) => (out += d));
-    p.stderr.on("data", (d) => (err += d));
-    p.on("close", (code) => res({ code, out, err }));
-    p.on("error", (e) => res({ code: -1, out, err: String(e) }));
-  });
-
-/** only these get embedded — code/binary trees (php/java/dll/exe/…) are noise */
-const EMBEDDABLE = new Set([".pdf", ".docx", ".txt", ".md", ".csv", ".json"]);
-
-/** PDF → page texts. docindex indexPdf() does one pdftotext pass and splits
- *  on \f form-feeds — mirrored exactly (no PNGs here, text only). */
-async function pdfPages(src: string): Promise<string[]> {
-  const t = await run("pdftotext", ["-enc", "UTF-8", src, "-"]);
-  if (t.code !== 0) throw new Error(`pdftotext exited ${t.code}: ${t.err.trim().slice(0, 120)}`);
-  return t.out.split("\f");
-}
-
-/** DOCX → text. docindex's text-only fallback path (mammoth html→markdown-ish
- *  text) — no browser/print-to-PDF in a backfill script. */
-async function docxText(src: string): Promise<string> {
-  const mammoth = await import("mammoth");
-  const { value: html } = await mammoth.convertToHtml({ path: src });
-  return html
-    .replace(/<h1[^>]*>/g, "\n# ").replace(/<h2[^>]*>/g, "\n## ").replace(/<h3[^>]*>/g, "\n### ")
-    .replace(/<li[^>]*>/g, "\n- ").replace(/<\/(p|li|tr|h1|h2|h3|table)>/g, "\n")
-    .replace(/<td[^>]*>/g, " | ").replace(/<[^>]+>/g, "").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-interface Chunk { page: number; chunk_index: number; content: string; embedding?: number[] }
-
-/** Split ~max chars at paragraph/line/word boundaries (never mid-word unless forced). */
-function splitLong(text: string, max: number): string[] {
-  const parts: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    if (text.length - i <= max) { parts.push(text.slice(i).trim()); break; }
-    const end = i + max;
-    let cut = Math.max(text.lastIndexOf("\n\n", end), text.lastIndexOf("\n", end), text.lastIndexOf(" ", end));
-    if (cut <= i) cut = end;
-    parts.push(text.slice(i, cut).trim());
-    i = cut;
-  }
-  return parts.filter((p) => p.length > 0);
-}
-
-/** Materials: one page = one chunk (chunk_index 0); oversized pages split
- *  into ~6000-char pieces (chunk_index 1..n). page = 1-based page number. */
-async function materialChunks(abs: string, filename: string): Promise<Chunk[]> {
-  const ext = extname(filename).toLowerCase();
-  let pages: string[];
-  if (ext === ".pdf") pages = await pdfPages(abs);
-  else if (ext === ".docx") pages = [await docxText(abs)];
-  else pages = [readFileSync(abs, "utf8")];
-  const chunks: Chunk[] = [];
-  pages.forEach((raw, i) => {
-    const txt = raw.trim();
-    if (!txt) return; // scanned/empty page — no chunk
-    const pieces = txt.length > 6000 ? splitLong(txt, 6000) : [txt];
-    pieces.forEach((p, j) => chunks.push({ page: i + 1, chunk_index: j, content: p }));
-  });
-  return chunks;
-}
+// ── text extraction: SHARED with the daemon path (src/db/ingest-embed.ts) ──
+const { pdfPages, docxText, splitLong, materialChunks, EMBEDDABLE } = await import("../src/db/ingest-embed.ts");
+type Chunk = { page: number; chunk_index: number; content: string; embedding?: number[] };
 
 /** Notes/transcripts: ~4000-char chunks at paragraph boundaries (page=1). */
 const paragraphChunks = (text: string, max = 4000): Chunk[] =>
