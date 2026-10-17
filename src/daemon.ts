@@ -37,12 +37,14 @@ import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/t
 import { ensureIndex, indexDir, bundleFresh, supportsIndex } from "./pipeline/docindex.ts";
 import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
-import { rebuildIndex, parseCourse, courseDir } from "./pipeline/courses.ts";
+import { rebuildIndex, parseCourse, courseDir, refreshMappings, normTitle as normMappingTitle } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
 import { updateSession, listSessions } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention } from "./pipeline/retention.ts";
 import { embedPendingMaterials } from "./db/ingest-embed.ts";
+import { getPool } from "./db/client.ts";
+import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId, upsertArtifact } from "./db/writes.ts";
 
 const POLL_MS = (Number(process.env.POLL_MINUTES ?? 2) || 2) * 60_000;
 const DISCOVERY_MS = (Number(process.env.DISCOVERY_SECONDS ?? 60) || 60) * 1_000; // Graph poll cadence
@@ -593,6 +595,330 @@ async function sweepIndexes(): Promise<void> {
   if (built > 0) pushEvent(`index sweep done — ${built} bundle(s) built`);
 }
 
+// ── Phase 4: user-data (deadlines / folds / checklists) in Postgres ────────
+// The /deadlines and /checklists routes keep their exact mutation semantics
+// (id hashing, dedupe, fold/unfold, carry-over); only the read/write
+// primitives changed from JSON files to SQL. Raw SQL via the shared Pool.
+const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
+
+type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string; dueManual?: boolean; stale?: number; parts?: { title: string; due: string | null; note: string; done: boolean }[] };
+type CkItem = { id: string; text: string; done: boolean; doneAt: number | null; manual?: boolean };
+type Ck = { deadlineId: string; course: string; title: string; items: CkItem[]; updatedAt: number };
+type FoldSug = { parentId: string; parentTitle: string; childId: string; childTitle: string; childDue: string | null };
+type Verdict = { v: "accepted" | "declined"; parent?: string; parentTitle?: string };
+type Tomb = { child: Dl; parentId: string; parentKey: string; parentTitle: string; addedItemIds: string[]; enriched?: { itemId: string; prevText: string; prevDone: boolean }; partTitles?: string[]; at: number };
+type FoldsFile = { verdicts: Record<string, Verdict>; pending: FoldSug[]; folded: Record<string, Tomb> };
+
+const dlKey = (c: string, t: string): string => `${c}|${t.toLowerCase().trim()}`;
+const dlId = (c: string, t: string): string => { // stable: same course+title → same id
+  let h = 5381;
+  for (const ch of dlKey(c, t)) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
+  return h.toString(16);
+};
+const itemId = (dl: string, t: string): string => { // stable: same deadline+text → same id
+  let h = 5381;
+  for (const ch of `${dl}|${t.toLowerCase().trim()}`) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
+  return h.toString(16);
+};
+/** enforce unique ids IN PLACE (same course+title twice, or a hash collision) */
+const uniqIds = (d: Dl[]): Dl[] => {
+  const seen = new Set<string>();
+  for (const x of d) {
+    if (!x.id || seen.has(x.id)) {
+      let n = 1;
+      while (seen.has(`${x.id}~${n}`)) n++;
+      x.id = `${x.id}~${n}`;
+    }
+    seen.add(x.id);
+  }
+  return d;
+};
+
+/** deadline row → legacy Dl shape (epoch-ms doneAt/stale, date strings). */
+const dlFromRow = (r: Record<string, unknown>): Dl => {
+  const d: Dl = {
+    id: (r.legacy_id as string) ?? dlId(String(r.course), String(r.title)),
+    course: String(r.course), title: String(r.title),
+    due: r.due == null ? null : String(r.due),
+    kind: String(r.kind ?? ""), spread: Boolean(r.spread),
+    startBy: r.start_by == null ? null : String(r.start_by),
+    note: String(r.note ?? ""), source: String(r.source ?? ""),
+    confidence: String(r.confidence ?? "high"), done: Boolean(r.done),
+    doneAt: r.done_at ? new Date(r.done_at as Date).getTime() : null,
+  };
+  if (r.user_note != null) d.userNote = String(r.user_note);
+  if (r.due_manual) d.dueManual = true;
+  if (r.stale != null) d.stale = Number(r.stale);
+  return d;
+};
+
+async function readDl(): Promise<Dl[]> {
+  const rows = (await q(
+    `select d.id, d.legacy_id, c.slug as course, d.title, d.due::text as due, d.due_manual, d.kind,
+            d.spread, d.start_by::text as start_by, d.note, d.source, d.confidence, d.done,
+            d.done_at, d.user_note, d.stale
+     from deadlines d join courses c on c.id = d.course_id
+     where d.owner_user_id = $1
+       and not exists (select 1 from deadline_folds f where f.child_id = d.id and f.status = 'accepted')
+     order by d.id`,
+    [OWNER],
+  )).rows as Record<string, unknown>[];
+  const parts = (await q(
+    `select p.deadline_id::text as deadline_id, p.title, p.due::text as due, p.note, p.done
+     from deadline_parts p order by p.id`,
+  )).rows as Record<string, unknown>[];
+  const byId = new Map<string, Dl>();
+  for (const r of rows) byId.set(String(r.id), dlFromRow(r));
+  for (const p of parts) {
+    const dl = byId.get(String(p.deadline_id));
+    if (dl) dl.parts = [...(dl.parts ?? []), { title: String(p.title), due: p.due == null ? null : String(p.due), note: String(p.note ?? ""), done: Boolean(p.done) }];
+  }
+  const out = [...byId.values()];
+  uniqIds(out);
+  out.sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.course.localeCompare(b.course));
+  return out;
+}
+
+async function upsertDeadlineRow(x: Dl): Promise<number> {
+  const cid = await courseId(x.course);
+  const r = await q(
+    `insert into deadlines (legacy_id, course_id, title, due, due_manual, kind, spread, start_by,
+        note, source, confidence, done, done_at, user_note, stale, owner_user_id)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     on conflict (course_id, title, legacy_id) do update set
+       due=excluded.due, due_manual=excluded.due_manual, kind=excluded.kind, spread=excluded.spread,
+       start_by=excluded.start_by, note=excluded.note, source=excluded.source,
+       confidence=excluded.confidence, done=excluded.done, done_at=excluded.done_at,
+       user_note=excluded.user_note, stale=excluded.stale, updated_at=now()
+     returning id`,
+    [x.id, cid, x.title, x.due, x.dueManual ?? false, x.kind, x.spread, x.startBy, x.note, x.source,
+      x.confidence, x.done, x.doneAt ? new Date(x.doneAt) : null, x.userNote ?? null, x.stale ?? null, OWNER],
+  );
+  const id = Number((r.rows[0] as { id: number | string }).id);
+  await q(`delete from deadline_parts where deadline_id = $1`, [id]);
+  for (const p of x.parts ?? [])
+    await q(`insert into deadline_parts (deadline_id, title, due, note, done) values ($1,$2,$3,$4,$5)`,
+      [id, p.title, p.due, p.note, p.done]);
+  return id;
+}
+
+/** Replace-all deadlines (visible list); tombstoned children are preserved. */
+async function writeDl(d: Dl[]): Promise<void> {
+  uniqIds(d);
+  const keep: number[] = [];
+  for (const x of d) keep.push(await upsertDeadlineRow(x));
+  if (keep.length)
+    await q(`delete from deadlines where owner_user_id = $1
+      and not (id = any($2::bigint[]))
+      and not exists (select 1 from deadline_folds f where f.child_id = deadlines.id and f.status = 'accepted')`,
+      [OWNER, keep]);
+  else
+    await q(`delete from deadlines where owner_user_id = $1
+      and not exists (select 1 from deadline_folds f where f.child_id = deadlines.id and f.status = 'accepted')`, [OWNER]);
+}
+
+/** legacy_id → deadlines.id (rows self-register via courseId on write). */
+const dbIdOf = async (legacyId: string): Promise<number | null> => {
+  const r = await q(`select id from deadlines where legacy_id = $1 and owner_user_id = $2 order by id limit 1`, [legacyId, OWNER]);
+  return r.rows[0] ? Number((r.rows[0] as { id: number | string }).id) : null;
+};
+
+async function readFolds(): Promise<FoldsFile> {
+  const rows = (await q(
+    `select f.id::text as fid, f.parent_id::text as pid, f.child_id::text as cid, f.status,
+            f.added_item_ids, f.enriched, f.child_snapshot, f.folded_at,
+            p.legacy_id as p_legacy, p.title as p_title, pc.slug as p_course,
+            ch.legacy_id as c_legacy, ch.title as c_title, cc.slug as c_course
+     from deadline_folds f
+     join deadlines p on p.id = f.parent_id join courses pc on pc.id = p.course_id
+     left join deadlines ch on ch.id = f.child_id left join courses cc on cc.id = ch.course_id
+     order by f.id`,
+  )).rows as Record<string, unknown>[];
+  const verdicts: Record<string, Verdict> = {};
+  const pending: FoldSug[] = [];
+  const folded: Record<string, Tomb> = {};
+  for (const r of rows) {
+    const parentId = (r.p_legacy as string) ?? dlId(String(r.p_course), String(r.p_title));
+    const parentKey = dlKey(String(r.p_course), String(r.p_title));
+    const snap = (r.child_snapshot && typeof r.child_snapshot === "object" && !Array.isArray(r.child_snapshot)) ? r.child_snapshot as Record<string, unknown> : {};
+    if (r.status === "accepted") {
+      const child = snap as unknown as Dl;
+      const key = dlKey(child.course ?? String(r.c_course ?? ""), child.title ?? String(r.c_title ?? ""));
+      folded[key] = {
+        child, parentId, parentKey, parentTitle: String(r.p_title),
+        addedItemIds: Array.isArray(r.added_item_ids) ? (r.added_item_ids as string[]) : [],
+        enriched: (r.enriched ?? undefined) as { itemId: string; prevText: string; prevDone: boolean } | undefined,
+        partTitles: Array.isArray(snap.__partTitles) ? (snap.__partTitles as string[]) : (child.parts?.map((x) => x.title) ?? []),
+        at: r.folded_at ? new Date(r.folded_at as Date).getTime() : Date.now(),
+      };
+      verdicts[key] = { v: "accepted", parent: parentKey, parentTitle: String(r.p_title) };
+    } else if (r.status === "pending") {
+      if (snap.key != null && snap.verdict != null) verdicts[String(snap.key)] = snap.verdict as Verdict;
+      else pending.push({
+        parentId, parentTitle: String(r.p_title),
+        childId: (r.c_legacy as string) ?? dlId(String(r.c_course ?? ""), String(r.c_title ?? "")),
+        childTitle: String(snap.childTitle ?? r.c_title ?? ""),
+        childDue: snap.childDue == null ? null : String(snap.childDue),
+      });
+    } else if (r.status === "declined") {
+      const key = dlKey(String(r.c_course ?? ""), String(r.c_title ?? ""));
+      if (key !== "|") verdicts[key] = { v: "declined" };
+    }
+  }
+  return { verdicts, pending, folded };
+}
+
+async function writeFolds(f: FoldsFile): Promise<void> {
+  const seen: number[] = [];
+  for (const [key, t] of Object.entries(f.folded)) {
+    await upsertDeadlineRow(t.child); // tombstone child re-inserted for FK integrity
+    const pid = await dbIdOf(t.parentId);
+    const cid = await dbIdOf(t.child.id);
+    if (pid == null || cid == null) continue;
+    const r = await q(
+      `insert into deadline_folds (parent_id, child_id, status, chosen_parent_id, added_item_ids, enriched, child_snapshot, folded_at)
+       values ($1,$2,'accepted',$3,$4::jsonb,$5::jsonb,$6::jsonb,$7)
+       on conflict (parent_id, child_id) do update set status='accepted', chosen_parent_id=excluded.chosen_parent_id,
+         added_item_ids=excluded.added_item_ids, enriched=excluded.enriched,
+         child_snapshot=excluded.child_snapshot, folded_at=excluded.folded_at
+       returning id`,
+      [pid, cid, pid, JSON.stringify(t.addedItemIds ?? []), t.enriched ? JSON.stringify(t.enriched) : null,
+        JSON.stringify({ ...t.child, __partTitles: t.partTitles ?? [] }), t.at ? new Date(t.at) : null],
+    );
+    seen.push(Number((r.rows[0] as { id: number | string }).id));
+  }
+  for (const p of f.pending) {
+    const pid = await dbIdOf(p.parentId);
+    const cid = await dbIdOf(p.childId);
+    if (pid == null || cid == null) continue;
+    const r = await q(
+      `insert into deadline_folds (parent_id, child_id, status, chosen_parent_id, added_item_ids, child_snapshot)
+       values ($1,$2,'pending',$1,'[]'::jsonb,$3::jsonb)
+       on conflict (parent_id, child_id) do update set status='pending', chosen_parent_id=excluded.chosen_parent_id,
+         child_snapshot=excluded.child_snapshot
+       returning id`,
+      [pid, cid, JSON.stringify({ parentTitle: p.parentTitle, childTitle: p.childTitle, childDue: p.childDue })],
+    );
+    seen.push(Number((r.rows[0] as { id: number | string }).id));
+  }
+  for (const [key, v] of Object.entries(f.verdicts)) {
+    if (v.v !== "declined" || f.folded[key]) continue;
+    const [course, title] = key.split("|");
+    const r = await q(
+      `select d.id from deadlines d join courses c on c.id = d.course_id
+       where c.slug = $1 and lower(trim(d.title)) = $2 and d.owner_user_id = $3
+         and not exists (select 1 from deadline_folds f2 where f2.child_id = d.id and f2.status = 'accepted')
+       order by d.id limit 1`,
+      [course ?? "", title ?? "", OWNER],
+    );
+    if (!r.rows[0]) continue;
+    const cid = Number((r.rows[0] as { id: number | string }).id);
+    const ins = await q(
+      `insert into deadline_folds (parent_id, child_id, status, chosen_parent_id, added_item_ids, child_snapshot)
+       values ($1,$1,'declined',$1,'[]'::jsonb,$2::jsonb)
+       on conflict (parent_id, child_id) do update set status='declined', chosen_parent_id=excluded.chosen_parent_id,
+         child_snapshot=excluded.child_snapshot
+       returning id`,
+      [cid, JSON.stringify({ key })],
+    );
+    seen.push(Number((ins.rows[0] as { id: number | string }).id));
+  }
+  if (seen.length) await q(`delete from deadline_folds where not (id = any($1::bigint[]))`, [seen]);
+  else await q(`delete from deadline_folds`);
+}
+
+async function readCk(): Promise<Ck[]> {
+  const rows = (await q(
+    `select ci.deadline_id::text as did, d.legacy_id, c.slug as course, d.title,
+            ci.legacy_key, ci.text, ci.done, ci.done_at, ci.manual, ci.position, ci.updated_at
+     from checklist_items ci join deadlines d on d.id = ci.deadline_id join courses c on c.id = d.course_id
+     order by ci.deadline_id, ci.position, ci.id`,
+  )).rows as Record<string, unknown>[];
+  const byDl = new Map<string, Ck>();
+  for (const r of rows) {
+    const did = (r.legacy_id as string) ?? dlId(String(r.course), String(r.title));
+    const upd = new Date(r.updated_at as Date).getTime();
+    const ck = byDl.get(String(r.did)) ?? { deadlineId: did, course: String(r.course), title: String(r.title), items: [], updatedAt: upd };
+    ck.items.push({ id: String(r.legacy_key), text: String(r.text), done: Boolean(r.done), doneAt: r.done_at ? new Date(r.done_at as Date).getTime() : null, ...(r.manual ? { manual: true } : {}) });
+    ck.updatedAt = Math.max(ck.updatedAt, upd);
+    byDl.set(String(r.did), ck);
+  }
+  return [...byDl.values()];
+}
+
+async function writeCk(c: Ck[]): Promise<void> {
+  await q(`delete from checklist_items where deadline_id in (select id from deadlines where owner_user_id = $1)`, [OWNER]);
+  for (const ck of c) {
+    const did = await dbIdOf(ck.deadlineId);
+    if (did == null) continue;
+    for (let i = 0; i < ck.items.length; i++) {
+      const it = ck.items[i]!;
+      await q(
+        `insert into checklist_items (deadline_id, legacy_key, text, done, done_at, manual, position, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)
+         on conflict (deadline_id, legacy_key) do update set text=excluded.text, done=excluded.done,
+           done_at=excluded.done_at, manual=excluded.manual, position=excluded.position, updated_at=excluded.updated_at`,
+        [did, it.id, it.text, it.done, it.doneAt ? new Date(it.doneAt) : null, it.manual ?? false, i, new Date(ck.updatedAt)],
+      );
+    }
+  }
+}
+
+/** sub-task folding: "A1 Part A" → checklist step of "Assignment 1".
+ *  Deterministic so re-folds after checklist regeneration stay stable. */
+const foldChildInto = async (parent: Dl, child: Dl): Promise<{ steps: number; addedItemIds: string[]; enriched?: { itemId: string; prevText: string; prevDone: boolean }; partTitles?: string[] }> => {
+  const cks = await readCk();
+  const childCkIdx = cks.findIndex((c) => c.deadlineId === child.id);
+  const childSteps = childCkIdx >= 0 ? cks[childCkIdx]!.items : [];
+  const pc = cks.find((c) => c.deadlineId === parent.id);
+  const label = (child.title.match(/\b(?:part|phase|section|component|stage)\s+[a-z0-9]+\b/i)?.[0] ?? child.title.split(/[:\u2014-]/)[0] ?? child.title).trim().slice(0, 40);
+  const dueTag = child.due && child.due !== parent.due ? ` (due ${child.due})` : "";
+  if (!parent.userNote && child.userNote) parent.userNote = child.userNote;
+  if (childCkIdx >= 0) cks.splice(childCkIdx, 1); // the child's checklist folds in / goes away
+  if (!pc) {
+    // no checklist yet — remember the parts; the next generation MUST
+    // include them as steps (prompt reads deadline.parts)
+    const partTitles = [child.title, ...childSteps.map((s) => s.text)];
+    parent.parts = [...(parent.parts ?? []), ...partTitles.map((t, i) => ({ title: t, due: i === 0 ? child.due : null, note: i === 0 ? child.note : "", done: i === 0 ? child.done : childSteps[i - 1]!.done }))];
+    await writeCk(cks);
+    return { steps: 0, addedItemIds: [], partTitles };
+  }
+  const toks = (t: string): Set<string> => new Set(t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(" ").filter((w) => w.length > 1));
+  const over = (a: Set<string>, b: Set<string>): number => { if (!a.size || !b.size) return 0; let hit = 0; for (const w of a) if (b.has(w)) hit++; return hit / Math.min(a.size, b.size); };
+  const ct = toks(child.title);
+  const mkItem = (text: string, done: boolean): CkItem => ({ id: itemId(parent.id, text), text: text.slice(0, 200), done, doneAt: done ? (child.doneAt ?? Date.now()) : null });
+  // idempotency: same text already folded → nothing to do
+  if (pc.items.some((it) => it.text === `${child.title}${dueTag}`.slice(0, 200))) { await writeCk(cks); return { steps: 0, addedItemIds: [] }; }
+  let mi = -1, ms = 0;
+  pc.items.forEach((it, i) => { const s = over(ct, toks(it.text)); if (s > ms) { ms = s; mi = i; } });
+  const addedItemIds: string[] = [];
+  let enriched: { itemId: string; prevText: string; prevDone: boolean } | undefined;
+  if (mi >= 0 && ms >= 0.5) {
+    // existing step covers this part → enrich it, don't duplicate
+    const it = pc.items[mi]!;
+    enriched = { itemId: it.id, prevText: it.text, prevDone: it.done };
+    it.done = it.done || child.done;
+    if (dueTag && !/due \d{4}/.test(it.text)) it.text = `${it.text}${dueTag}`.slice(0, 200);
+    const added = childSteps.map((s) => mkItem(`${label}: ${s.text}`, s.done));
+    addedItemIds.push(...added.map((a) => a.id));
+    pc.items.splice(mi + 1, 0, ...added);
+  } else {
+    const newText = `${child.title}${dueTag}`;
+    let at = pc.items.length;
+    let last = -1;
+    pc.items.forEach((it, i) => { if (over(ct, toks(it.text)) >= 0.25) last = i; });
+    if (last >= 0) at = last + 1; // group with sibling steps of this part
+    else if (pc.items.length > 1 && /submit|upload|hand in|post\b|verify|review/i.test(pc.items[pc.items.length - 1]!.text)) at = pc.items.length - 1; // before the final submit-ish step
+    const fresh = mkItem(newText, child.done);
+    const added = [fresh, ...childSteps.map((s) => mkItem(`${label}: ${s.text}`, s.done))];
+    addedItemIds.push(...added.map((a) => a.id));
+    pc.items.splice(at, 0, ...added);
+  }
+  pc.updatedAt = Date.now();
+  await writeCk(cks);
+  return { steps: 1 + childSteps.length, addedItemIds, enriched };
+};
+
 function startController(): void {
   // manually-left meetings (today) are seeded into `handled` so a restart
   // doesn't auto-join them again — manual Join via /join still overrides
@@ -687,6 +1013,27 @@ function startController(): void {
             } catch { /* dir absent */ }
           }
           try { rebuildIndex(); } catch { /* index optional */ }
+          // DB: reassign the session + its artifacts/docs to the target course
+          try {
+            const cid = await courseId(safe(to));
+            const r = await getPool().query(
+              `update sessions set course_id=$1 where course_id=(select id from courses where slug=$2) and stem=$3`,
+              [cid, safe(from), base]);
+            if (r.rowCount) {
+              await getPool().query(
+                `update session_artifacts set rel_path = replace(rel_path, 'notes/'||$1||'/', 'notes/'||$2||'/')
+                 where session_id in (select id from sessions where course_id=$3 and stem=$4)`,
+                [safe(from), safe(to), cid, base]);
+              await getPool().query(
+                `update session_artifacts set rel_path = replace(rel_path, 'recordings/'||$1||'/', 'recordings/'||$2||'/')
+                 where session_id in (select id from sessions where course_id=$3 and stem=$4)`,
+                [safe(from), safe(to), cid, base]);
+              await getPool().query(
+                `update documents set course_id=$1, rel_path = replace(rel_path, 'notes/'||$2||'/', 'notes/'||$3||'/')
+                 where session_id in (select id from sessions where course_id=$1 and stem=$4)`,
+                [cid, safe(from), safe(to), base]);
+            }
+          } catch (e) { console.error(`[daemon] DB session move failed: ${String(e)}`); }
           pushEvent(`moved ${moved} file(s): ${stem} ${from} → ${to}`);
           console.log(`[daemon] session moved: ${stem} ${from} → ${to} (${moved} files)`);
           return send(200, { ok: true, moved });
@@ -728,6 +1075,12 @@ function startController(): void {
         } catch { /* dir absent */ }
       }
       try { rebuildIndex(); } catch { /* index optional */ }
+      // DB: purge the session row (cascade removes artifacts + segments + session docs)
+      try {
+        await getPool().query(
+          `delete from sessions where course_id=(select id from courses where slug=$1) and stem=$2`,
+          [course, base]);
+      } catch (e) { console.error(`[daemon] DB session purge failed: ${String(e)}`); }
       pushEvent(`purged ${removed} file(s) — ${course}/${stem}`);
       console.log(`[daemon] purged ${removed} file(s) for ${course}/${stem}`);
       return send(200, { ok: true, removed });
@@ -823,12 +1176,6 @@ function startController(): void {
           const realFile = mp4.split(/[\\/]/).pop()!;
           const realStem = realFile.replace(/\.(mp4|webm)$/, "");
           let title = realStem.replace(/^\d{4}-\d{2}-\d{2}__/, "").replace(/__T?\d{6}$/, "").replace(/_/g, " ");
-          // ingested recordings may carry a user-given name (sidecar) — it
-          // wins over the stem-derived title so workshops etc. show their name
-          try {
-            const nt = readFileSync(join(NOTES_DIR, course, `${realStem}__title.txt`), "utf8").trim();
-            if (nt) title = nt;
-          } catch { /* no name sidecar */ }
           // file under the course the USER clicked — never re-parse the title
           // (a filename-derived title files under a bogus slug like
           // testing_autoschool_180137)
@@ -838,7 +1185,9 @@ function startController(): void {
             notesMd: join(dir, `${realStem}__notes.md`),
             runningMd: join(dir, `${realStem}__running.md`),
             timelineJson: join(dir, `${realStem}__timeline.json`) };
-          writeFileSync(join(dir, `${realStem}__transcript.md`), `# Transcript — ${title}\n\n${t.text}`);
+          const cid = await courseId(course);
+          const sid = await sessionId(cid, realStem, { sessionDate: realStem.slice(0, 10) });
+          await upsertArtifact(sid, "transcript", `notes/${course}/${realStem}__transcript.md`, { content: `# Transcript — ${title}\n\n${t.text}` });
           pushEvent(`transcribe ✓ ${course}/${stem} — ${t.chunks.length} chunk(s) → transcript.md`);
           if (!existsSync(paths.notesMd)) {
             setActivity("transcribing (manual) — generating notes", { meeting: title });
@@ -857,9 +1206,15 @@ function startController(): void {
       return send(202, { ok: true, note: "transcribing in background — watch the activity feed on the home page" });
     }
     if (url.pathname === "/mapping") {
-      const MAP = join(dirname(config.userDataDir), "mapping.json");
-      const readMap = (): Record<string, string> => { try { return JSON.parse(readFileSync(MAP, "utf8")); } catch { return {}; } };
-      if (req.method === "GET") return send(200, readMap());
+      const readMap = async (): Promise<Record<string, string>> => {
+        const m: Record<string, string> = {};
+        for (const r of await listMappings()) {
+          const slug = (await q(`select slug from courses where id = $1`, [r.courseId])).rows[0]?.slug;
+          if (slug) m[r.matchTitle.trim()] = slug;
+        }
+        return m;
+      };
+      if (req.method === "GET") return send(200, await readMap());
       if (req.method === "PUT") {
         const body = await new Promise<Record<string, unknown>>((res) => {
           let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
@@ -867,22 +1222,22 @@ function startController(): void {
         const t = String(body.title ?? "").trim();
         const f = String(body.folder ?? "").trim().replace(/[^\w -]/g, "").trim().replace(/\s+/g, "_");
         if (!t || !f) return send(400, { error: "title and folder required" });
-        const m = readMap();
         const created = !existsSync(join(NOTES_DIR, f)) && !existsSync(join(RECORDINGS_DIR, f));
-        m[t] = f;
-        try { writeFileSync(MAP, JSON.stringify(m, null, 2) + "\n"); } catch (e) { return send(500, { error: `write failed: ${String(e).slice(0, 80)}` }); }
+        const cid = await courseId(f);
+        try { await upsertMapping(t, normMappingTitle(t), cid); } catch (e) { return send(500, { error: `write failed: ${String(e).slice(0, 80)}` }); }
+        await refreshMappings().catch(() => {});
         try { mkdirSync(join(NOTES_DIR, f), { recursive: true }); } catch { /* next write creates it */ }
         pushEvent(`mapping: "${t}" → ${f}${created ? " (folder created)" : ""}`);
-        return send(200, { ok: true, mapping: m, created });
+        return send(200, { ok: true, mapping: await readMap(), created });
       }
       if (req.method === "DELETE") {
         const t = url.searchParams.get("title")?.trim();
         if (!t) return send(400, { error: "title required" });
-        const m = readMap();
+        const m = await readMap();
         if (!(t in m)) return send(404, { error: "not mapped" });
-        delete m[t];
-        try { writeFileSync(MAP, JSON.stringify(m, null, 2) + "\n"); } catch { /* ro */ }
-        return send(200, { ok: true, mapping: m });
+        await deleteMapping(t);
+        await refreshMappings().catch(() => {});
+        return send(200, { ok: true, mapping: await readMap() });
       }
     }
     if (url.pathname === "/settings") {
@@ -994,12 +1349,14 @@ function startController(): void {
 
         // move the streamed temp files into place (no RAM copies)
         placePart(fileP!.path!, join(rdir, mp4name));
-        if (name) writeFileSync(join(NOTES_DIR, course, `${stem}__title.txt`), name);
+        // display name → sessions.title, transcript.md → session_artifacts
+        const cid = await courseId(course);
+        const sid = await sessionId(cid, stem, { sessionDate: date, title: name });
         let wroteTranscript = false;
         if (tfileP) {
           const txt = (await import("node:fs/promises")).readFile(tfileP.path!, "utf8");
-          writeFileSync(join(NOTES_DIR, course, `${stem}__transcript.md`),
-            `# ${name || "Transcript"}${name ? " — transcript" : ""} — ${course.replace(/_/g, " ")} (${date})\n\n${await txt}`);
+          await upsertArtifact(sid, "transcript", `notes/${course}/${stem}__transcript.md`,
+            { content: `# ${name || "Transcript"}${name ? " — transcript" : ""} — ${course.replace(/_/g, " ")} (${date})\n\n${await txt}` });
           discardPart(tfileP.path!);
           wroteTranscript = true;
         }
@@ -1378,14 +1735,12 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
       try {
         let moved = 0;
         for (const t of targets) if (existsSync(t)) { renameSync(t, join(dirname(t), to)); moved++; }
-        // meeting→folder mappings follow the rename
-        const MAP = join(dirname(config.userDataDir), "mapping.json");
+        // meeting→folder mappings follow the rename (remap course_id → to)
         try {
-          const m = JSON.parse(readFileSync(MAP, "utf8")) as Record<string, string>;
-          let remapped = 0;
-          for (const k of Object.keys(m)) if (m[k] === from) { m[k] = to; remapped++; }
-          if (remapped) writeFileSync(MAP, JSON.stringify(m, null, 2));
-        } catch { /* no mapping file */ }
+          const toCid = await courseId(to);
+          await q(`update meeting_mappings set course_id = $1 where course_id = (select id from courses where slug = $2)`, [toCid, from]);
+          await refreshMappings().catch(() => {});
+        } catch { /* no mappings */ }
         pushEvent(`course renamed: ${from} → ${to}`);
         return send(200, { ok: true, slug: to, moved });
       } catch (e) {
@@ -1419,135 +1774,17 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
     }
     // ── deadlines (AI-built calendar of due dates + spread-out items) ──
     if (url.pathname === "/deadlines") {
-      const DEADLINES = join(config.userDataDir, "deadlines.json");
-      type Dl = { id: string; course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; source: string; confidence: string; done: boolean; doneAt: number | null; userNote?: string; dueManual?: boolean; stale?: number; parts?: { title: string; due: string | null; note: string; done: boolean }[] };
-      const readDl = (): Dl[] => {
-        try {
-          const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
-          if (!Array.isArray(j)) return [];
-          // backfill ids/done for files written before those fields existed
-          const dl = j.map((d: Partial<Dl>) => ({ done: false, doneAt: null, ...d, id: d.id ?? dlId(String(d.course ?? ""), String(d.title ?? "")) }) as Dl);
-          const before = dl.map((x) => x.id).join("\u0000");
-          uniqIds(dl);
-          if (dl.map((x) => x.id).join("\u0000") !== before) writeDl(dl); // self-heal legacy duplicate ids on first touch
-          return dl;
-        } catch { return []; }
-      };
-      const dlKey = (c: string, t: string): string => `${c}|${t.toLowerCase().trim()}`;
-      const dlId = (c: string, t: string): string => { // stable: same course+title → same id
-        let h = 5381;
-        for (const ch of dlKey(c, t)) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
-        return h.toString(16);
-      };
-      /** enforce unique ids IN PLACE — duplicate ids (same course+title twice
-       *  in one build, or a hash collision) break every by-id lookup AND the
-       *  UI's React keys (rows bleed across tabs until a hard refresh).
-       *  First occurrence wins; later ones get a deterministic ~N suffix. */
-      const uniqIds = (d: Dl[]): Dl[] => {
-        const seen = new Set<string>();
-        for (const x of d) {
-          if (!x.id || seen.has(x.id)) {
-            let n = 1;
-            while (seen.has(`${x.id}~${n}`)) n++;
-            x.id = `${x.id}~${n}`;
-          }
-          seen.add(x.id);
-        }
-        return d;
-      };
-      const writeDl = (d: Dl[]): void => { mkdirSync(config.userDataDir, { recursive: true }); writeFileSync(DEADLINES, JSON.stringify(uniqIds(d), null, 2)); };
-      // ── sub-task folding: "A1 Part A" → checklist step of "Assignment 1" ──
-      // LLM decides parent/child (see the rebuild pipeline); the fold itself is
-      // deterministic so re-folds after checklist regeneration stay stable.
-      const FOLDS = join(config.userDataDir, "deadlines-folds.json");
-      type FoldSug = { parentId: string; parentTitle: string; childId: string; childTitle: string; childDue: string | null };
-      // verdicts remember the user's decision AND the parent they chose — so
-      // rebuilds re-bind to the user's fold, not the LLM's next nomination.
-      // folded[] are tombstones: enough state to UNFOLD (restore the child,
-      // remove exactly the steps the fold added, revert the enrichment).
-      type Verdict = { v: "accepted" | "declined"; parent?: string; parentTitle?: string };
-      type Tomb = { child: Dl; parentId: string; parentKey: string; parentTitle: string; addedItemIds: string[]; enriched?: { itemId: string; prevText: string; prevDone: boolean }; partTitles?: string[]; at: number };
-      type FoldsFile = { verdicts: Record<string, Verdict>; pending: FoldSug[]; folded: Record<string, Tomb> };
-      const readFolds = (): FoldsFile => {
-        try {
-          const j = JSON.parse(readFileSync(FOLDS, "utf8"));
-          const verdicts: Record<string, Verdict> = {};
-          for (const [k, val] of Object.entries<Verdict | string>(j.verdicts ?? {})) verdicts[k] = typeof val === "string" ? { v: val as "accepted" | "declined" } : val; // legacy string verdicts
-          return { verdicts, pending: Array.isArray(j.pending) ? j.pending : [], folded: j.folded ?? {} };
-        } catch { return { verdicts: {}, pending: [], folded: {} }; }
-      };
-      const writeFolds = (f: FoldsFile): void => writeFileSync(FOLDS, JSON.stringify({ ...f, updatedAt: Date.now() }, null, 2));
-      const foldChildInto = (parent: Dl, child: Dl): { steps: number; addedItemIds: string[]; enriched?: { itemId: string; prevText: string; prevDone: boolean }; partTitles?: string[] } => {
-        const CKS = join(config.userDataDir, "checklists.json");
-        type CkItem = { id: string; text: string; done: boolean; doneAt: number | null; manual?: boolean };
-        type Ck = { deadlineId: string; course: string; title: string; items: CkItem[]; updatedAt: number };
-        let cks: Ck[] = [];
-        try { const j = JSON.parse(readFileSync(CKS, "utf8")); if (Array.isArray(j)) cks = j; } catch { /* none */ }
-        const childCkIdx = cks.findIndex((c) => c.deadlineId === child.id);
-        const childSteps = childCkIdx >= 0 ? cks[childCkIdx]!.items : [];
-        const pc = cks.find((c) => c.deadlineId === parent.id);
-        const label = (child.title.match(/\b(?:part|phase|section|component|stage)\s+[a-z0-9]+\b/i)?.[0] ?? child.title.split(/[:\u2014-]/)[0] ?? child.title).trim().slice(0, 40);
-        const dueTag = child.due && child.due !== parent.due ? ` (due ${child.due})` : "";
-        if (!parent.userNote && child.userNote) parent.userNote = child.userNote;
-        if (childCkIdx >= 0) cks.splice(childCkIdx, 1); // the child's checklist folds in / goes away
-        if (!pc) {
-          // no checklist yet — remember the parts; the next generation MUST
-          // include them as steps (prompt reads deadline.parts)
-          const partTitles = [child.title, ...childSteps.map((s) => s.text)];
-          parent.parts = [...(parent.parts ?? []), ...partTitles.map((t, i) => ({ title: t, due: i === 0 ? child.due : null, note: i === 0 ? child.note : "", done: i === 0 ? child.done : childSteps[i - 1]!.done }))];
-          writeFileSync(CKS, JSON.stringify(cks, null, 2));
-          return { steps: 0, addedItemIds: [], partTitles };
-        }
-        const toks = (t: string): Set<string> => new Set(t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(" ").filter((w) => w.length > 1));
-        const over = (a: Set<string>, b: Set<string>): number => { if (!a.size || !b.size) return 0; let hit = 0; for (const w of a) if (b.has(w)) hit++; return hit / Math.min(a.size, b.size); };
-        const ct = toks(child.title);
-        const mkItem = (text: string, done: boolean): CkItem => {
-          let h = 5381;
-          for (const ch of `${parent.id}|${text.toLowerCase().trim()}`) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
-          return { id: h.toString(16), text: text.slice(0, 200), done, doneAt: done ? (child.doneAt ?? Date.now()) : null };
-        };
-        // idempotency: same text already folded → nothing to do
-        if (pc.items.some((it) => it.text === `${child.title}${dueTag}`.slice(0, 200))) { writeFileSync(CKS, JSON.stringify(cks, null, 2)); return { steps: 0, addedItemIds: [] }; }
-        let mi = -1, ms = 0;
-        pc.items.forEach((it, i) => { const s = over(ct, toks(it.text)); if (s > ms) { ms = s; mi = i; } });
-        const addedItemIds: string[] = [];
-        let enriched: { itemId: string; prevText: string; prevDone: boolean } | undefined;
-        if (mi >= 0 && ms >= 0.5) {
-          // existing step covers this part → enrich it, don't duplicate
-          const it = pc.items[mi]!;
-          enriched = { itemId: it.id, prevText: it.text, prevDone: it.done };
-          it.done = it.done || child.done;
-          if (dueTag && !/due \d{4}/.test(it.text)) it.text = `${it.text}${dueTag}`.slice(0, 200);
-          const added = childSteps.map((s) => mkItem(`${label}: ${s.text}`, s.done));
-          addedItemIds.push(...added.map((a) => a.id));
-          pc.items.splice(mi + 1, 0, ...added);
-        } else {
-          const newText = `${child.title}${dueTag}`;
-          let at = pc.items.length;
-          let last = -1;
-          pc.items.forEach((it, i) => { if (over(ct, toks(it.text)) >= 0.25) last = i; });
-          if (last >= 0) at = last + 1; // group with sibling steps of this part
-          else if (pc.items.length > 1 && /submit|upload|hand in|post\b|verify|review/i.test(pc.items[pc.items.length - 1]!.text)) at = pc.items.length - 1; // before the final submit-ish step
-          const fresh = mkItem(newText, child.done);
-          const added = [fresh, ...childSteps.map((s) => mkItem(`${label}: ${s.text}`, s.done))];
-          addedItemIds.push(...added.map((a) => a.id));
-          pc.items.splice(at, 0, ...added);
-        }
-        pc.updatedAt = Date.now();
-        writeFileSync(CKS, JSON.stringify(cks, null, 2));
-        return { steps: 1 + childSteps.length, addedItemIds, enriched };
-      };
       if (req.method === "GET") {
-        const dl = readDl();
+        const dl = await readDl();
         const ids = new Set(dl.map((d) => d.id));
-        const f = readFolds();
+        const f = await readFolds();
         const foldedChildren = Object.entries(f.folded)
           .filter(([, t]) => ids.has(t.parentId))
           .map(([key, t]) => ({ key, parentId: t.parentId, parentTitle: t.parentTitle ?? "", title: t.child.title, due: t.child.due, done: t.child.done, at: t.at }));
         return send(200, { deadlines: dl, suggestions: f.pending.filter((p) => ids.has(p.childId) && ids.has(p.parentId)), foldedChildren });
       }
       if (req.method === "DELETE") {
-        try { rmSync(DEADLINES, { force: true }); } catch { /* gone */ }
+        await q(`delete from deadlines where owner_user_id = $1`, [OWNER]);
         return send(200, { ok: true });
       }
       if (req.method === "POST") {
@@ -1567,7 +1804,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
                 return send(400, { error: "due must be YYYY-MM-DD or null" });
               if ("startBy" in body && body.startBy !== null && !DATE_RE.test(String(body.startBy)))
                 return send(400, { error: "startBy must be YYYY-MM-DD or null" });
-              const dl = readDl();
+              const dl = await readDl();
               const it = dl.find((d) => d.id === body.id);
               if (!it) return send(404, { error: "no such deadline id" });
               if (body.revert === true) {
@@ -1579,16 +1816,16 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
                 it.dueManual = true;
                 it.confidence = "high"; // human-confirmed beats document text
               }
-              writeDl(dl);
+              await writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
             }
             if (typeof body.id === "string" && (body.delete === true || body.remove === true)) {
               // remove one entry — stale zombies the UI flags ("not in source")
-              const dl = readDl();
+              const dl = await readDl();
               const i = dl.findIndex((d) => d.id === body.id);
               if (i < 0) return send(404, { error: "no such deadline id" });
               const [gone] = dl.splice(i, 1);
-              writeDl(dl);
+              await writeDl(dl);
               return send(200, { ok: true, deleted: gone?.title ?? "", deadlines: dl });
             }
             // ── fold a sub-task into a parent's checklist (manual pick, or a
@@ -1596,21 +1833,21 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
             //    so rebuilds re-bind to the USER's fold, not the LLM's pick ──
             if ((body.fold || body.acceptFold) && typeof (body.fold ?? body.acceptFold) === "object") {
               const { parent: pid, child: cid } = (body.fold ?? body.acceptFold) as { parent?: string; child?: string };
-              const dl = readDl();
+              const dl = await readDl();
               const parent = dl.find((d) => d.id === pid);
               const child = dl.find((d) => d.id === cid);
               if (!parent || !child || parent.id === child.id) return send(404, { error: "no such parent/child id" });
               if (parent.course !== child.course) return send(400, { error: "can only fold within the same course" });
               if (parent.done) return send(400, { error: "can't fold into a done deadline" });
               const key = dlKey(child.course, child.title);
-              const det = foldChildInto(parent, child);
-              const f = readFolds();
+              const det = await foldChildInto(parent, child);
+              const f = await readFolds();
               f.verdicts[key] = { v: "accepted", parent: dlKey(parent.course, parent.title), parentTitle: parent.title };
               f.folded[key] = { child: { ...child }, parentId: parent.id, parentKey: dlKey(parent.course, parent.title), parentTitle: parent.title, addedItemIds: det.addedItemIds, enriched: det.enriched, partTitles: det.partTitles, at: Date.now() };
               f.pending = f.pending.filter((p) => p.childId !== child.id);
-              writeFolds(f);
+              await writeFolds(f);
               const out = dl.filter((d) => d.id !== child.id);
-              writeDl(out);
+              await writeDl(out);
               pushEvent(`deadlines: folded "${child.title}" into "${parent.title}" (${det.steps} step(s))`);
               return send(200, { ok: true, folded: det.steps, deadlines: out });
             }
@@ -1618,12 +1855,10 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
             //    fold added and revert any enrichment (tombstone-driven) ──
             if (body.unfold && typeof body.unfold === "object") {
               const key = String((body.unfold as { key?: string }).key ?? "");
-              const f = readFolds();
+              const f = await readFolds();
               const t = f.folded[key];
               if (!t) return send(404, { error: "no such folded entry" });
-              const CKS2 = join(config.userDataDir, "checklists.json");
-              let cks: { deadlineId: string; items: { id: string; text: string; done: boolean; doneAt: number | null; manual?: boolean }[]; updatedAt: number }[] = [];
-              try { const j = JSON.parse(readFileSync(CKS2, "utf8")); if (Array.isArray(j)) cks = j; } catch { /* none */ }
+              const cks = await readCk();
               const pc = cks.find((c) => c.deadlineId === t.parentId);
               if (pc) {
                 if (t.addedItemIds.length) pc.items = pc.items.filter((it) => !t.addedItemIds.includes(it.id));
@@ -1632,9 +1867,9 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
                   if (e) { e.text = t.enriched.prevText; e.done = t.enriched.prevDone; e.doneAt = e.done ? (e.doneAt ?? Date.now()) : null; }
                 }
                 pc.updatedAt = Date.now();
-                writeFileSync(CKS2, JSON.stringify(cks, null, 2));
+                await writeCk(cks);
               }
-              const dl = readDl();
+              const dl = await readDl();
               const parent = dl.find((d) => d.id === t.parentId);
               if (parent && t.partTitles?.length) {
                 const rm = new Set(t.partTitles);
@@ -1644,39 +1879,39 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
               dl.push({ ...t.child }); // resurrect — writeDl's uniqIds guards id clashes
               delete f.verdicts[key];
               delete f.folded[key];
-              writeFolds(f);
-              writeDl(dl);
+              await q(`delete from deadline_folds where child_id = (select id from deadlines where legacy_id = $1 and owner_user_id = $2 order by id limit 1)`, [t.child.id, OWNER]);
+              await writeDl(dl);
               pushEvent(`deadlines: unfolded "${t.child.title}" back out of "${parent?.title ?? t.parentId}"`);
               return send(200, { ok: true, deadlines: dl });
             }
             // ── decline: never suggest this fold again (by course+title) ──
             if (body.declineFold && typeof body.declineFold === "object") {
               const cid = String((body.declineFold as { child?: string }).child ?? "");
-              const dl = readDl();
+              const dl = await readDl();
               const child = dl.find((d) => d.id === cid);
-              const f = readFolds();
+              const f = await readFolds();
               if (child) f.verdicts[dlKey(child.course, child.title)] = { v: "declined" };
               f.pending = f.pending.filter((p) => p.childId !== cid);
-              writeFolds(f);
+              await writeFolds(f);
               return send(200, { ok: true, deadlines: dl });
             }
             if (typeof body.id === "string" && body.userNote === undefined) {
-              const dl = readDl();
+              const dl = await readDl();
               const it = dl.find((d) => d.id === body.id);
               if (!it) return send(404, { error: "no such deadline id" });
               it.done = body.done !== false; // default true; explicit false un-checks
               it.doneAt = it.done ? Date.now() : null;
-              writeDl(dl);
+              await writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
             }
             // ── student context note (group members, roles, …) by id ──
             if (typeof body.id === "string" && typeof body.userNote === "string") {
-              const dl = readDl();
+              const dl = await readDl();
               const it = dl.find((d) => d.id === body.id);
               if (!it) return send(404, { error: "no such deadline id" });
               const v = body.userNote.trim().slice(0, 2000);
               if (v) it.userNote = v; else delete it.userNote; // empty clears
-              writeDl(dl);
+              await writeDl(dl);
               return send(200, { ok: true, deadlines: dl });
             }
             // ── rebuild: LLM sweep → JSON; full, or incremental (changed docs only) ──
@@ -1710,7 +1945,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
             const changedDocs = new Map<string, string[]>(); // slug → rel paths changed/new
             const deletedKeys = new Set<string>();           // manifest keys whose file is gone
             let scoped = false;
-            if (mode === "update" && readDl().length > 0 && Object.keys(prevMeta.docs).length > 0) {
+            if (mode === "update" && (await readDl()).length > 0 && Object.keys(prevMeta.docs).length > 0) {
               const cur = snapshotDocs();
               for (const [k, v] of Object.entries(cur)) {
                 const p = prevMeta.docs[k];
@@ -1718,7 +1953,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
               }
               for (const k of Object.keys(prevMeta.docs)) if (!cur[k]) deletedKeys.add(k);
               if (changedDocs.size === 0 && deletedKeys.size === 0) {
-                return send(200, { ok: true, mode: "update", count: readDl().length, added: [], changed: 0 });
+                return send(200, { ok: true, mode: "update", count: (await readDl()).length, added: [], changed: 0 });
               }
               scoped = true; // baseline exists → only rescan what moved
             }
@@ -1764,7 +1999,7 @@ Include hard deadlines AND soft/spread-out items. If a date is uncertain use con
             // normalize: real course slugs, valid-ish dates, stable ids;
             // done-ness carries over from the previous build (by course+title)
             const slugs = allCourses();
-            const prev = readDl();
+            const prev = await readDl();
             // ── fuzzy identity: the same real task can come back under a
             // different title next build ("Discussion: Wk3 Q1" vs "Week 3 -
             // Question One") — normalize + abbreviation-expand for matching
@@ -1972,7 +2207,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
             let foldedCount = 0;
             const newPending: FoldSug[] = [];
             try {
-              const folds = readFolds();
+              const folds = await readFolds();
               const PART_RE = /\b(part|phase|section|component|stage)\b/i;
               const nom: [Dl, Dl][] = [];
               for (let i = 0; i < merged.length && nom.length < 20; i++) {
@@ -2015,7 +2250,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
                       if (!chosen) continue; // parent gone this build — child stays visible
                       parent = chosen;
                     }
-                    const det = foldChildInto(parent, child);
+                    const det = await foldChildInto(parent, child);
                     if (!folds.folded[key]) folds.folded[key] = { child: { ...child }, parentId: parent.id, parentKey: dlKey(parent.course, parent.title), parentTitle: parent.title, addedItemIds: det.addedItemIds, enriched: det.enriched, partTitles: det.partTitles, at: Date.now() };
                     folded.add(child);
                     foldedCount++;
@@ -2026,7 +2261,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
                 if (folded.size) merged = merged.filter((d) => !folded.has(d));
                 if (foldedCount) pushEvent(`deadlines: re-applied ${foldedCount} accepted fold(s)`);
               }
-              writeFolds({ verdicts: folds.verdicts, pending: newPending, folded: folds.folded });
+              await writeFolds({ verdicts: folds.verdicts, pending: newPending, folded: folds.folded });
             } catch (e) {
               pushEvent(`deadlines fold-detection skipped: ${String(e).slice(0, 100)}`);
             }
@@ -2034,25 +2269,22 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
             // heal orphaned checklists: entries whose deadlineId vanished get
             // fuzzy-reattached to the current entry of the same task
             try {
-              const ckPath = join(config.userDataDir, "checklists.json");
-              const cks = JSON.parse(readFileSync(ckPath, "utf8")) as { deadlineId: string; course: string; title: string }[];
-              if (Array.isArray(cks)) {
-                const ids = new Set(merged.map((d) => d.id));
-                let healed = 0;
-                for (const c of cks) {
-                  if (ids.has(c.deadlineId)) continue;
-                  const t = merged.find((d) => d.course === c.course && dlKey(d.course, d.title) === dlKey(c.course, c.title))
-                    ?? merged.filter((d) => d.course === c.course && sameTask(c.title, d.title))
-                        .sort((x, y) => sim(y.title, c.title) - sim(x.title, c.title))[0];
-                  if (t) { c.deadlineId = t.id; healed++; }
-                }
-                if (healed) {
-                  writeFileSync(ckPath, JSON.stringify(cks, null, 2));
-                  pushEvent(`checklists: re-attached ${healed} orphaned checklist(s) to renamed deadlines`);
-                }
+              const cks = await readCk();
+              const ids = new Set(merged.map((d) => d.id));
+              let healed = 0;
+              for (const c of cks) {
+                if (ids.has(c.deadlineId)) continue;
+                const t = merged.find((d) => d.course === c.course && dlKey(d.course, d.title) === dlKey(c.course, c.title))
+                  ?? merged.filter((d) => d.course === c.course && sameTask(c.title, d.title))
+                      .sort((x, y) => sim(y.title, c.title) - sim(x.title, c.title))[0];
+                if (t) { c.deadlineId = t.id; healed++; }
+              }
+              if (healed) {
+                await writeCk(cks);
+                pushEvent(`checklists: re-attached ${healed} orphaned checklist(s) to renamed deadlines`);
               }
             } catch { /* no checklists yet */ }
-            writeDl(merged);
+            await writeDl(merged);
             writeFileSync(META, JSON.stringify({ docs: snapshotDocs(), builtAt: Date.now() }, null, 2));
             const changedCount = [...changedDocs.values()].reduce((n, ds) => n + ds.length, 0) + deletedKeys.size;
             pushEvent(scoped
@@ -2068,41 +2300,19 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
     }
     // ── checklists (AI-generated, per-deadline execution lists) ──
     if (url.pathname === "/checklists") {
-      const CHECKLISTS = join(config.userDataDir, "checklists.json");
-      const DEADLINES = join(config.userDataDir, "deadlines.json");
-      const readDlAll = (): { id: string; course: string; title: string; kind: string; due: string | null; note: string; parts?: { title: string; due: string | null; note: string; done: boolean }[] }[] => {
-        try {
-          const j = JSON.parse(readFileSync(DEADLINES, "utf8"));
-          return Array.isArray(j) ? j : [];
-        } catch { return []; }
-      };
-      type Item = { id: string; text: string; done: boolean; doneAt: number | null; manual?: boolean };
-      type Ck = { deadlineId: string; course: string; title: string; items: Item[]; updatedAt: number };
-      const itemId = (dl: string, t: string): string => { // stable: same deadline+text → same id
-        let h = 5381;
-        for (const ch of `${dl}|${t.toLowerCase().trim()}`) h = ((h * 33) ^ ch.codePointAt(0)!) >>> 0;
-        return h.toString(16);
-      };
-      const readCk = (): Ck[] => {
-        try {
-          const j = JSON.parse(readFileSync(CHECKLISTS, "utf8"));
-          return Array.isArray(j) ? j : [];
-        } catch { return []; }
-      };
-      const writeCk = (c: Ck[]): void => { mkdirSync(config.userDataDir, { recursive: true }); writeFileSync(CHECKLISTS, JSON.stringify(c, null, 2)); };
-      if (req.method === "GET") return send(200, { checklists: readCk() });
+      if (req.method === "GET") return send(200, { checklists: await readCk() });
       if (req.method === "DELETE") {
         const id = url.searchParams.get("deadlineId");
-        if (!id) { try { rmSync(CHECKLISTS, { force: true }); } catch { /* gone */ } return send(200, { ok: true }); }
-        const ck = readCk().filter((c) => c.deadlineId !== id);
-        writeCk(ck);
+        if (!id) { await q(`delete from checklist_items where deadline_id in (select id from deadlines where owner_user_id = $1)`, [OWNER]); return send(200, { ok: true }); }
+        const ck = (await readCk()).filter((c) => c.deadlineId !== id);
+        await writeCk(ck);
         return send(200, { ok: true, checklists: ck });
       }
       if (req.method === "POST") {
         (async () => {
           try {
             const body = await new Promise<Record<string, unknown>>((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); });
-            const ck = readCk();
+            const ck = await readCk();
             const dlId = String(body.deadlineId ?? "");
             const mine = (): Ck | undefined => ck.find((c) => c.deadlineId === dlId);
             // ── toggle an item ──
@@ -2113,7 +2323,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
               it.done = body.done !== false;
               it.doneAt = it.done ? Date.now() : null;
               c.updatedAt = Date.now();
-              writeCk(ck);
+              await writeCk(ck);
               return send(200, { ok: true, checklists: ck });
             }
             // ── manual add ──
@@ -2121,14 +2331,14 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
               const text = body.add.trim().slice(0, 200);
               let c = mine();
               if (!c) {
-                const dl = readDlAll().find((d) => d.id === dlId);
+                const dl = (await readDl()).find((d) => d.id === dlId);
                 c = { deadlineId: dlId, course: dl?.course ?? "", title: dl?.title ?? text, items: [], updatedAt: Date.now() };
                 ck.push(c);
               }
               const id = itemId(dlId, text);
               if (!c.items.some((x) => x.id === id)) c.items.push({ id, text, done: false, doneAt: null, manual: true });
               c.updatedAt = Date.now();
-              writeCk(ck);
+              await writeCk(ck);
               return send(200, { ok: true, checklists: ck });
             }
             // ── remove an item ──
@@ -2137,11 +2347,11 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
               if (!c) return send(404, { error: "no such checklist" });
               c.items = c.items.filter((x) => x.id !== body.removeItemId);
               c.updatedAt = Date.now();
-              writeCk(ck);
+              await writeCk(ck);
               return send(200, { ok: true, checklists: ck });
             }
             // ── generate / regenerate for a deadline ──
-            const dl = readDlAll().find((d) => d.id === dlId);
+            const dl = (await readDl()).find((d) => d.id === dlId);
             if (!dl) return send(404, { error: "no such deadline id" });
             const systemPrompt = `You build an EXECUTION CHECKLIST for one specific student task, from the real course files — never invent steps.
 Task: "${dl.title}" (${dl.kind})${dl.due ? `, due ${dl.due}` : ""}${dl.note ? `. Known detail: ${dl.note}` : ""}${dl.parts?.length ? `\nThis task has KNOWN PARTS (folded sub-deliverables) — each MUST appear as its own step, with its due date when given:\n${dl.parts.map((p) => `- ${p.title}${p.due ? ` (due ${p.due})` : ""}${p.done ? " [already done]" : ""}${p.note ? ` — ${p.note}` : ""}`).join("\n")}` : ""}
@@ -2183,7 +2393,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
             // done-ness + manual items carry over (id = deadlineId|text)
             const prev = mine();
             const prevDone = new Map((prev?.items ?? []).filter((x) => x.done).map((x) => [x.id, x]));
-            const items: Item[] = steps.map((text) => {
+            const items: CkItem[] = steps.map((text) => {
               const id = itemId(dlId, text);
               const old = prevDone.get(id);
               return { id, text, done: Boolean(old?.done), doneAt: old?.doneAt ?? null };
@@ -2192,7 +2402,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
             const entry: Ck = { deadlineId: dlId, course: dl.course, title: dl.title, items, updatedAt: Date.now() };
             const out = ck.filter((c) => c.deadlineId !== dlId);
             out.push(entry);
-            writeCk(out);
+            await writeCk(out);
             pushEvent(`checklist built: ${dl.title} — ${items.length} step(s)`);
             return send(200, { ok: true, count: items.length, checklists: out });
           } catch (e) {
@@ -2223,12 +2433,12 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
         }
         // mapped meeting titles are richer course names ("Data Warehs & …")
         try {
-          const MAPF = join(dirname(config.userDataDir), "mapping.json");
-          for (const [title, folder] of Object.entries(JSON.parse(readFileSync(MAPF, "utf8")) as Record<string, string>)) {
-            if (!hints[folder]) continue;
-            for (const t of title.toLowerCase().split(/[^a-z0-9]+/)) if (t.length >= 5 && !hints[folder]!.includes(t)) hints[folder]!.push(t);
+          for (const r of await listMappings()) {
+            const folder = (await q(`select slug from courses where id = $1`, [r.courseId])).rows[0]?.slug;
+            if (!folder || !hints[folder]) continue;
+            for (const t of r.matchTitle.toLowerCase().split(/[^a-z0-9]+/)) if (t.length >= 5 && !hints[folder]!.includes(t)) hints[folder]!.push(t);
           }
-        } catch { /* no mapping file */ }
+        } catch { /* no mappings */ }
         return send(200, { lexicon: lex, hints });
       }
       const loadChat = (): { role: "user" | "assistant"; content: string; at: string }[] => {
@@ -2378,14 +2588,11 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
         for (const root of [recDir, noteDir, join(DATA_DIR, "courses", course), join(config.userDataDir, "courses", course)]) {
           if (existsSync(root)) { rmSync(root, { recursive: true, force: true }); removed++; }
         }
-        // strip mapping.json entries whose VALUE is this slug
+        // strip meeting_mappings whose course is this slug
         try {
-          const MAP = join(dirname(config.userDataDir), "mapping.json");
-          const m = JSON.parse(readFileSync(MAP, "utf8")) as Record<string, string>;
-          let dropped = 0;
-          for (const k of Object.keys(m)) if (m[k] === course) { delete m[k]; dropped++; }
-          if (dropped) writeFileSync(MAP, JSON.stringify(m, null, 2));
-        } catch { /* no mapping file */ }
+          await q(`delete from meeting_mappings where course_id = (select id from courses where slug = $1)`, [course]);
+          await refreshMappings().catch(() => {});
+        } catch { /* no mappings */ }
         pushEvent(`course deleted: ${course} (had no sessions)`);
         return send(200, { ok: true, course, removed });
       } catch (e) {
@@ -2401,6 +2608,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
 }
 
 export async function daemon(): Promise<void> {
+  await refreshMappings().catch(() => { /* DB down → empty mapping cache until first write */ });
   startController();
   // fresh volume guarantee: the whole dir skeleton exists before anything writes
   // (k8s PVCs start empty — compose had these pre-created by the seed volume)

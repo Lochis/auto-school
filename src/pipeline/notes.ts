@@ -1,18 +1,19 @@
 /**
  * Incremental notes: fold each new timeline entry into a running summary.
- * State: out/notes-<meeting>.running.md — small, so every fold is cheap and
- * context never explodes. Final pass polishes into structured class notes.
+ * State lives in Postgres (session_artifacts kind='running_notes', inline
+ * content) — small per-fold, so context never explodes. Final pass polishes
+ * into structured class notes (kind='notes') and writes the session timeline
+ * (kind='timeline') plus transcript_segments rows.
  */
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { notify } from "../notify.ts";
 import { pushEvent, apiKey } from "../status.ts";
 import type { TimelineEntry } from "./segment.ts";
+import { toSegmentInit } from "./segment.ts";
 import { sessionPaths, rebuildIndex } from "./courses.ts";
 import { textCall } from "./llm.ts";
-
-function statePath(meeting: string) {
-  return sessionPaths(meeting).runningMd; // course tree: notes/<course>/<date>__<course>__running.md
-}
+import { getPool } from "../db/client.ts";
+import { upsertArtifact, upsertSegments } from "../db/writes.ts";
+import { resolveSession } from "./sessions.ts";
 
 async function gemini(prompt: string): Promise<string> { return textCall(prompt); }
 async function _unused_gemini(prompt: string): Promise<string> {
@@ -37,14 +38,36 @@ async function _unused_gemini(prompt: string): Promise<string> {
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
+/** Inline artifact content read (mirrors frontend lib/db.ts artifactContent). */
+async function artifactContent(sessionId: number, kind: string): Promise<string | null> {
+  const r = await getPool().query(
+    `select content from session_artifacts
+     where session_id = $1 and kind = $2 and deleted_at is null
+     order by updated_at desc limit 1`,
+    [sessionId, kind],
+  );
+  return r.rows[0]?.content ?? null;
+}
+
 /** Fold entries (one call per batch — cheap on GLM). */
 export async function foldSegment(meeting: string, entry: TimelineEntry): Promise<string> {
   return foldSegments(meeting, [entry]);
 }
 
 export async function foldSegments(meeting: string, entries: TimelineEntry[]): Promise<string> {
-  const path = statePath(meeting);
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : "(nothing yet — this is the first segment)";
+  let sid: number | null = null;
+  let slug = "";
+  let stem = "";
+  try {
+    const r = await resolveSession(meeting);
+    sid = r.sessionId; slug = r.slug; stem = r.stem;
+  } catch (e) {
+    console.warn(`[notes] DB resolve failed (running summary in-memory only): ${String(e).slice(0, 120)}`);
+  }
+
+  const existing = sid != null
+    ? ((await artifactContent(sid, "running_notes")) ?? "(nothing yet — this is the first segment)")
+    : "(nothing yet — this is the first segment)";
 
   const newMaterial = entries.map((entry) =>
     `## Segment @ ${fmt(entry.offsetSec)}\n` +
@@ -63,8 +86,15 @@ export async function foldSegments(meeting: string, entries: TimelineEntry[]): P
     `If a new segment repeats earlier material, tighten rather than duplicate. ` +
     `Output ONLY the updated summary in markdown.`,
   );
-  writeFileSync(path, summary);
-  console.log(`[notes] running summary updated (${summary.split(/\s+/).length} words) — ${path}`);
+
+  if (sid != null) {
+    try {
+      await upsertArtifact(sid, "running_notes", `notes/${slug}/${stem}__running.md`, { content: summary, mimeType: "text/markdown" });
+    } catch (e) {
+      console.warn(`[notes] DB running-notes write failed: ${String(e).slice(0, 120)}`);
+    }
+  }
+  console.log(`[notes] running summary updated (${summary.split(/\s+/).length} words) — notes/${slug}/${stem}__running.md`);
   pushEvent(`notes: running summary updated (${summary.split(/\s+/).length} words)`);
   return summary;
 }
@@ -75,10 +105,17 @@ export async function finalizeNotes(
   timeline: TimelineEntry[],
   paths?: { notesMd: string; runningMd: string; timelineJson: string; dir: string; course: import("./courses.ts").CourseInfo; stem: string },
 ): Promise<string> {
-  const path = paths?.runningMd ?? statePath(meeting);
-  const running = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const timelineText = timeline
-    .sort((a, b) => a.offsetSec - b.offsetSec)
+  const p = paths ?? sessionPaths(meeting);
+  let sid: number | null = null;
+  try {
+    sid = (await resolveSession(meeting, { slug: p.course.slug, stem: p.stem })).sessionId;
+  } catch (e) {
+    console.warn(`[notes] DB resolve failed (final notes in-memory only): ${String(e).slice(0, 120)}`);
+  }
+
+  const running = sid != null ? ((await artifactContent(sid, "running_notes")) ?? "") : "";
+  const sorted = [...timeline].sort((a, b) => a.offsetSec - b.offsetSec);
+  const timelineText = sorted
     .map((e) =>
       `[${fmt(e.offsetSec)}] ${e.transcript ? e.transcript.slice(0, 500) : "(no speech)"} ` +
       `| visuals: ${e.visualNotes.map((v) => v.note.slice(0, 100)).join(" / ")}`)
@@ -96,13 +133,17 @@ export async function finalizeNotes(
     `## Action Items (only if mentioned)\n`,
   );
 
-  const p = paths ?? sessionPaths(meeting);
-  const outPath = p.notesMd;
-  writeFileSync(outPath, final);
-  // keep the session timeline alongside the notes
-  try { writeFileSync(p.timelineJson, JSON.stringify(timeline, null, 2)); } catch { /* optional */ }
+  if (sid != null) {
+    try {
+      await upsertArtifact(sid, "notes", `notes/${p.course.slug}/${p.stem}__notes.md`, { content: final, mimeType: "text/markdown" });
+      await upsertArtifact(sid, "timeline", `notes/${p.course.slug}/${p.stem}__timeline.json`, { content: JSON.stringify(sorted, null, 2), mimeType: "application/json" });
+      await upsertSegments(sid, sorted.map(toSegmentInit));
+    } catch (e) {
+      console.warn(`[notes] DB artifact/segment write failed: ${String(e).slice(0, 120)}`);
+    }
+  }
   rebuildIndex();
-  console.log(`[notes] ✓ final notes written: ${outPath} (course: ${p.course.slug})`);
-  await notify(`📝 Class notes ready: **${p.course.name}** → ${outPath}`);
+  console.log(`[notes] ✓ final notes written: notes/${p.course.slug}/${p.stem}__notes.md (course: ${p.course.slug})`);
+  await notify(`📝 Class notes ready: **${p.course.name}** → notes/${p.course.slug}/${p.stem}__notes.md`);
   return final;
 }

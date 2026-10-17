@@ -11,6 +11,8 @@ import { ffSerial } from "./fflock.ts";
 import { outPath } from "../paths.ts";
 import { pushEvent } from "../status.ts";
 import { notify } from "../notify.ts";
+import { upsertSegments, type SegmentInit } from "../db/writes.ts";
+import { resolveSession } from "./sessions.ts";
 
 export interface TimelineEntry {
   meeting: string;
@@ -18,6 +20,27 @@ export interface TimelineEntry {
   file: string;
   transcript: string;
   visualNotes: { t: string; note: string }[];
+}
+
+/** Gemini returns visual-note timestamps as "m:ss …" strings; the DB stores
+ *  seconds. Parse the leading m:ss (or a bare integer). */
+function noteT(t: string | number): number {
+  if (typeof t === "number") return Number.isFinite(t) ? Math.max(0, Math.round(t)) : 0;
+  const m = String(t).match(/^(\d{1,3}):(\d{1,2})/);
+  if (m) return Number(m[1]) * 60 + Number(m[2]);
+  const n = parseInt(String(t), 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/** Map a timeline entry to the transcript_segments insert shape. */
+export function toSegmentInit(e: TimelineEntry, segIndex: number): SegmentInit {
+  return {
+    segIndex,
+    offsetSec: Math.round(e.offsetSec),
+    file: e.file ?? null,
+    transcript: e.transcript ?? "",
+    visualNotes: (e.visualNotes ?? []).map((v) => ({ t: noteT(v.t), note: v.note })),
+  };
 }
 
 function run(cmd: string, args: string[]): Promise<void> {
@@ -134,6 +157,13 @@ export async function processSegments(
     return e;
   });
   entries.forEach((e) => onDone?.(e));
+  // durable copy → transcript_segments (jsonl append below stays as a crash journal)
+  try {
+    const { sessionId: sid } = await resolveSession(meetingTitle);
+    await upsertSegments(sid, entries.map((e, i) => toSegmentInit(e, i)));
+  } catch (e) {
+    console.warn(`[pipe] DB segment write failed: ${String(e).slice(0, 120)}`);
+  }
   pushEvent(`Gemini ✓ segments [${items.map((i) => i.idx).join(",")}] — ${entries.reduce((a, e) => a + e.transcript.split(/\s+/).filter(Boolean).length, 0)} words, ${entries.reduce((a, e) => a + e.visualNotes.length, 0)} visual notes`);
   // dead-room tripwire: a batch containing segment 0 covers the meeting's
   // opening minutes — near-silence there means we're likely alone in a

@@ -12,6 +12,8 @@ import { ffSerial } from "./fflock.ts";
 import { notify } from "../notify.ts";
 import { RECORDINGS_DIR, outPath } from "../paths.ts";
 import { pushEvent } from "../status.ts";
+import { upsertArtifact, updateSession as updateSessionDb } from "../db/writes.ts";
+import { resolveSession } from "./sessions.ts";
 
 function run(cmd: string, args: string[]): Promise<{ code: number; err: string }> {
   return new Promise((res) => {
@@ -125,6 +127,22 @@ export async function consolidateSession(
   }
 
   const outBytes = statSync(out).size;
+  // Phase-4: durable metadata → Postgres (the webm blob itself stays on fs).
+  // Stage/stageNote transitions remain with the callers (recorder/daemon) so
+  // their exact strings are preserved; only duration/size are recorded here.
+  try {
+    const r = await resolveSession(meetingTitle);
+    const rel = `recordings/${r.slug}/${out.split("/").pop()}`;
+    await upsertArtifact(r.sessionId, "recording", rel, {
+      storageUri: `file://${rel}`,
+      mimeType: "video/webm",
+      bytes: outBytes,
+      checksum: null,
+    });
+    await updateSessionDb(r.courseId, r.stem, { duration_sec: got, size_mb: Math.round(outBytes / 1e6) });
+  } catch (e) {
+    console.warn(`[consolidate] DB write failed: ${String(e).slice(0, 120)}`);
+  }
   for (const f of existing) {
     try { unlinkSync(f); } catch { /* leave it */ }
   }

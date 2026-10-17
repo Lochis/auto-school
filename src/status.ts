@@ -1,10 +1,11 @@
 /** In-memory status board: the daemon's controller serves it at /status and
  *  the frontend renders it. Every pipeline stage reports here so the UI can
  *  show what's happening now and what happens next. */
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { DATA_DIR, OUT_DIR } from "./paths.ts";
+import { DATA_DIR } from "./paths.ts";
 import { listSessions } from "./pipeline/sessions.ts";
+import { appendEvent, listEvents } from "./db/writes.ts";
 
 export interface StatusEvent { ts: string; msg: string }
 
@@ -286,23 +287,15 @@ export function setDetail(patch: Record<string, string | number>): void {
   Object.assign(board.detail, patch);
 }
 
-let eventLog: ReturnType<typeof createAppend> | null = null;
-function createAppend() {
-  try { return { file: OUT_DIR + "/events.jsonl" }; } catch { return null; }
-}
 export function pushEvent(msg: string): void {
   events.unshift({ ts: new Date().toISOString(), msg });
   if (events.length > 60) events.length = 60;
-  try { // durable tail — survives restarts, feeds the UI history
-    mkdirSync(OUT_DIR, { recursive: true });
-    appendFileSync(`${OUT_DIR}/events.jsonl`, JSON.stringify(events[0]) + "\n");
-  } catch { /* read-only */ }
+  void appendEvent(msg).catch(() => { /* durable tail best-effort */ });
 }
-(function seedEvents() { // boot: restore recent history
-  try {
-    const lines = readFileSync(`${OUT_DIR}/events.jsonl`, "utf8").trim().split("\n").slice(-60).reverse();
-    for (const l of lines) { try { events.push(JSON.parse(l)); } catch { /* skip */ } }
-  } catch { /* first boot */ }
+(function seedEvents() { // boot: restore recent history from PG (fire-and-forget)
+  listEvents(60)
+    .then((rows) => { if (events.length === 0) for (const r of rows) events.push({ ts: new Date(r.ts).toISOString(), msg: r.msg }); })
+    .catch(() => { /* DB not ready — empty feed until first event */ });
 })();
 
 export function snapshot(): { activity: string; detail: Record<string, string | number>; events: StatusEvent[]; sessions: import("./pipeline/sessions.ts").SessionState[] } {
