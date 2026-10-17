@@ -202,9 +202,25 @@ export async function handleAccountPicker(page: Page, email?: string): Promise<b
   return false;
 }
 
-export async function handleMfaPush(page: Page, notified: { current: boolean }): Promise<boolean> {
+export async function handleMfaPush(page: Page, totpSecret: string | undefined, notified: { current: boolean }): Promise<boolean> {
   const isPush = (await visText(page, ["approve sign in request", "approve a request"])) || (await vis(page, [SEL.mfaNumberMatch]));
   if (!isPush) return false;
+  // Hands-free path: with a TOTP secret configured, switch to verification-code
+  // entry instead of waiting for a human push approval. The link lives on the
+  // push screen itself ("I can't use my Microsoft Authenticator app right now");
+  // the next poll lands on the credential picker → handleMfaChooser picks the
+  // code option → handleMfaTotp fills it.
+  if (totpSecret) {
+    const alt = page.getByText(MS_MFA.cantUseAuthenticator[0], { exact: false })
+      .or(page.getByText("sign in another way", { exact: false })).first();
+    if (await alt.isVisible({ timeout: 800 }).catch(() => false)) {
+      console.log("[auth] MFA push — TOTP configured, switching to verification code (hands-free)");
+      await alt.click({ timeout: 3_000 }).catch(() => {});
+      await page.waitForTimeout(2_000);
+      return true; // next poll → mfa-chooser → mfa-totp
+    }
+    console.log("[auth] MFA push — TOTP configured but no method-switch link visible; falling back to push approval");
+  }
   if (!notified.current) {
     // number matching: relay the on-screen number so it can be entered on the phone
     const numTxt = await page.locator(SEL.mfaNumberMatch).first().innerText({ timeout: 1_000 }).catch(() => "");
