@@ -37,15 +37,15 @@ export interface SessionSummary {
 }
 
 /** NOTE on `title`: data.ts surfaces it ONLY when notes/<course>/<stem>__title.txt
- *  exists. The DB column is NOT NULL (importer seeds the stem-derived name and
- *  the out/sessions.json journal merge can overwrite it), so provenance is not
- *  recoverable from a read — parity-queries.ts reports the divergence. */
+ *  exists. The DB column is now NULLABLE and the importer seeds NULL (sets it
+ *  only from __title.txt; the journal merge no longer overwrites), so provenance
+ *  is recoverable from a read. */
 export interface SessionRow {
   id: number;
   stem: string;
   session_date: string;
   start_time: string | null;
-  title: string;
+  title: string | null;
   join_url: string | null;
   seg_count: number | null;
   seg_rows: number;

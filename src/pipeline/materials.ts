@@ -86,9 +86,18 @@ export function getCourseConfig(course: string): CourseConfig | null {
 export async function hydrateCourseConfigs(): Promise<void> {
   if (!pgConfigured()) return;
   const fsCfgs = new Map<string, CourseConfig | null>();
+  // Course identity = union(recordings/, notes/) — matching data.ts.courses() and the
+  // importer. courses/-only dirs (stale orphans) must NOT be re-registered here.
+  const known = new Set<string>();
+  for (const base of ["recordings", "notes"]) {
+    try {
+      for (const e of readdirSync(join(DATA_DIR, base), { withFileTypes: true }))
+        if (e.isDirectory()) known.add(e.name);
+    } catch { /* no recordings/notes root yet */ }
+  }
   try {
     for (const e of readdirSync(join(DATA_DIR, "courses"), { withFileTypes: true }))
-      if (e.isDirectory()) fsCfgs.set(e.name, fsCourseConfig(e.name));
+      if (e.isDirectory() && known.has(e.name)) fsCfgs.set(e.name, fsCourseConfig(e.name));
   } catch { /* no courses root yet */ }
   const rows = (await getPool().query(`select slug, semester_start, icon from courses`)).rows;
   const bySlug = new Map(rows.map((r) => [String(r.slug), r]));
