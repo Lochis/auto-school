@@ -8,7 +8,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const EMBEDDING_MODEL = process.env.GEMINI_EMBED_MODEL?.trim() || "text-embedding-004";
+// Default gemini-embedding-001 (768-dim): the deployed key exposes ONLY this model —
+// text-embedding-004 404s on it (verified 2026-10-17). Both are 768-dim; override with
+// GEMINI_EMBED_MODEL if the key changes. Per-chunk embedding_model keeps generations separate.
+export const EMBEDDING_MODEL = process.env.GEMINI_EMBED_MODEL?.trim() || "gemini-embedding-001";
 const BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_PER_REQUEST = 100; // batchEmbedContents hard cap
 const DIMS = 768; // document_chunks.embedding is pinned vector(768)
@@ -29,8 +32,10 @@ export function geminiApiKey(dataDir?: string): string | undefined {
 }
 
 /** pgvector string literal '[1.23,4.56e-7,…]' — rounded to 6 dp to keep rows small. */
-export const toVectorLiteral = (v: readonly number[]): string =>
-  "[" + v.map((x) => String(+x.toFixed(6))).join(",") + "]";
+export const toVectorLiteral = (v: readonly number[]): string => {
+  if (!Array.isArray(v) || v.length === 0) throw new Error("toVectorLiteral: embedding is empty/undefined — embed step failed or returned nothing");
+  return "[" + v.map((x) => String(+x.toFixed(6))).join(",") + "]";
+};
 
 export interface EmbedOpts {
   apiKey: string;
