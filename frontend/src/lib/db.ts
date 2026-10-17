@@ -1,27 +1,24 @@
 /** PostgreSQL read path (opt-in via DB_READS=1) — mirrors the shapes that
  *  lib/data.ts + lib/deadlines.ts + lib/mapping.ts produce from the fs
- *  today. Schema: src/db/schema.ts (root repo). All queries tolerate empty
- *  tables (import may still be running) and return [] gracefully.
+ *  today. courses()/sessions()/notesMarkdown()/timelineToMd()/timelineEntries()
+ *  delegate to src/db/queries/* (the parity-validated single source of truth);
+ *  deadlines/checklists/mapping have no src/db/queries equivalent yet and keep
+ *  their inline SQL here.
  *
- *  Connection: DATABASE_URL, or PG* env vars when unset (pg native). The
- *  pool is lazy — processes that never hit a db fn never connect. */
-import { Pool } from "pg";
+ *  Connection: shared Pool from src/db/client.ts (DATABASE_URL or PG* env). */
 import type { Session } from "./data";
 import type { DeadEntry } from "./deadlines";
+import { getPool } from "../../../src/db/client.ts";
+import { listCourses, courseMeta } from "../../../src/db/queries/courses.ts";
+import { listSessions } from "../../../src/db/queries/sessions.ts";
+import {
+  notesMarkdown as pgNotesMarkdown,
+  timelineToMd as pgTimelineToMd,
+  timelineEntries as pgTimelineEntries,
+  type TimelineEntry,
+} from "../../../src/db/queries/notes.ts";
 
-let pool: Pool | undefined;
-
-export function getPool(): Pool {
-  if (!pool) {
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL, // undefined → pg falls back to PG* env
-      max: 5,
-      connectionTimeoutMillis: 3000,
-    });
-    pool.on("error", () => { /* keep dev server alive on idle disconnects */ });
-  }
-  return pool;
-}
+export { getPool };
 
 async function q<T>(text: string, params: unknown[] = []): Promise<T[]> {
   try {
@@ -33,10 +30,7 @@ async function q<T>(text: string, params: unknown[] = []): Promise<T[]> {
   }
 }
 
-// ── shared helpers (ports of the fs-path logic — parity, not LIKE-magic) ──
-
-/** lib/data.ts joinUrl fuzzy-match normalizer */
-const norm = (x: string): string => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+// ── shared helpers (deadline id hash — parity with src/daemon.ts dlId) ─────
 
 /** daemon deadline id hash (src/daemon.ts dlId) — stable course|title → hex */
 export function dlId(course: string, title: string): string {
@@ -47,176 +41,42 @@ export function dlId(course: string, title: string): string {
 
 const ms = (d: Date | null | undefined): number | null => (d ? d.getTime() : null);
 
-// ── courses ───────────────────────────────────────────────────────────────
+// ── courses — delegate to src/db/queries/courses.ts ───────────────────────
 
 export async function courses(): Promise<string[]> {
-  const rows = await q<{ slug: string }>(`SELECT slug FROM courses ORDER BY slug`);
-  return rows.map((r) => r.slug);
+  return listCourses();
 }
 
 export async function courseIcon(slug: string): Promise<string | null> {
-  const rows = await q<{ icon: string | null }>(`SELECT icon FROM courses WHERE slug = $1`, [slug]);
-  return rows[0]?.icon ?? null;
+  return (await courseMeta(slug))?.icon ?? null;
 }
 
 export async function semesterStartOf(slug: string): Promise<string | null> {
-  const rows = await q<{ semester_start: Date | null }>(`SELECT semester_start FROM courses WHERE slug = $1`, [slug]);
-  const d = rows[0]?.semester_start;
-  if (!d) return null;
-  return d instanceof Date ? d.toISOString().slice(0, 10) : String(d);
+  return (await courseMeta(slug))?.semesterStart ?? null;
 }
 
-// ── sessions (+ artifacts) — shape-parity with lib/data.ts sessions() ─────
-
-interface SessionRow {
-  stem: string;
-  date: string;
-  start_time: string | null;
-  title: string;
-  join_url: string | null;
-  seg_count: number | null;
-  seg_rows: number;
-  kind: string | null;
-  rel_path: string | null;
-}
+// ── sessions — delegate to src/db/queries/sessions.ts ─────────────────────
 
 export async function sessions(course: string): Promise<Session[]> {
-  const rows = await q<SessionRow>(
-    `SELECT s.stem, s.session_date::text AS date, s.start_time::text AS start_time,
-            s.title, s.join_url, s.seg_count,
-            (SELECT COUNT(*)::int FROM transcript_segments ts WHERE ts.session_id = s.id) AS seg_rows,
-            a.kind, a.rel_path
-     FROM sessions s
-     JOIN courses c ON c.id = s.course_id
-     LEFT JOIN session_artifacts a ON a.session_id = s.id AND a.deleted_at IS NULL
-     WHERE c.slug = $1
-     ORDER BY s.id, a.id`,
-    [course],
-  );
-  const byStem = new Map<string, Session>();
-  for (const r of rows) {
-    const s: Session = byStem.get(r.stem) ?? { stem: r.stem, date: r.date, hasTimeline: false };
-    if (r.kind === "recording") s.audio = r.rel_path ?? undefined;
-    if (r.kind === "notes" || r.kind === "running_notes") s.notes = r.rel_path ?? undefined;
-    if (r.kind === "transcript") s.transcript = r.rel_path ?? undefined;
-    if (r.kind === "timeline") {
-      s.hasTimeline = true;
-      s.timeline = r.rel_path ?? undefined;
-    }
-    if (typeof r.seg_count === "number") s.segmentCount = r.seg_count;
-    else if (s.hasTimeline && r.seg_rows > 0) s.segmentCount = r.seg_rows;
-    if (r.start_time) s.time = r.start_time.slice(0, 5); // HH:MM:SS → HH:MM
-    if (r.title && r.title.trim()) s.title = r.title.slice(0, 80);
-    if (r.join_url) s.joinUrl = r.join_url;
-    byStem.set(r.stem, s);
-  }
-  // joinUrl fallback for rows the importer left null — port of data.ts's
-  // fuzzy sessions.json title match (same normalize + frag.slice(0,20) logic),
-  // against session titles that DO carry a join_url.
-  const missing = [...byStem.values()].filter((s) => !s.joinUrl);
-  if (missing.length) {
-    const withUrl = await q<{ title: string; join_url: string }>(
-      `SELECT DISTINCT title, join_url FROM sessions WHERE join_url IS NOT NULL`,
-    );
-    for (const s of missing) {
-      const frag = norm(s.stem.split("__")[1] ?? "");
-      if (!frag) continue;
-      const hit = withUrl.find((t) => norm(t.title).includes(frag.slice(0, 20)));
-      if (hit) s.joinUrl = hit.join_url;
-    }
-  }
-  return [...byStem.values()].sort((a, b) => (b.date + (b.time ?? "")).localeCompare(a.date + (a.time ?? ""))); // newest first, as data.ts
+  return listSessions(course);
 }
 
-// ── artifact text (notes / transcript markdown) — /api/notes parity ───────
+// ── artifact text — delegate to src/db/queries/notes.ts ───────────────────
 
-async function artifactContent(course: string, stem: string, kind: string): Promise<string | null> {
-  const rows = await q<{ content: string | null }>(
-    `SELECT a.content FROM session_artifacts a
-     JOIN sessions s ON s.id = a.session_id
-     JOIN courses c ON c.id = s.course_id
-     WHERE c.slug = $1 AND s.stem = $2 AND a.kind = $3 AND a.deleted_at IS NULL
-     ORDER BY a.updated_at DESC LIMIT 1`,
-    [course, stem, kind],
-  );
-  return rows[0]?.content ?? null;
-}
-
-async function sessionId(course: string, stem: string): Promise<number | null> {
-  const rows = await q<{ id: string }>(
-    `SELECT s.id FROM sessions s JOIN courses c ON c.id = s.course_id WHERE c.slug = $1 AND s.stem = $2`,
-    [course, stem],
-  );
-  return rows[0] ? Number(rows[0].id) : null;
-}
-
-interface SegRow { offset_sec: number; transcript: string }
-
-/** Render transcript_segments as the same "[m:ss] text" markdown timelineToMd
- *  produces from timeline.json. */
 export async function timelineToMd(course: string, stem: string): Promise<string | null> {
-  const sid = await sessionId(course, stem);
-  if (!sid) return null;
-  const segs = await q<SegRow>(
-    `SELECT offset_sec, transcript FROM transcript_segments WHERE session_id = $1 ORDER BY offset_sec`,
-    [sid],
-  );
-  const lines = segs
-    .filter((e) => e.transcript?.trim())
-    .map((e) => {
-      const m = Math.floor(e.offset_sec / 60);
-      const s = String(Math.round(e.offset_sec % 60)).padStart(2, "0");
-      return `**[${m}:${s}]** ${e.transcript.trim()}`;
-    });
-  return lines.length ? `# Transcript\n\n${lines.join("\n\n")}` : null;
+  return pgTimelineToMd(course, stem);
 }
 
-/** /api/notes kinds — fs path: notes→__notes.md only, running→__running.md,
- *  transcript→__transcript.md ?? timeline render. */
 export async function notesMarkdown(course: string, stem: string, kind: "notes" | "running" | "transcript"): Promise<string | null> {
-  if (kind === "notes") return artifactContent(course, stem, "notes");
-  if (kind === "running") return artifactContent(course, stem, "running_notes");
-  return (await artifactContent(course, stem, "transcript")) ?? (await timelineToMd(course, stem));
+  return pgNotesMarkdown(course, stem, kind);
 }
 
 // ── timeline entries for the session detail page (transcript-timeline.tsx) ─
 
-export interface TimelineEntry {
-  meeting: string;
-  offsetSec: number;
-  transcript: string;
-  visualNotes: { t: string; note: string }[];
-}
+export type { TimelineEntry };
 
 export async function timelineEntries(course: string, stem: string): Promise<TimelineEntry[]> {
-  const sid = await sessionId(course, stem);
-  if (!sid) return [];
-  const rows = await q<{ file: string | null; offset_sec: number; transcript: string; visual_notes: { t: number | string; note: string }[] }>(
-    `SELECT file, offset_sec, transcript, visual_notes FROM transcript_segments WHERE session_id = $1 ORDER BY offset_sec`,
-    [sid],
-  );
-  const meetingTitle = stem.split("__")[1]?.replace(/_/g, " ").trim() ?? "";
-  return rows.map((r) => ({
-    meeting: r.file ?? meetingTitle,
-    offsetSec: r.offset_sec,
-    transcript: r.transcript ?? "",
-    // legacy rows store t as an "m:ss" string (pre-pg timeline.json) — normalize
-    visualNotes: (r.visual_notes ?? []).map((v) => {
-      const sec = typeof v.t === "number" ? v.t : parseMs(v.t);
-      return {
-        t: `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`,
-        note: v.note,
-      };
-    }),
-  }));
-}
-
-/** "m:ss" (or bare seconds) → seconds; unparseable → 0. */
-function parseMs(t: string): number {
-  const m = t.match(/^(\d{1,3}):(\d{1,2})/);
-  if (m) return Number(m[1]) * 60 + Number(m[2]);
-  const n = parseInt(t, 10);
-  return Number.isFinite(n) && n >= 0 ? n : 0;
+  return pgTimelineEntries(course, stem);
 }
 
 // ── deadlines (+ parts) — lib/deadlines.ts + daemon /deadlines GET shapes ─
