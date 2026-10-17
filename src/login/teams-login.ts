@@ -223,7 +223,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
         await handleAccountPicker(page, email);
         break;
       case "mfa-push":
-        await handleMfaPush(page, totpSecret, mfaPushNotified);
+        await handleMfaPush(page, mfaPushNotified);
         break;
       case "mfa-chooser":
         await handleMfaChooser(page, totpSecret, mfaPushNotified);

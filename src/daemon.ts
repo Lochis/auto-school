@@ -346,8 +346,7 @@ async function buildSchedule(): Promise<Sched[]> {
       if (b2 && !(await authAlive(b2.page))) {
         if (!authExpiredPinged) {
           authExpiredPinged = true;
-          const handsFree = config.totpSecret ? "TOTP is configured — it will complete hands-free (no action needed)" : "approve the MFA push if your phone buzzes; hourly retries until approved";
-          void notify(`🔑 **Teams session expired** — re-authenticating now (${handsFree})`).catch(() => {});
+          void notify("🔑 **Teams session expired** — re-authenticating now (approve the MFA push if your phone buzzes; hourly retries until approved)").catch(() => {});
         }
         pushEvent("Teams session expired — recycling browser for fresh login");
         invalidateBrowser();
