@@ -12,6 +12,7 @@
  *                                use to re-attend a same-titled test meeting)
  */
 import { createServer, type ServerResponse } from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
 import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import archiver from "archiver";
@@ -609,6 +610,14 @@ async function sweepIndexes(): Promise<void> {
 }
 
 // ── Phase 4: user-data (deadlines / folds / checklists) in Postgres ────────
+/** Request-scoped owner (smoke suite today, authentik identities later).
+ *  Requests enter via ownerALS.run(...) in startController; outside a
+ *  request (startup, timers) curOwner() resolves the bootstrap owner. */
+const ownerALS = new AsyncLocalStorage<string>();
+export function curOwner(): string {
+  return ownerALS.getStore() ?? OWNER;
+}
+
 // The /deadlines and /checklists routes keep their exact mutation semantics
 // (id hashing, dedupe, fold/unfold, carry-over); only the read/write
 // primitives changed from JSON files to SQL. Raw SQL via the shared Pool.
@@ -674,7 +683,7 @@ async function readDl(): Promise<Dl[]> {
      where d.owner_user_id = $1
        and not exists (select 1 from deadline_folds f where f.child_id = d.id and f.status = 'accepted')
      order by d.id`,
-    [OWNER],
+    [curOwner()],
   )).rows as Record<string, unknown>[];
   const parts = (await q(
     `select p.deadline_id::text as deadline_id, p.title, p.due::text as due, p.note, p.done
@@ -705,7 +714,7 @@ async function upsertDeadlineRow(x: Dl): Promise<number> {
        user_note=excluded.user_note, stale=excluded.stale, updated_at=now()
      returning id`,
     [x.id, cid, x.title, x.due, x.dueManual ?? false, x.kind, x.spread, x.startBy, x.note, x.source,
-      x.confidence, x.done, x.doneAt ? new Date(x.doneAt) : null, x.userNote ?? null, x.stale ?? null, OWNER],
+      x.confidence, x.done, x.doneAt ? new Date(x.doneAt) : null, x.userNote ?? null, x.stale ?? null, curOwner()],
   );
   const id = Number((r.rows[0] as { id: number | string }).id);
   await q(`delete from deadline_parts where deadline_id = $1`, [id]);
@@ -724,15 +733,15 @@ async function writeDl(d: Dl[]): Promise<void> {
     await q(`delete from deadlines where owner_user_id = $1
       and not (id = any($2::bigint[]))
       and not exists (select 1 from deadline_folds f where f.child_id = deadlines.id and f.status = 'accepted')`,
-      [OWNER, keep]);
+      [curOwner(), keep]);
   else
     await q(`delete from deadlines where owner_user_id = $1
-      and not exists (select 1 from deadline_folds f where f.child_id = deadlines.id and f.status = 'accepted')`, [OWNER]);
+      and not exists (select 1 from deadline_folds f where f.child_id = deadlines.id and f.status = 'accepted')`, [curOwner()]);
 }
 
 /** legacy_id → deadlines.id (rows self-register via courseId on write). */
 const dbIdOf = async (legacyId: string): Promise<number | null> => {
-  const r = await q(`select id from deadlines where legacy_id = $1 and owner_user_id = $2 order by id limit 1`, [legacyId, OWNER]);
+  const r = await q(`select id from deadlines where legacy_id = $1 and owner_user_id = $2 order by id limit 1`, [legacyId, curOwner()]);
   return r.rows[0] ? Number((r.rows[0] as { id: number | string }).id) : null;
 };
 
@@ -822,7 +831,7 @@ async function writeFolds(f: FoldsFile): Promise<void> {
        where c.slug = $1 and lower(trim(d.title)) = $2 and d.owner_user_id = $3
          and not exists (select 1 from deadline_folds f2 where f2.child_id = d.id and f2.status = 'accepted')
        order by d.id limit 1`,
-      [course ?? "", title ?? "", OWNER],
+      [course ?? "", title ?? "", curOwner()],
     );
     if (!r.rows[0]) continue;
     const cid = Number((r.rows[0] as { id: number | string }).id);
@@ -860,7 +869,7 @@ async function readCk(): Promise<Ck[]> {
 }
 
 async function writeCk(c: Ck[]): Promise<void> {
-  await q(`delete from checklist_items where deadline_id in (select id from deadlines where owner_user_id = $1)`, [OWNER]);
+  await q(`delete from checklist_items where deadline_id in (select id from deadlines where owner_user_id = $1)`, [curOwner()]);
   for (const ck of c) {
     const did = await dbIdOf(ck.deadlineId);
     if (did == null) continue;
@@ -936,7 +945,20 @@ function startController(): void {
   // manually-left meetings (today) are seeded into `handled` so a restart
   // doesn't auto-join them again — manual Join via /join still overrides
   for (const t of loadLeftToday()) handled.add(handledKey(t));
-  const server = createServer(async (req, res) => {
+  const server = createServer((req, res) => {
+    // request-scoped owner: the smoke suite (and later authentik identities)
+    // can act as a different user. The header is honored ONLY when it exactly
+    // matches SMOKE_OWNER_UUID — unset env (normal prod) ignores any header.
+    const ownerOf = (): string => {
+      const h = String(req.headers["x-owner-uuid"] ?? "");
+      return h && h === process.env.SMOKE_OWNER_UUID ? h : OWNER;
+    };
+    ownerALS.run(ownerOf(), () => { void handleRequest(req, res); });
+  });
+
+  /** The full controller body (was the createServer callback). Runs inside
+   *  ownerALS so curOwner() resolves the request's owner everywhere below. */
+  async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
     const send = (code: number, body: unknown) => {
       res.writeHead(code, { "Content-Type": "application/json" });
@@ -1753,7 +1775,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         // mirror into PG — only the keys this patch actually includes
         try {
           const cols = ["slug", "name", "owner_user_id"];
-          const vals: unknown[] = [slug, slug.replace(/_/g, " "), OWNER];
+          const vals: unknown[] = [slug, slug.replace(/_/g, " "), curOwner()];
           const sets: string[] = [];
           if (patch.semesterStart !== undefined) { cols.push("semester_start"); vals.push(patch.semesterStart); sets.push("semester_start = excluded.semester_start"); }
           if (patch.icon !== undefined) { cols.push("icon"); vals.push(patch.icon); sets.push("icon = excluded.icon"); }
@@ -1837,7 +1859,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
           await q(
             `insert into courses (slug, name, semester_start, owner_user_id) values ($1,$2,nullif($3,'')::date,$4)
              on conflict (slug) do nothing`,
-            [slug, slug.replace(/_/g, " "), s, OWNER]);
+            [slug, slug.replace(/_/g, " "), s, curOwner()]);
         } catch (e) { console.error(`[daemon] DB course create failed: ${String(e)}`); }
         pushEvent(`course created: ${slug}${s ? ` (semester starts ${s})` : ""}`);
         return send(200, { ok: true, slug });
@@ -1857,7 +1879,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         return send(200, { deadlines: dl, suggestions: f.pending.filter((p) => ids.has(p.childId) && ids.has(p.parentId)), foldedChildren });
       }
       if (req.method === "DELETE") {
-        await q(`delete from deadlines where owner_user_id = $1`, [OWNER]);
+        await q(`delete from deadlines where owner_user_id = $1`, [curOwner()]);
         return send(200, { ok: true });
       }
       if (req.method === "POST") {
@@ -1952,7 +1974,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
               dl.push({ ...t.child }); // resurrect — writeDl's uniqIds guards id clashes
               delete f.verdicts[key];
               delete f.folded[key];
-              await q(`delete from deadline_folds where child_id = (select id from deadlines where legacy_id = $1 and owner_user_id = $2 order by id limit 1)`, [t.child.id, OWNER]);
+              await q(`delete from deadline_folds where child_id = (select id from deadlines where legacy_id = $1 and owner_user_id = $2 order by id limit 1)`, [t.child.id, curOwner()]);
               await writeDl(dl);
               pushEvent(`deadlines: unfolded "${t.child.title}" back out of "${parent?.title ?? t.parentId}"`);
               return send(200, { ok: true, deadlines: dl });
@@ -2375,7 +2397,7 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
       if (req.method === "GET") return send(200, { checklists: await readCk() });
       if (req.method === "DELETE") {
         const id = url.searchParams.get("deadlineId");
-        if (!id) { await q(`delete from checklist_items where deadline_id in (select id from deadlines where owner_user_id = $1)`, [OWNER]); return send(200, { ok: true }); }
+        if (!id) { await q(`delete from checklist_items where deadline_id in (select id from deadlines where owner_user_id = $1)`, [curOwner()]); return send(200, { ok: true }); }
         const ck = (await readCk()).filter((c) => c.deadlineId !== id);
         await writeCk(ck);
         return send(200, { ok: true, checklists: ck });
@@ -2663,7 +2685,8 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
       }
     }
     send(404, { error: "not found" });
-  });
+  }
+
   server.listen(PORT, () => console.log(`[daemon] controller listening on :${PORT}`));
   // index warm-up sweep — delayed so boot/restore stays snappy; skipped
   // (and retried later) while a class recording is live

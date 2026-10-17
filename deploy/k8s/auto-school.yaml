@@ -109,6 +109,9 @@ spec:
             - { name: PGHOST, value: auto-school-pg }
             - { name: PGPORT, value: "5432" }
             - { name: PGDATABASE, value: autoschool }
+            # smoke-test identity: when set, the daemon honors `x-owner-uuid`
+            # for exactly this UUID (scripts/smoke.ts runs as this user).
+            - { name: SMOKE_OWNER_UUID, value: "00000000-0000-4000-8000-000000000002" }
           envFrom:
             - secretRef: { name: auto-school-env }
             - secretRef: { name: auto-school-pg }
