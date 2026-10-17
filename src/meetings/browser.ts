@@ -21,6 +21,9 @@ let inflight: Promise<{ ctx: BrowserContext; page: Page } | null> | null = null;
 /** epoch ms of the last FAILED login attempt (0 = none) — lets the daemon
  *  stretch empty-schedule retries instead of spamming MFA pushes */
 export let lastLoginFailedAt = 0;
+/** detail string of the last failed login ("login timed out in state \"mfa-push\"…")
+ *  — lets the daemon distinguish an unattended-MFA timeout from other failures. */
+export let lastLoginFailDetail = "";
 
 function alive(c: { ctx: BrowserContext }): boolean {
   try { void c.ctx.pages(); return true; } catch { return false; }
@@ -48,13 +51,14 @@ export async function getBrowser(): Promise<{ ctx: BrowserContext; page: Page } 
   inflight ??= (async () => {
     try {
       const r = await loginTeams({ keepOpen: true });
-      if (!r.ok || !r.ctx || !r.page) { lastLoginFailedAt = Date.now(); return null; }
-      lastLoginFailedAt = 0; // healthy login clears the backoff signal
+      if (!r.ok || !r.ctx || !r.page) { lastLoginFailedAt = Date.now(); lastLoginFailDetail = r.detail ?? "login failed"; return null; }
+      lastLoginFailedAt = 0; lastLoginFailDetail = ""; // healthy login clears the backoff signal
       try { await r.ctx.grantPermissions(["microphone", "camera"]); } catch { /* non-fatal */ }
       cached = { ctx: r.ctx, page: r.page };
       return cached;
     } catch (e) {
       lastLoginFailedAt = Date.now();
+      lastLoginFailDetail = String(e).slice(0, 160);
       console.warn(`[browser] login/launch threw: ${String(e).slice(0, 120)}`);
       return null; // getBrowser never rejects — callers see a plain miss
     }

@@ -18,7 +18,7 @@ import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileS
 import archiver from "archiver";
 import { join, dirname } from "node:path";
 import { TEAMS_URL } from "./login/teams-login.ts";
-import { getBrowser, invalidateBrowser, closeBrowser, authAlive, isSharedPage, lastLoginFailedAt } from "./meetings/browser.ts";
+import { getBrowser, invalidateBrowser, closeBrowser, authAlive, isSharedPage, lastLoginFailedAt, lastLoginFailDetail } from "./meetings/browser.ts";
 import { listMeetings } from "./meetings/list.ts";
 import { joinMeeting, joinMeetingByUrl } from "./meetings/join.ts";
 import { listTodayMeetings } from "./graph/meetings.ts";
@@ -346,7 +346,11 @@ async function buildSchedule(): Promise<Sched[]> {
       if (b2 && !(await authAlive(b2.page))) {
         if (!authExpiredPinged) {
           authExpiredPinged = true;
-          void notify("🔑 **Teams session expired** — re-authenticating now (approve the MFA push if your phone buzzes; hourly retries until approved)").catch(() => {});
+          // screenshot of the dead page accompanies the ping; the Approve
+          // sign-in page (with the number to enter) follows from the login
+          // state machine ~a minute later, once the fresh login reaches MFA
+          const expiredShot = await b2.page.screenshot({ type: "png" }).catch(() => undefined);
+          void notify("🔑 **Teams session expired** — re-authenticating now. **Approve-sign-in screenshot + number follows in ~a minute — enter the number on your phone to approve.**", expiredShot).catch(() => {});
         }
         pushEvent("Teams session expired — recycling browser for fresh login");
         invalidateBrowser();
@@ -2825,10 +2829,14 @@ console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock re
       const nextAt = upcoming[0]?.start - joinEarlyMs();
       const wakeAt = Math.min(nextAt ?? Infinity, nextRebuildAt());
       // empty schedule = build failed. Browser/login down: retry 10 min —
-      // unless the LOGIN itself failed (MFA unapproved), then stretch to 60
-      // so unattended mornings don't spam MFA pushes every 10 minutes.
+      // unless the LOGIN itself failed, then stretch so unattended mornings
+      // don't spam MFA pushes every 10 minutes… EXCEPT when the failure was
+      // an unapproved MFA push: the user is actively waiting to approve, so
+      // bring the next push back quickly instead of an hour later.
       const loginDown = lastLoginFailedAt > 0 && Date.now() - lastLoginFailedAt < 15 * 60_000;
-      const sleepMs = Math.max(5_000, Math.min(wakeAt - now, schedule.length ? 60 * 60_000 : loginDown ? 60 * 60_000 : 10 * 60_000));
+      const mfaWaited = loginDown && /state "mfa/i.test(lastLoginFailDetail);
+      const loginRetryMs = (Number(process.env.MFA_RETRY_MINUTES ?? 12) || 12) * 60_000;
+      const sleepMs = Math.max(5_000, Math.min(wakeAt - now, schedule.length ? 60 * 60_000 : loginDown ? (mfaWaited ? loginRetryMs : 60 * 60_000) : 10 * 60_000));
       state = "idle";
       const rescueBusy = scheduleBuiltAt === 0; // rescue may still be pre-schedule
       const t12 = (d: number) => new Date(d).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });

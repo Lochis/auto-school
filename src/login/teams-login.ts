@@ -203,6 +203,11 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     if (Date.now() > mfaDeadline) {
       const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
       await ctx.close();
+      // tell the human the window closed — otherwise the attempt silently
+      // dies and the next push only appears after the daemon's backoff
+      if (state.startsWith("mfa")) {
+        await notify(`⌛ **Teams login: no MFA approval in time** — attempt gave up in state "${state}" after ${Math.round((Date.now() - started) / 60_000)} min. The daemon retries shortly; approve the **next** push when it arrives.`, shot).catch(() => {});
+      }
       return { ok: false, method: "fresh", detail: `login timed out in state "${state}" after ${Math.round((Date.now() - started) / 1000)}s` };
     }
 
