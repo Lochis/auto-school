@@ -97,3 +97,46 @@ export async function updateSession(stem: string, patch: Partial<Omit<SessionSta
 export function listSessions(): SessionState[] {
   return sessions.slice(0, 50);
 }
+
+/** Rehydrate the in-memory board from the durable sessions rows at daemon
+ *  startup. Without this the "Completed Sessions" panel (daemon /status ←
+ *  listSessions()) shows "No captures yet" after every restart even though
+ *  the classes are consolidated + indexed — the board only ever saw
+ *  process-local updates. Rows that are mid-flight stages from a previous
+ *  process (recording/consolidating/…) are surfaced as failed: that process
+ *  is gone and orphan rescue owns the recovery. */
+export async function hydrateSessions(): Promise<void> {
+  try {
+    const rows = (await getPool().query(
+      `select c.slug, s.stem, s.title, s.join_url, s.stage, s.stage_note, s.seg_count,
+              s.duration_sec, s.size_mb, extract(epoch from s.started_at)::bigint * 1000 as started_ms,
+              extract(epoch from s.updated_at)::bigint * 1000 as updated_ms
+       from sessions s join courses c on c.id = s.course_id
+       order by s.updated_at desc limit 50`,
+    )).rows as Record<string, unknown>[];
+    sessions = rows.map((r) => ({
+      stem: String(r.stem),
+      title: String(r.title ?? deriveTitle(String(r.stem))),
+      course: String(r.slug),
+      startedAt: Number(r.started_ms) || Date.now(),
+      updatedAt: Number(r.updated_ms) || Date.now(),
+      stage: (r.stage === "recording" || r.stage === "remuxing" || r.stage === "transcribing"
+        || r.stage === "noting" || r.stage === "consolidating") ? "failed" : (r.stage as Stage),
+      stageNote: r.stage === "done" || r.stage === "failed" ? (r.stage_note ?? undefined) : "interrupted by restart",
+      segCount: r.seg_count == null ? undefined : Number(r.seg_count),
+      durationSec: r.duration_sec == null ? undefined : Number(r.duration_sec),
+      sizeMB: r.size_mb == null ? undefined : Number(r.size_mb),
+      joinUrl: r.join_url == null ? undefined : String(r.join_url),
+    }));
+    if (sessions.length) console.log(`[sessions] board rehydrated: ${sessions.length} session(s) from Postgres`);
+    // persist the interrupted→failed verdict so the durable rows agree with
+    // the board (a recording/consolidating row from a dead process is failed;
+    // orphan rescue rewrites genuine rescues to done afterwards)
+    await getPool().query(
+      `update sessions set stage = 'failed', stage_note = 'interrupted by restart', updated_at = now()
+       where stage in ('recording','remuxing','transcribing','noting','consolidating')`,
+    );
+  } catch (e) {
+    console.warn(`[sessions] board rehydrate skipped: ${String(e).slice(0, 120)}`);
+  }
+}

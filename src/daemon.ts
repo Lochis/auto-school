@@ -39,7 +39,7 @@ import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir, refreshMappings, normTitle as normMappingTitle } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
-import { updateSession, listSessions } from "./pipeline/sessions.ts";
+import { updateSession, listSessions, hydrateSessions } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention } from "./pipeline/retention.ts";
 import { embedPendingMaterials, embedPendingSessions } from "./db/ingest-embed.ts";
@@ -2696,6 +2696,9 @@ export async function daemon(): Promise<void> {
     }).catch(() => { });
   };
   setInterval(retentionPass, 6 * 3_600_000).unref();
+  // rehydrate the session board from PG first — /status's Completed Sessions
+  // panel must show past captures, not just this process's updates
+  await hydrateSessions().catch(() => { });
   // background queue: rescue old segments WITHOUT blocking discovery —
   // consolidations are serial (2 encode threads) and can take minutes
   void rescueOrphans().finally(() => { retentionPass(); setActivity("idle — finished orphan rescue", {}); });
