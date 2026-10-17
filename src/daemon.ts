@@ -603,7 +603,7 @@ async function sweepIndexes(): Promise<void> {
   }
   let built = 0;
   for (const c of allCourses()) {
-    for (const m of listMaterials(c)) {
+    for (const m of await listMaterials(c)) {
       if (!supportsIndex(m.path)) continue;
       if (listSessions().some((s) => s.stage === "recording")) break; // recheck per file
       try {
@@ -1638,7 +1638,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         // ?indexed=1 appends the derived .index/ page cache — opt-in only
         // (machine-extracted text, not meant for human browsing by default)
         const withIndex = url.searchParams.get("indexed") === "1";
-        return send(200, { materials: withIndex ? [...listMaterials(slug), ...listIndexFiles(slug)] : listMaterials(slug) });
+        return send(200, { materials: withIndex ? [...await listMaterials(slug), ...listIndexFiles(slug)] : await listMaterials(slug) });
       }
       if (req.method === "POST") {
         try {
@@ -2532,7 +2532,7 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
         for (const c of m) {
           const toks = new Set<string>();
           for (const t of c.toLowerCase().replace(/[_\-.]+/g, " ").split(/\s+/)) if (t.length >= 4) toks.add(t);
-          for (const mat of listMaterials(c)) {
+          for (const mat of await listMaterials(c)) {
             (lex[mat.filename] ??= []).push({ course: c, path: mat.path });
           }
           hints[c] = [...toks];
@@ -2752,7 +2752,7 @@ export async function daemon(): Promise<void> {
     twinBusy = true;
     try {
       for (const c of allCourses()) {
-        for (const m of listMaterials(c)) {
+        for (const m of await listMaterials(c)) {
           if (!m.path.toLowerCase().endsWith(".docx")) continue;
           const dir = indexDir(c, m.path);
           if (existsSync(join(dir, "source.pdf")) && !existsSync(join(dir, ".textonly")) && bundleFresh(c, m.path)) continue; // twin done + source unchanged
