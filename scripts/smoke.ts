@@ -39,8 +39,19 @@ async function api(method: string, path: string, body?: unknown): Promise<{ stat
 }
 
 const { getPool } = await import("../src/db/client.ts");
+const { geminiApiKey } = await import("../src/db/embeddings.ts");
 const pool = getPool();
 const q = (text: string, params: unknown[] = []) => pool.query(text, params as never[]);
+
+/** Poll a PG/API condition until true or timeout (fire-and-forget write races). */
+async function waitFor(cond: () => Promise<boolean>, ms = 8000): Promise<boolean> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (await cond()) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
 
 // ── seed + cleanup ──────────────────────────────────────────────────────────
 async function seed(): Promise<void> {
@@ -145,7 +156,56 @@ console.log("\n5 · session move + delete (fs + PG)");
   ok("session row deleted in PG", gone.rows.length === 0);
 }
 
-console.log("\n6 · read-path parity (real data, read-only): daemon vs frontend vs PG");
+console.log("\n6 · materials: upload → documents row + DB listing (Gap 3)");
+{
+  const M = `__smoke__Materials_${Date.now() % 100000}`;
+  const c = await api("POST", "/courses/create", { name: M.replace(/_/g, " "), slug: M });
+  ok("POST /courses/create (materials)", c.status === 200, JSON.stringify(c.json).slice(0, 120));
+
+  // multipart upload (fetch sets the boundary; do NOT set Content-Type manually)
+  const upHdrs: Record<string, string> = SMOKE ? { "x-owner-uuid": SMOKE } : {};
+  const upload = async (filename: string, bytes: string, type: string) => {
+    const fd = new FormData();
+    fd.append("file", new Blob([bytes], { type }), filename);
+    const res = await fetch(`${BASE}/courses/${encodeURIComponent(M)}/materials`, { method: "POST", headers: upHdrs, body: fd });
+    return { status: res.status, json: await res.json().catch(() => ({})) };
+  };
+  const docRow = (rel: string) => q(`select 1 from documents d join courses c on c.id=d.course_id where c.slug=$1 and d.rel_path=$2 and d.kind='material'`, [M, rel]);
+
+  // non-embeddable file must STILL get a documents row (listing source of truth)
+  const up1 = await upload("slide1.pptx", "PK dummy pptx bytes", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+  ok("upload .pptx (non-embeddable)", up1.status === 200, JSON.stringify(up1.json).slice(0, 120));
+  const row1 = await waitFor(async () => (await docRow("slide1.pptx")).rows.length === 1);
+  ok("documents row created for .pptx", row1, "row never appeared (upsertDocumentRow)");
+
+  // embeddable file → row + (if a Gemini key exists) chunks + indexed_at
+  const up2 = await upload("readme.txt", "This is a smoke material for embedding.", "text/plain");
+  ok("upload .txt (embeddable)", up2.status === 200, JSON.stringify(up2.json).slice(0, 120));
+  const row2 = await waitFor(async () => (await docRow("readme.txt")).rows.length === 1);
+  ok("documents row created for .txt", row2);
+
+  // listing must come from the DB (documents) and include the non-embeddable file
+  const list = await api("GET", `/courses/${encodeURIComponent(M)}/materials`);
+  const paths = new Set(((list.json.materials ?? []) as any[]).map((m) => m.path));
+  ok("listing includes non-embeddable .pptx (DB source)", paths.has("slide1.pptx"), JSON.stringify([...paths]));
+  ok("listing includes .txt", paths.has("readme.txt"));
+
+  const key = geminiApiKey(DATA);
+  if (key) {
+    const embedded = await waitFor(async () => {
+      const r = await q(`select d.indexed_at, (select count(*) from document_chunks ch where ch.document_id=d.id)::int as n
+        from documents d join courses c on c.id=d.course_id where c.slug=$1 and d.rel_path='readme.txt'`, [M]);
+      return !!r.rows[0] && r.rows[0].indexed_at != null && Number(r.rows[0].n) > 0;
+    }, 30000);
+    ok("embeddable .txt chunked + embedded (indexed_at + chunks)", embedded, "embed pass never landed");
+  } else {
+    console.log("  (no Gemini key — embedding assertion skipped)");
+  }
+
+  await q(`delete from courses where slug = $1`, [M]).catch(() => {}); // cascades documents + chunks
+}
+
+console.log("\n7 · read-path parity (real data, read-only): daemon vs frontend vs PG");
 {
   const daemonFeed = await fetch(`${BASE}/deadlines`, { headers: { "Content-Type": "application/json" } }).then((r) => r.json()); // NO smoke header — real owner, like the UI
   const daemonIds = new Set(((daemonFeed.deadlines ?? []) as any[]).map((d) => `${d.id}|${d.done}`));
