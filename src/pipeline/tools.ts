@@ -393,15 +393,13 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
       } catch (e) { return `web_read failed: ${String(e).slice(0, 120)}`; }
     }
     case "list_deadlines": {
-      try {
-        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string; stale?: number }[];
-        if (!Array.isArray(dl) || !dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
-        const rows = dl
-          .filter((d) => !d.done)
-          .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
-          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — [${d.course}] ${d.title}${d.stale ? " [STALE — not seen in its source at the last update; verify before relying on it]" : ""} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
-        return rows.length ? `Open deadlines across all courses (done items already checked off by the student — don't re-suggest those):\n${rows.join("\n")}` : "no open deadlines — everything on the calendar is done";
-      } catch { return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)"; }
+      const dl = await readDeadlineRows();
+      if (!dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
+      const rows = dl
+        .filter((d) => !d.done)
+        .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
+        .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — [${d.course}] ${d.title}${d.stale ? " [STALE — not seen in its source at the last update; verify before relying on it]" : ""} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
+      return rows.length ? `Open deadlines across all courses (done items already checked off by the student — don't re-suggest those):\n${rows.join("\n")}` : "no open deadlines — everything on the calendar is done";
     }
     case "list_checklists": return checklistRows(slug || undefined);
     case "list_courses": {
@@ -477,9 +475,76 @@ ${chunkHitLines(hits).join("\n")}`
 }
 
 /** Course-scoped tools — execTool validated the slug. */
+/** Unified deadline row — mirrors the legacy fs deadlines.json entry shape so the
+ *  PG and fs paths feed the same renderer (model-visible output is identical). */
+interface DeadlineRow {
+  course: string; title: string; due: string | null; kind: string; spread: boolean;
+  startBy: string | null; note: string; confidence: string; done: boolean;
+  userNote?: string | null; stale?: number | string | null;
+}
+
+/** Live deadlines from Postgres; null ⇒ caller falls back to the fs reader. */
+async function readDeadlineRowsDb(slug?: string): Promise<DeadlineRow[] | null> {
+  try {
+    const pool = await dbPool();
+    const { rows } = await pool.query(
+      `select c.slug as course, d.title, d.due::text as due, d.kind, d.spread,
+              d.start_by::text as "startBy", d.note, d.confidence, d.done,
+              d.user_note as "userNote", d.stale
+       from deadlines d
+       join courses c on c.id = d.course_id
+       ${slug ? "where c.slug = $1" : ""}
+       order by d.due asc nulls last, d.id`,
+      slug ? [slug] : []);
+    return rows as DeadlineRow[];
+  } catch { return null; }
+}
+
+/** Deadline rows: Postgres first (daemon's source of truth since the PG
+ *  migration), legacy user-data/deadlines.json only when PG is absent/fails. */
+async function readDeadlineRows(slug?: string): Promise<DeadlineRow[]> {
+  if (pgConfigured()) {
+    const db = await readDeadlineRowsDb(slug);
+    if (db) return db;
+  }
+  try {
+    const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as DeadlineRow[];
+    return Array.isArray(dl) ? dl : [];
+  } catch { return []; }
+}
+
 /** Checklist listing shared by both scopes: per-task steps with live progress
- *  + the student's own context note (group members, roles, …). */
-function checklistRows(slug?: string): string {
+ *  + the student's own context note (group members, roles, …). Postgres first
+ *  (checklist_items is the live state), fs checklists.json as fallback. */
+async function checklistRows(slug?: string): Promise<string> {
+  if (pgConfigured()) {
+    try {
+      const pool = await dbPool();
+      const { rows } = await pool.query(
+        `select d.id, c.slug as course, d.title, d.due::text as due, d.user_note as "userNote",
+                ci.text as item_text, ci.done as item_done, ci.manual as item_manual
+         from checklist_items ci
+         join deadlines d on d.id = ci.deadline_id
+         join courses c on c.id = d.course_id
+         where d.done = false ${slug ? "and c.slug = $1" : ""}
+         order by d.due asc nulls last, d.id, ci.position, ci.id`,
+        slug ? [slug] : []);
+      const byDl = new Map<number, { course: string; title: string; due: string | null; userNote: string | null; items: { text: string; done: boolean; manual: boolean }[] }>();
+      for (const r of rows as { id: number; course: string; title: string; due: string | null; userNote: string | null; item_text: string; item_done: boolean; item_manual: boolean }[]) {
+        let e = byDl.get(r.id);
+        if (!e) { e = { course: r.course, title: r.title, due: r.due, userNote: r.userNote, items: [] }; byDl.set(r.id, e); }
+        e.items.push({ text: r.item_text, done: r.item_done, manual: r.item_manual });
+      }
+      const out = [...byDl.values()].map((c) => {
+        const prog = `${c.items.filter((i) => i.done).length}/${c.items.length}`;
+        const steps = c.items.map((i) => `    ${i.done ? "[x]" : "[ ]"} ${i.text}${i.manual ? " (added by the student)" : ""}`).join("\n");
+        return `- ${c.due ?? "no date"} — ${slug ? "" : `[${c.course}] `}${c.title} (${prog} steps done${c.userNote ? `; student note: ${c.userNote}` : ""}):\n${steps}`;
+      });
+      return out.length
+        ? `Checklists (per-task step progress, checked off by the student — unchecked = still to do):\n${out.join("\n")}`
+        : "no checklists built yet (build them from the Deadlines panel on the Courses page)";
+    } catch { /* PG hiccup — fs fallback below */ }
+  }
   try {
     const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { id: string; course: string; title: string; due: string | null; kind: string; done: boolean; userNote?: string }[];
     const cks = JSON.parse(readFileSync(join(config.userDataDir, "checklists.json"), "utf8")) as { deadlineId: string; course: string; title: string; items: { text: string; done: boolean; manual?: boolean }[]; updatedAt: number }[];
@@ -503,15 +568,13 @@ function checklistRows(slug?: string): string {
 async function courseTool(name: string, args: Record<string, unknown>, slug: string): Promise<string> {
   switch (name) {
     case "list_deadlines": {
-      try {
-        const dl = JSON.parse(readFileSync(join(config.userDataDir, "deadlines.json"), "utf8")) as { course: string; title: string; due: string | null; kind: string; spread: boolean; startBy: string | null; note: string; confidence: string; done: boolean; userNote?: string; stale?: number }[];
-        if (!Array.isArray(dl) || !dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
-        const rows = dl
-          .filter((d) => d.course === slug && !d.done)
-          .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
-          .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — ${d.title}${d.stale ? " [STALE — not seen in its source at the last update; verify before relying on it]" : ""} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
-        return rows.length ? `Open deadlines for this course (done items already checked off by the student):\n${rows.join("\n")}` : "all deadlines for this course are done (or none exist)";
-      } catch { return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)"; }
+      const dl = await readDeadlineRows(slug);
+      if (!dl.length) return "deadline calendar is empty — rebuild it from the Courses page (it may just not exist yet)";
+      const rows = dl
+        .filter((d) => d.course === slug && !d.done)
+        .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
+        .map((d) => `- ${d.due ?? "no date"}${d.startBy && !d.due ? ` (start by ${d.startBy})` : ""} — ${d.title}${d.stale ? " [STALE — not seen in its source at the last update; verify before relying on it]" : ""} (${d.kind}${d.spread ? ", spread out" : ""})${d.note ? `: ${d.note}` : ""}${d.userNote ? ` — student note: ${d.userNote}` : ""}${d.confidence !== "high" ? ` (${d.confidence} confidence)` : ""}`);
+      return rows.length ? `Open deadlines for this course (done items already checked off by the student):\n${rows.join("\n")}` : "all deadlines for this course are done (or none exist)";
     }
     case "list_checklists": return checklistRows(slug || undefined);
     case "list_materials": {

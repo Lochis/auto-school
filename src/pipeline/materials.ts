@@ -11,6 +11,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, statSync, renameSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { DATA_DIR } from "../paths.ts";
+import { getPool } from "../db/client.ts";
+import { pgConfigured } from "../db/reader.ts";
 
 export type MaterialCategory =
   | "syllabus" | "assignment" | "lecture-notes" | "reference" | "rubric" | "transcript" | "other";
@@ -212,6 +214,51 @@ export function registerMaterial(course: string, entry: MaterialEntry): void {
   saveManifest(course, list);
 }
 
+// ── Postgres documents-row sync ─────────────────────────────────────────────
+// deleteMaterial/renameMaterial mutate the fs tree + materials.json, but
+// vector/keyword search reads the `documents` table — without these syncs
+// deleted materials keep surfacing with dead rel_paths and renames leave
+// duplicate rows. Fire-and-forget + fully guarded: an fs-only operation must
+// NEVER fail because PG is down. document_chunks cascades on delete
+// (ddl.sql: document_chunks.document_id → documents ON DELETE CASCADE).
+
+/** Escape LIKE metacharacters (% _ \) in a user-supplied rel path. */
+const escapeLike = (s: string): string => s.replace(/([%_\\])/g, "\\$1");
+
+async function forgetDocumentRows(course: string, relPath: string): Promise<void> {
+  try {
+    if (!pgConfigured()) return;
+    const pool = getPool();
+    const cid = (await pool.query(`select id from courses where slug=$1`, [course])).rows[0]?.id;
+    if (!cid) return;
+    const r = await pool.query(
+      `delete from documents where course_id=$1 and kind='material'
+        and (rel_path=$2 or rel_path like $3 escape '\\')`,
+      [cid, relPath, `${escapeLike(relPath)}/%`]); // row itself + children (folder delete)
+    if (r.rowCount) console.log(`materials: dropped ${r.rowCount} document row(s) for deleted ${course}/${relPath}`);
+  } catch (e) { console.error(`materials: documents prune failed (${course}/${relPath}):`, e); }
+}
+
+async function moveDocumentRows(course: string, from: string, to: string): Promise<void> {
+  try {
+    if (!pgConfigured()) return;
+    const pool = getPool();
+    const cid = (await pool.query(`select id from courses where slug=$1`, [course])).rows[0]?.id;
+    if (!cid) return;
+    // folder rename rewrites the "from/" prefix POSITIONALLY (replace() could
+    // re-hit an identical segment deeper in the path); file rename rewrites the
+    // exact row and its filename. Children keep their own filenames.
+    const r = await pool.query(
+      `update documents set
+         rel_path = case when rel_path=$2 then $3 else $3 || substring(rel_path from char_length($2) + 1) end,
+         filename = case when rel_path=$2 then $4 else filename end,
+         updated_at = now()
+       where course_id=$1 and kind='material' and (rel_path=$2 or rel_path like $5 escape '\\')`,
+      [cid, from, to, to.split("/").pop() ?? to, `${escapeLike(from)}/%`]);
+    if (r.rowCount) console.log(`materials: re-pointed ${r.rowCount} document row(s): ${course} ${from} → ${to}`);
+  } catch (e) { console.error(`materials: documents rename failed (${course} ${from}→${to}):`, e); }
+}
+
 /** Delete a file or FOLDER (recursive) by relative path. */
 export function deleteMaterial(course: string, relPath: string): boolean {
   const root = MATERIALS_DIR(course);
@@ -223,6 +270,7 @@ export function deleteMaterial(course: string, relPath: string): boolean {
     else unlinkSync(abs);
   } catch { return false; }
   saveManifest(course, listManifest(course).filter((e) => e.path !== relPath && !e.path.startsWith(relPath + "/")));
+  void forgetDocumentRows(course, relPath); // keep search index in step (best-effort)
   return true;
 }
 
@@ -238,5 +286,6 @@ export function renameMaterial(course: string, from: string, to: string): boolea
   } catch { return false; }
   // re-derive the manifest from the tree (cheap, keeps weeks/categories)
   rebuildTree(course);
+  void moveDocumentRows(course, from, to); // keep search index in step (best-effort)
   return true;
 }

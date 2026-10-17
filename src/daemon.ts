@@ -1079,8 +1079,9 @@ function startController(): void {
       }
       try { rebuildIndex(); } catch { /* index optional */ }
       // DB: purge the session row (cascade removes artifacts + segments + session docs)
+      // — gated on the same sibling-recording condition as the fs notes purge
       try {
-        await getPool().query(
+        if (!sameDayLeft) await getPool().query(
           `delete from sessions where course_id=(select id from courses where slug=$1) and stem=$2`,
           [course, base]);
       } catch (e) { console.error(`[daemon] DB session purge failed: ${String(e)}`); }
@@ -1192,7 +1193,19 @@ function startController(): void {
           const sid = await sessionId(cid, realStem, { sessionDate: realStem.slice(0, 10) });
           await upsertArtifact(sid, "transcript", `notes/${course}/${realStem}__transcript.md`, { content: `# Transcript — ${title}\n\n${t.text}` });
           pushEvent(`transcribe ✓ ${course}/${stem} — ${t.chunks.length} chunk(s) → transcript.md`);
-          if (!existsSync(paths.notesMd)) {
+          // notes live in PG now (session_artifacts kind='notes') — the fs
+          // probe never fires since the pipeline stopped writing notesMd; ask
+          // PG instead and skip finalizeNotes when notes already exist
+          let hasNotes = false;
+          try {
+            hasNotes = (await q(
+              `select 1 from session_artifacts sa
+               join sessions s on s.id = sa.session_id
+               join courses c on c.id = s.course_id
+               where c.slug = $1 and s.stem = $2 and sa.kind = 'notes' limit 1`,
+              [course, realStem])).rows.length > 0;
+          } catch { /* DB down — regenerate rather than skip */ }
+          if (!hasNotes) {
             setActivity("transcribing (manual) — generating notes", { meeting: title });
             const entries = t.chunks.map((c) => ({ meeting: title, offsetSec: c.offsetSec, file: realFile, transcript: c.text, visualNotes: [] as { t: string; note: string }[] }));
             await finalizeNotes(title, entries, paths);
@@ -1355,6 +1368,13 @@ function startController(): void {
         // display name → sessions.title, transcript.md → session_artifacts
         const cid = await courseId(course);
         const sid = await sessionId(cid, stem, { sessionDate: date, title: name });
+        // Phase-4: the recording blob itself stays on fs, but its artifact
+        // row must exist (mirrors consolidate.ts' post-copy upsert)
+        await upsertArtifact(sid, "recording", `recordings/${course}/${mp4name}`, {
+          storageUri: `file://recordings/${course}/${mp4name}`,
+          mimeType: mp4name.endsWith(".webm") ? "video/webm" : "video/mp4",
+          bytes: fileP?.bytes ?? null,
+        });
         let wroteTranscript = false;
         if (tfileP) {
           const txt = (await import("node:fs/promises")).readFile(tfileP.path!, "utf8");
@@ -1716,6 +1736,18 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         }
         if (patch.semesterStart === undefined && patch.icon === undefined) return send(400, { error: "provide semesterStart and/or icon" });
         const cfg = setCourseConfig(slug, patch);
+        // mirror into PG — only the keys this patch actually includes
+        try {
+          const cols = ["slug", "name", "owner_user_id"];
+          const vals: unknown[] = [slug, slug.replace(/_/g, " "), OWNER];
+          const sets: string[] = [];
+          if (patch.semesterStart !== undefined) { cols.push("semester_start"); vals.push(patch.semesterStart); sets.push("semester_start = excluded.semester_start"); }
+          if (patch.icon !== undefined) { cols.push("icon"); vals.push(patch.icon); sets.push("icon = excluded.icon"); }
+          if (sets.length) await q(
+            `insert into courses (${cols.join(",")}) values (${cols.map((_, i) => `$${i + 1}`).join(",")})
+             on conflict (slug) do update set ${sets.join(", ")}, updated_at = now()`,
+            vals);
+        } catch (e) { console.error(`[daemon] DB course config failed: ${String(e)}`); }
         pushEvent(`course config: ${slug} updated (${Object.keys(patch).join(", ")})`);
         return send(200, cfg);
       }
@@ -1738,12 +1770,29 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
       try {
         let moved = 0;
         for (const t of targets) if (existsSync(t)) { renameSync(t, join(dirname(t), to)); moved++; }
-        // meeting→folder mappings follow the rename (remap course_id → to)
+        // DB: rename the SAME courses row (id/FKs hold) — remap mappings by
+        // that id, then rewrite rel_path prefixes in artifacts + documents
         try {
-          const toCid = await courseId(to);
-          await q(`update meeting_mappings set course_id = $1 where course_id = (select id from courses where slug = $2)`, [toCid, from]);
+          const oldId = (await q(`select id from courses where slug = $1`, [from])).rows[0]?.id as number | undefined;
+          const upd = await q(
+            `update courses set slug=$1, name=$2, updated_at=now() where slug=$3 returning id`,
+            [to, to.replace(/_/g, " "), from]);
+          const toCid = upd.rows.length ? Number(upd.rows[0].id) : await courseId(to); // course absent from PG — register it
+          if (oldId) await q(`update meeting_mappings set course_id = $1 where course_id = $2`, [toCid, oldId]);
+          await q(
+            `update session_artifacts set rel_path = replace(rel_path, 'notes/'||$1||'/', 'notes/'||$2||'/')
+             where session_id in (select id from sessions where course_id=$3)`,
+            [from, to, toCid]);
+          await q(
+            `update session_artifacts set rel_path = replace(rel_path, 'recordings/'||$1||'/', 'recordings/'||$2||'/')
+             where session_id in (select id from sessions where course_id=$3)`,
+            [from, to, toCid]);
+          await q(
+            `update documents set rel_path = replace(rel_path, 'notes/'||$1||'/', 'notes/'||$2||'/')
+             where course_id=$3`,
+            [from, to, toCid]);
           await refreshMappings().catch(() => {});
-        } catch { /* no mappings */ }
+        } catch (e) { console.error(`[daemon] DB course rename failed: ${String(e)}`); }
         pushEvent(`course renamed: ${from} → ${to}`);
         return send(200, { ok: true, slug: to, moved });
       } catch (e) {
@@ -1769,6 +1818,13 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         mkdirSync(join(NOTES_DIR, slug), { recursive: true });
         mkdirSync(MATERIALS_DIR(slug), { recursive: true });
         if (s) setCourseConfig(slug, { semesterStart: s });
+        // register in PG (folder-union parity; semester_start when given)
+        try {
+          await q(
+            `insert into courses (slug, name, semester_start, owner_user_id) values ($1,$2,nullif($3,'')::date,$4)
+             on conflict (slug) do nothing`,
+            [slug, slug.replace(/_/g, " "), s, OWNER]);
+        } catch (e) { console.error(`[daemon] DB course create failed: ${String(e)}`); }
         pushEvent(`course created: ${slug}${s ? ` (semester starts ${s})` : ""}`);
         return send(200, { ok: true, slug });
       } catch (e) {
@@ -2578,11 +2634,14 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
         for (const root of [recDir, noteDir, join(DATA_DIR, "courses", course), join(config.userDataDir, "courses", course)]) {
           if (existsSync(root)) { rmSync(root, { recursive: true, force: true }); removed++; }
         }
-        // strip meeting_mappings whose course is this slug
+        // drop the course row — ON DELETE CASCADE removes its meeting_mappings /
+        // sessions / documents / deadlines (the fs check above guarantees no
+        // live sessions). Without this the course reappears in the PG-backed
+        // course list (DB_READS=1) even after its folders are gone.
         try {
-          await q(`delete from meeting_mappings where course_id = (select id from courses where slug = $1)`, [course]);
+          await q(`delete from courses where slug = $1`, [course]);
           await refreshMappings().catch(() => {});
-        } catch { /* no mappings */ }
+        } catch (e) { console.error(`[daemon] db course delete failed: ${String(e)}`); }
         pushEvent(`course deleted: ${course} (had no sessions)`);
         return send(200, { ok: true, course, removed });
       } catch (e) {

@@ -2,7 +2,7 @@
  *  The backend's parseCourse() reads the same file, so UI edits apply to the
  *  very next session. Also surfaces unmapped candidate titles from the
  *  backend's scan artifacts (calendar dump + timeline log). */
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./data";
 
@@ -17,10 +17,6 @@ export function readMapping(): Mapping {
   } catch {
     return {};
   }
-}
-
-export function writeMapping(m: Mapping): void {
-  writeFileSync(MAPPING_FILE, JSON.stringify(m, null, 2) + "\n");
 }
 
 /** Existing course folders (union of recordings/ + notes/) — mapping targets. */

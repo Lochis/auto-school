@@ -114,17 +114,27 @@ export async function embedPendingMaterials(opts: {
       const walk = (d: string, rel = ""): string[] =>
         readdirSync(d, { withFileTypes: true }).flatMap((e) => {
           const r = rel ? `${rel}/${e.name}` : e.name;
-          if (e.isDirectory()) return e.name.startsWith(".") || e.name === "attic" ? [] : walk(join(d, e.name), r);
+          if (e.isDirectory()) return e.name.startsWith(".") ? [] : walk(join(d, e.name), r);
           if (e.name === "materials.json" || e.name.startsWith(".")) return []; // manifest ≠ material
-          return EMBEDDABLE.has(extname(e.name).toLowerCase()) ? [r] : [];
+          return [r]; // EVERY file — non-embeddable rows exist too (import-fs-to-pg)
         });
-      let files: string[] = [];
-      try { files = walk(mRoot); } catch { continue; }
-      if (!files.length) continue;
+      // full walk doubles as the prune oracle; the upsert loop below only
+      // takes embeddable, non-attic files
+      let seen: string[] = [];
+      try { seen = walk(mRoot); } catch { continue; } // walk aborted → never prune on partial data
+      const files = seen.filter((r) => !r.split("/").includes("attic") && EMBEDDABLE.has(extname(r).toLowerCase()));
       await q(`insert into courses (slug, name, owner_user_id) values ($1,$2,$3)
         on conflict (slug) do nothing`, [slug, slug.replace(/_/g, " "), OWNER]);
       const cid = (await q(`select id from courses where slug=$1`, [slug])).rows[0]?.id as number | undefined;
       if (!cid) continue;
+      // prune: material rows whose file vanished from the fs tree (safety net
+      // for delete/rename paths that miss the fs hooks). Chunks cascade
+      // (ddl.sql). Empty `seen` (everything deleted) clears the whole set;
+      // session-kind rows are untouched.
+      const gone = await q(`delete from documents where course_id=$1 and kind='material'
+        and rel_path <> all($2::text[])`, [cid, seen]);
+      if (gone.rowCount) log(`embed: pruned ${gone.rowCount} vanished material row(s) in ${slug}`);
+      if (!files.length) continue;
       for (const rel of files) {
         const m = manifest[rel] ?? {};
         let size: number | null = null, mtime = new Date();
