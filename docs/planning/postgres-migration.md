@@ -1,6 +1,8 @@
 # Planning: PostgreSQL + pgvector migration for auto-school
 
-Status: PLANNING ONLY — no code changes. Branch `plan/postgres-migration`.
+Status: implementation underway — importer (`scripts/import-fs-to-pg.ts`), `src/db/` access layer,
+and the smoke suite are merged on main; this doc remains the plan of record (original planning
+branch `plan/postgres-migration`).
 Deliverables: this document + `docs/planning/postgres-architecture.mmd` (two mermaid diagrams:
 ER + target data flow).
 Companion docs (written in parallel, cross-reference them): `docs/planning/authentik-federation.md`,
@@ -13,6 +15,13 @@ representations of the same information — fs → PG import AND PG → fs expor
 round-trip (fs → PG → fs′) must reproduce the tree (content + checksums + mtimes). Every table
 therefore keeps the fs natural key (`slug`, `stem`, `rel_path`) or the legacy id (`djb2`), and
 import captures fs mtimes (see §4.1 step 3).
+
+**Decision (2026-12): interchangeability dropped.** Direction is fs → PG **one-way**: the fs tree
+remains the blob store for recording bytes only (abstracted per `storage-backends.md` §7), while
+metadata reads/writes move to PG exclusively. The PG→fs exporter (§4.1.1) is demoted to an
+optional maintenance/escape-hatch script — no longer a phase gate or the rollback path of record
+(§4.3). The interchangeability text above is retained as the historical rationale for the
+natural-key and mtime-capture design.
 
 **End-state data planes (product form, informs this design):**
 
@@ -436,8 +445,8 @@ One-shot script `scripts/import-fs-to-pg.ts` (run with `node` or `bun`, idempote
    (kind from suffix: `__notes.md`/`__running.md`/`__transcript.md`/`__timeline.json`/video ext;
    inline `content` for md/json; sha256 + size for blobs; `retained_until` = mtime +
    recordRetentionDays). **Capture mtimes:** set `sessions.started_at` and each artifact's
-   `updated_at` to the fs mtime (NOT `now()`) — the DB→fs exporter restores them, and the
-   `__THHMMSS`-less time-of-day fallback (`data.ts:80-97`) depends on them. Collision-suffixed
+   `updated_at` to the fs mtime (NOT `now()`) — the `__THHMMSS`-less time-of-day fallback
+   (`data.ts:80-97`) depends on them. Collision-suffixed
    stems import as-is (they're already unique).
 4. `__timeline.json` → `transcript_segments` rows (offsetSec, transcript, visualNotes).
 5. `courses/<slug>/materials/` walk + `materials.json` manifest merge (`materials.ts:143-160`
@@ -459,10 +468,12 @@ Idempotency: every insert is an upsert on the natural key — `(slug)`, `(course
 `(deadline_id, legacy_key)`. Re-running converges; deleted-on-disk files are **not** purged
 without `--prune` (explicit, logged).
 
-### 4.1.1 Exporter (reverse direction — the interchangeability guarantee)
+### 4.1.1 Exporter (reverse direction — optional maintenance/escape-hatch script)
 
-Run `scripts/export-pg-to-fs.ts` (node or bun, idempotent) to regenerate the full DATA_DIR tree
-from the DB alone:
+**Demoted (2026-12, see decision note at top):** no longer the interchangeability guarantee, a
+phase gate, or the rollback path of record (§4.2/§4.3) — an optional maintenance/escape-hatch
+script only; not required for any phase below. If run (`scripts/export-pg-to-fs.ts`, node or
+bun, idempotent) it regenerates the full DATA_DIR tree from the DB alone:
 - `courses` → `courses/<slug>/course.json`; `meeting_mappings` → `mapping.json`;
   `deadlines`/`deadline_folds`/`checklist_items` (via `legacy_id`/`legacy_key`/`child_snapshot`)
   → the three `user-data/*.json` files byte-identical to the originals.
@@ -476,9 +487,10 @@ from the DB alone:
 
 ### 4.2 Verification checklist
 
-- **Round-trip gate (the interchangeability proof):** fresh DB → `export-pg-to-fs.ts` →
-  `diff -r` against the source tree; must be empty for content, checksums, and (±1s) mtimes.
-  Runs before every phase gate below.
+Round-trip export gate dropped with the interchangeability decision (§4.1.1); the checks below
+still gate Phase 3. Mtime capture at import remains required only for the `sessions.started_at`
+time-of-day fallback (`__THHMMSS`-less stems, `data.ts:80-97`).
+
 - Counts: courses, sessions/artifacts per course, segments, documents vs a fs manifest
   (`find | wc`) — importer prints a parity table.
 - Blob checksums: sha256 of every recording matches `session_artifacts.checksum` (sample or full).
@@ -493,12 +505,16 @@ from the DB alone:
 
 ### 4.3 Rollback
 
-The migration is additive: fs stays the source of truth until final cutover, DB is disposable
-(re-importable from fs at any time) — and after cutover the fs tree is equally regenerable from
-the DB (§4.1.1), so rollback past Phase 4 is an export, not a restore. Every phase gates on an
-env flag
-(`DATA_BACKEND=fs|dual|db`); rollback = flip the flag + redeploy. Drop the DB entirely to
-"factory reset". Never delete fs data during import.
+Two regimes, split at Phase 4 (fs stops being written there — see the 2026-12 decision note at
+top; the exporter is an escape hatch, not the rollback path of record):
+
+- **Pre-Phase-4:** the migration is additive — fs stays the source of truth, the DB is
+  disposable (re-importable from fs at any time). Every phase gates on an env flag
+  (`DATA_BACKEND=fs|dual|db`); rollback = flip the flag + redeploy. Drop the DB entirely to
+  "factory reset". Never delete fs data during import.
+- **Post-Phase-4:** fs no longer holds a complete copy of the metadata, so rollback is a
+  **Postgres restore** — nightly `pg_dump` to MinIO + Longhorn snapshots of `auto-school-pg-data`
+  (§5). Recording blobs survive on the storage layer either way (`storage-backends.md` §7).
 
 ### 4.4 Phased cutover
 
@@ -507,7 +523,7 @@ env flag
 | 1 — Import (read-only DB) | Importer runs nightly; parity dashboards compare fs vs DB | Parity checklist green for 2 consecutive runs |
 | 2 — Dual-write | Daemon writes fs (primary) **and** DB in one code path (`DATA_BACKEND=dual`); reads still fs | No parity drift over ≥1 week incl. a full class cycle (record→consolidate→notes) |
 | 3 — DB reads | Reads switch to `src/db/queries` (`DATA_BACKEND=db`); fs writes continue as backup; importer keeps repairing drift | Frontend + chat tools stable; semantic search live |
-| 4 — fs write removal | Daemon writes only DB; blobs only via storage layer; retention via `retained_until`/`deleted_at`; frontend drops ro `/data` mount; fs tree becomes cold backup until manually archived | 30 days clean, then archive the PVC tree |
+| 4 — fs write removal | Daemon writes only DB; blobs only via storage layer; retention via `retained_until`/`deleted_at`; frontend drops ro `/data` mount | 30 days clean; PVC remains live blob store for recordings (`storage-backends.md` §7 deviation); fs metadata tree archived read-only |
 
 ---
 

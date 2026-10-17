@@ -161,7 +161,7 @@ export async function processSegments(
   // durable copy → transcript_segments (jsonl append below stays as a crash journal)
   try {
     const { sessionId: sid } = await resolveSession(meetingTitle);
-    await upsertSegments(sid, entries.map((e, i) => toSegmentInit(e, i)));
+    await upsertSegments(sid, entries.map((e, i) => toSegmentInit(e, items[i]!.idx)));
   } catch (e) {
     console.warn(`[pipe] DB segment write failed: ${String(e).slice(0, 120)}`);
   }

@@ -29,6 +29,25 @@ export interface SessionState {
 // In-memory mirror for the synchronous readers. Durable rows live in PG.
 let sessions: SessionState[] = [];
 
+/** Real capture time from a stem/filename. Live + rescue stems carry the
+ *  session-start instant: "<slug>__YYYY-MM-DDTHH-MM-SS" (UTC ISO, seg-0
+ *  birth); uploaded/rescued files instead carry a Toronto-local "__HHMMSS"
+ *  (or "__THHMMSS") suffix → time-of-day only. Mirrors the fs-mtime
+ *  semantics the importer used for started_at / start_time. */
+export function stemTimes(stem: string): { startedAt?: number; startTime?: string } {
+  const iso = stem.match(/__(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    const startedAt = Date.parse(`${iso[1]}T${iso[2]}:${iso[3]}:${iso[4]}Z`);
+    if (Number.isFinite(startedAt)) {
+      const startTime = new Date(startedAt).toLocaleTimeString("en-CA", { hour12: false, timeZone: "America/Toronto" });
+      return { startedAt, startTime };
+    }
+  }
+  const seq = stem.match(/__T?(\d{2})(\d{2})(\d{2})$/);
+  if (seq) return { startTime: `${seq[1]}:${seq[2]}:${seq[3]}` };
+  return {};
+}
+
 /** Recover a meeting title from a stem. Live stems are "<title>__<ISO>";
  *  rescue stems (daemon orphan rescue) are "<titleSlug>" with no ISO suffix. */
 function deriveTitle(stem: string): string {
@@ -65,6 +84,8 @@ export async function updateSession(stem: string, patch: Partial<Omit<SessionSta
   const title = patch.title ?? deriveTitle(stem);
   const paths = sessionPaths(title);
   const canonicalStem = paths.stem;
+  // real capture start: explicit patch (mtime) > stem's __ISO suffix > now()
+  const t = stemTimes(stem);
 
   // durable upsert on (course_id, stem); coalesce semantics match partial patches
   try {
@@ -78,6 +99,8 @@ export async function updateSession(stem: string, patch: Partial<Omit<SessionSta
       segCount: patch.segCount,
       durationSec: patch.durationSec,
       sizeMb: patch.sizeMB,
+      startTime: t.startTime,
+      startedAt: patch.startedAt ?? t.startedAt,
     });
   } catch (e) {
     console.warn(`[sessions] DB write failed — in-memory only: ${String(e).slice(0, 120)}`);

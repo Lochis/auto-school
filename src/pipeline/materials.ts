@@ -13,6 +13,7 @@ import { join, dirname } from "node:path";
 import { DATA_DIR } from "../paths.ts";
 import { getPool } from "../db/client.ts";
 import { pgConfigured } from "../db/reader.ts";
+import { upsertCourseConfig } from "../db/writes.ts";
 
 export type MaterialCategory =
   | "syllabus" | "assignment" | "lecture-notes" | "reference" | "rubric" | "transcript" | "other";
@@ -60,14 +61,76 @@ export function weekFolder(week: number): string {
 const COURSES_ROOT = (course: string): string => join(DATA_DIR, "courses", course);
 const CONFIG_FILE = (course: string): string => join(COURSES_ROOT(course), "course.json");
 
-export function getCourseConfig(course: string): CourseConfig | null {
+/** DB-primary course config: courses.semester_start/icon own the truth;
+ *  hydrated once at daemon start (hydrateCourseConfigs) and mirrored to the
+ *  fs course.json on every write (Phase 4 removes the mirror). Slugs without
+ *  any config stay uncached → fs read (null when no file exists). */
+const cfgCache = new Map<string, CourseConfig | null>();
+
+function fsCourseConfig(course: string): CourseConfig | null {
   try { return JSON.parse(readFileSync(CONFIG_FILE(course), "utf8")); } catch { return null; }
+}
+
+/** pg prints `date` columns as Date — normalize back to the YYYY-MM-DD the
+ *  fs file and every consumer (week math, UI) expects. */
+const asDate = (v: unknown): string | undefined =>
+  v == null ? undefined : v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+
+export function getCourseConfig(course: string): CourseConfig | null {
+  if (cfgCache.has(course)) return cfgCache.get(course)!;
+  return fsCourseConfig(course);
+}
+
+/** One-time boot hydration + seed-migration: every course.json on fs gets a
+ *  courses row (fs values fill NULL columns); DB values win where present. */
+export async function hydrateCourseConfigs(): Promise<void> {
+  if (!pgConfigured()) return;
+  const fsCfgs = new Map<string, CourseConfig | null>();
+  // Course identity = union(recordings/, notes/) — matching data.ts.courses() and the
+  // importer. courses/-only dirs (stale orphans) must NOT be re-registered here.
+  const known = new Set<string>();
+  for (const base of ["recordings", "notes"]) {
+    try {
+      for (const e of readdirSync(join(DATA_DIR, base), { withFileTypes: true }))
+        if (e.isDirectory()) known.add(e.name);
+    } catch { /* no recordings/notes root yet */ }
+  }
+  try {
+    for (const e of readdirSync(join(DATA_DIR, "courses"), { withFileTypes: true }))
+      if (e.isDirectory() && known.has(e.name)) fsCfgs.set(e.name, fsCourseConfig(e.name));
+  } catch { /* no courses root yet */ }
+  const rows = (await getPool().query(`select slug, semester_start, icon from courses`)).rows;
+  const bySlug = new Map(rows.map((r) => [String(r.slug), r]));
+  for (const [slug, fs] of fsCfgs) {
+    const row = bySlug.get(slug);
+    if (!row || (row.semester_start == null && fs?.semesterStart) || (row.icon == null && fs?.icon)) {
+      // seed-migrate: register the folder or backfill NULL columns from fs
+      try {
+        await upsertCourseConfig(slug, {
+          ...(row?.semester_start == null && fs?.semesterStart ? { semesterStart: fs.semesterStart } : {}),
+          ...(row?.icon == null && fs?.icon ? { icon: fs.icon } : {}),
+        });
+        const upd = (await getPool().query(`select semester_start, icon from courses where slug = $1`, [slug])).rows[0];
+        if (upd) bySlug.set(slug, upd);
+      } catch (e) { console.warn(`[materials] config seed-migrate failed for ${slug}: ${String(e).slice(0, 100)}`); }
+    }
+  }
+  for (const [slug, row] of bySlug) {
+    const semesterStart = asDate(row.semester_start) ?? fsCfgs.get(slug)?.semesterStart;
+    const icon = row.icon ?? fsCfgs.get(slug)?.icon;
+    if (semesterStart || icon) cfgCache.set(slug, { semesterStart: semesterStart ?? "", ...(icon ? { icon } : {}) });
+    else cfgCache.set(slug, null);
+  }
 }
 
 export function setCourseConfig(course: string, patch: Partial<CourseConfig>): CourseConfig {
   const next = { ...getCourseConfig(course), ...patch } as CourseConfig;
-  mkdirSync(COURSES_ROOT(course), { recursive: true });
-  writeFileSync(CONFIG_FILE(course), JSON.stringify(next, null, 2));
+  cfgCache.set(course, next);
+  try {
+    mkdirSync(COURSES_ROOT(course), { recursive: true });
+    writeFileSync(CONFIG_FILE(course), JSON.stringify(next, null, 2));
+  } catch { /* read-only fs: DB row below is the primary copy */ }
+  if (pgConfigured()) void upsertCourseConfig(course, next).catch((e) => console.warn(`[materials] DB config write failed: ${String(e).slice(0, 120)}`));
   return next;
 }
 

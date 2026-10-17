@@ -67,7 +67,7 @@ export const sessions = pgTable("sessions", {
   stem: text("stem").notNull(),
   sessionDate: date("session_date").notNull(),
   startTime: time("start_time"),
-  title: text("title").notNull(),
+  title: text("title"),
   joinUrl: text("join_url"),
   stage: text("stage").notNull().default("recording"),
   stageNote: text("stage_note"),
