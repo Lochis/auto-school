@@ -144,6 +144,12 @@ export async function finalizeNotes(
   }
   rebuildIndex();
   console.log(`[notes] ✓ final notes written: notes/${p.course.slug}/${p.stem}__notes.md (course: ${p.course.slug})`);
+  // EMBED — make the fresh notes/timeline semantically searchable right away
+  // (fire-and-forget; no-op when PG/Gemini key absent).
+  try {
+    const { embedPendingSessions } = await import("../db/ingest-embed.ts");
+    void embedPendingSessions().catch(() => { });
+  } catch { /* db layer absent in fs-only dev */ }
   await notify(`📝 Class notes ready: **${p.course.name}** → notes/${p.course.slug}/${p.stem}__notes.md`);
   return final;
 }

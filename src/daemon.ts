@@ -42,7 +42,7 @@ import { finalizeNotes } from "./pipeline/notes.ts";
 import { updateSession, listSessions } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
 import { runRetention } from "./pipeline/retention.ts";
-import { embedPendingMaterials } from "./db/ingest-embed.ts";
+import { embedPendingMaterials, embedPendingSessions } from "./db/ingest-embed.ts";
 import { getPool } from "./db/client.ts";
 import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId, upsertArtifact } from "./db/writes.ts";
 
@@ -2623,6 +2623,11 @@ export async function daemon(): Promise<void> {
     // absent → silent skip — uploads still embed when config returns)
     void embedPendingMaterials().then((er) => {
       if (er.ok && er.chunks) pushEvent(`embed sweep: +${er.chunks} chunk(s) from ${er.docs} material(s)`);
+    }).catch(() => { });
+    // same for session notes/timelines (finished or running sessions become
+    // searchable within the sweep window)
+    void embedPendingSessions().then((er) => {
+      if (er.ok && er.chunks) pushEvent(`embed sweep: +${er.chunks} session chunk(s) from ${er.docs} session doc(s)`);
     }).catch(() => { });
   };
   setInterval(retentionPass, 6 * 3_600_000).unref();
