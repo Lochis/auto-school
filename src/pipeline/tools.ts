@@ -493,7 +493,8 @@ async function readDeadlineRowsDb(slug?: string): Promise<DeadlineRow[] | null> 
               d.user_note as "userNote", d.stale
        from deadlines d
        join courses c on c.id = d.course_id
-       ${slug ? "where c.slug = $1" : ""}
+       ${slug ? "where c.slug = $1 and" : "where"} not exists
+         (select 1 from deadline_folds f where f.child_id = d.id and f.status = 'accepted')
        order by d.due asc nulls last, d.id`,
       slug ? [slug] : []);
     return rows as DeadlineRow[];

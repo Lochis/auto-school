@@ -255,6 +255,10 @@ export async function readDeadlines(): Promise<DbDeadline[]> {
             d.kind, d.spread, d.start_by::text AS start_by, d.note, d.source, d.confidence,
             d.done, d.done_at, d.user_note, d.stale
      FROM deadlines d JOIN courses c ON c.id = d.course_id
+     WHERE NOT EXISTS (SELECT 1 FROM deadline_folds f WHERE f.child_id = d.id AND f.status = 'accepted')
+       -- ^ same fold-tombstone filter as the daemon's readDl(): folded children
+       -- are not standalone deadlines; without this the UI lists them as
+       -- toggleable items whose ids the daemon rejects (404 "no such id")
      ORDER BY c.slug, d.due NULLS LAST, d.title`,
   );
   if (!rows.length) return [];
