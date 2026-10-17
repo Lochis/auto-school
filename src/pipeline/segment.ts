@@ -23,8 +23,9 @@ export interface TimelineEntry {
 }
 
 /** Gemini returns visual-note timestamps as "m:ss …" strings; the DB stores
- *  seconds. Parse the leading m:ss (or a bare integer). */
-function noteT(t: string | number): number {
+ *  seconds. Parse the leading m:ss (or a bare integer). Exported for the
+ *  fs→pg importer + reader paths that must normalize legacy string values. */
+export function noteT(t: string | number): number {
   if (typeof t === "number") return Number.isFinite(t) ? Math.max(0, Math.round(t)) : 0;
   const m = String(t).match(/^(\d{1,3}):(\d{1,2})/);
   if (m) return Number(m[1]) * 60 + Number(m[2]);

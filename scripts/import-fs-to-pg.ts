@@ -291,6 +291,16 @@ async function importSessionsAndArtifacts() {
 }
 
 async function importTimeline(sessionId: number, abs: string) {
+  /** legacy timeline.json stores visual-note t as "m:ss" strings; the DB
+   *  wants seconds (same normalization as src/pipeline/segment.ts noteT —
+   *  inlined here to keep this script's import graph tiny). */
+  const noteT = (t: string | number): number => {
+    if (typeof t === "number") return Number.isFinite(t) ? Math.max(0, Math.round(t)) : 0;
+    const m = String(t).match(/^(\d{1,3}):(\d{1,2})/);
+    if (m) return Number(m[1]) * 60 + Number(m[2]);
+    const n = parseInt(String(t), 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  };
   let segs: TlSeg[];
   try { segs = JSON.parse(readFileSync(abs, "utf8")); } catch { vlog(`  bad timeline json: ${abs}`); return; }
   if (!Array.isArray(segs)) return;
@@ -302,7 +312,7 @@ async function importTimeline(sessionId: number, abs: string) {
       on conflict (session_id, offset_sec) do update set seg_index=excluded.seg_index,
         file=excluded.file, transcript=excluded.transcript, visual_notes=excluded.visual_notes`,
       [sessionId, i, Math.round(e.offsetSec), e.file ?? null, e.transcript ?? "",
-        JSON.stringify(e.visualNotes ?? [])]);
+        JSON.stringify((e.visualNotes ?? []).map((v) => ({ t: noteT(v.t), note: v.note })))]);
     bump("transcript_segments");
   }
 }

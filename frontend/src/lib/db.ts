@@ -191,7 +191,7 @@ export interface TimelineEntry {
 export async function timelineEntries(course: string, stem: string): Promise<TimelineEntry[]> {
   const sid = await sessionId(course, stem);
   if (!sid) return [];
-  const rows = await q<{ file: string | null; offset_sec: number; transcript: string; visual_notes: { t: number; note: string }[] }>(
+  const rows = await q<{ file: string | null; offset_sec: number; transcript: string; visual_notes: { t: number | string; note: string }[] }>(
     `SELECT file, offset_sec, transcript, visual_notes FROM transcript_segments WHERE session_id = $1 ORDER BY offset_sec`,
     [sid],
   );
@@ -200,11 +200,23 @@ export async function timelineEntries(course: string, stem: string): Promise<Tim
     meeting: r.file ?? meetingTitle,
     offsetSec: r.offset_sec,
     transcript: r.transcript ?? "",
-    visualNotes: (r.visual_notes ?? []).map((v) => ({
-      t: `${Math.floor(v.t / 60)}:${String(Math.round(v.t % 60)).padStart(2, "0")}`,
-      note: v.note,
-    })),
+    // legacy rows store t as an "m:ss" string (pre-pg timeline.json) — normalize
+    visualNotes: (r.visual_notes ?? []).map((v) => {
+      const sec = typeof v.t === "number" ? v.t : parseMs(v.t);
+      return {
+        t: `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`,
+        note: v.note,
+      };
+    }),
   }));
+}
+
+/** "m:ss" (or bare seconds) → seconds; unparseable → 0. */
+function parseMs(t: string): number {
+  const m = t.match(/^(\d{1,3}):(\d{1,2})/);
+  if (m) return Number(m[1]) * 60 + Number(m[2]);
+  const n = parseInt(t, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 // ── deadlines (+ parts) — lib/deadlines.ts + daemon /deadlines GET shapes ─
