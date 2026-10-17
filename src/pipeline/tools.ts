@@ -12,6 +12,18 @@ import { config } from "../config.ts";
 import { listMaterials, getCourseConfig } from "./materials.ts";
 import { ensureIndex, indexedPages, pageImage, readDoc, supportsIndex } from "./docindex.ts";
 import { vlmDescribe } from "./llm.ts";
+import { pgConfigured, vectorSearch, type ChunkHit } from "../db/reader.ts";
+import { embedQuery, geminiApiKey } from "../db/embeddings.ts";
+
+/** One search hit rendered for the model: kind + course + file/session +
+ *  page + snippet + score (shared by search_transcripts / semantic_search). */
+function chunkHitLines(hits: ChunkHit[]): string[] {
+  return hits.map((h) => {
+    const where = h.stem ? `session ${h.stem}` : h.rel_path;
+    const loc = h.kind === "material" ? ` p${h.page}` : "";
+    return `- [${h.kind}] ${h.slug} · ${where}${loc} (score ${h.score.toFixed(2)}): …${h.preview.replace(/\s+/g, " ").trim()}…`;
+  });
+}
 
 /** Every known course (union of recordings/, notes/ and materials roots). */
 export function allCourses(): string[] {
@@ -159,8 +171,24 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "search_transcripts",
-      description: "Keyword-search session transcripts and timelines; returns matching snippets with dates.",
+      description: "Search session transcripts and timelines; returns matching snippets with dates. Semantic vector search when the DB index is available, else keyword substring match.",
       parameters: { type: "object", properties: { course: COURSE_PARAM, query: { type: "string" } }, required: ["query"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "semantic_search",
+      description: "Semantic (meaning-based) search across ALL course materials, notes, transcripts and timelines via vector similarity. Finds content keyword search misses (different phrasing). Returns kind, course, file/session, page and a snippet with similarity score; read_document/read_notes can then fetch the full text.",
+      parameters: {
+        type: "object",
+        properties: {
+          course: COURSE_PARAM,
+          query: { type: "string", description: "search query — a phrase or question" },
+          k: { type: "number", description: "max results (default 8)" },
+        },
+        required: ["query"],
+      },
     },
   },
 ];
@@ -291,6 +319,26 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
       }
       return `Week ${week} across all courses:\n\n${blocks.join("\n\n")}`;
     }
+    case "semantic_search": {
+      const query = String(args.query ?? "").trim();
+      if (!query) return "query required";
+      const k = Math.min(Math.max(Number(args.k ?? 8) || 8, 1), 20);
+      // optional course scoping validated like the course-scoped tools
+      if (args.course != null && (!slug || !allCourses().includes(slug))) {
+        return slug ? `unknown course "${slug}" — valid: ${allCourses().join(", ")}` : "no course given — pass the 'course' argument (see list_courses for exact slugs)";
+      }
+      if (!pgConfigured()) return "semantic search unavailable — Postgres not configured (DATABASE_URL/PGHOST unset); use read_document/search_transcripts instead";
+      const key = geminiApiKey();
+      if (!key) return "semantic search unavailable — no Gemini API key (settings or GEMINI_API_KEY)";
+      try {
+        const embedding = await embedQuery(query, { apiKey: key });
+        const hits = await vectorSearch({ embedding, course: slug, k });
+        return hits.length
+          ? `Semantic matches for "${query}" (kind · course · source · page, most similar first; follow up with read_document/read_notes for full text):
+${chunkHitLines(hits).join("\n")}`
+          : `no semantic matches for "${query}" — the embedding index may be empty; try search_transcripts (keyword) or list_materials`;
+      } catch (e) { return `semantic search failed: ${String(e).slice(0, 150)}`; }
+    }
     default:
       // ── course-scoped tools ──
       if (!slug) return "no course given — pass the 'course' argument (see list_courses for exact slugs)";
@@ -389,6 +437,21 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
     case "search_transcripts": {
       const q = String(args.query ?? "").toLowerCase();
       if (!q) return "query required";
+      // semantic path: pgvector over timeline chunks when a DB is configured —
+      // falls through to the substring scan on any error / empty result
+      if (pgConfigured()) {
+        try {
+          const key = geminiApiKey();
+          if (key) {
+            const embedding = await embedQuery(String(args.query ?? ""), { apiKey: key });
+            const hits = await vectorSearch({ embedding, kind: "timeline", course: slug, k: 8 });
+            if (hits.length) {
+              return `Transcript/timeline matches for "${args.query}" (semantic, most similar first):
+${chunkHitLines(hits).join("\n")}`;
+            }
+          }
+        } catch { /* DB/embedding hiccup — substring scan below */ }
+      }
       const hits: string[] = [];
       for (const s of scanCourseSessions(slug)) {
         for (const f of [s.transcript, s.timeline].filter(Boolean) as string[]) {

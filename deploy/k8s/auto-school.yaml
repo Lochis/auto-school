@@ -104,8 +104,14 @@ spec:
           env:
             - { name: TZ, value: America/Toronto } # school-day logic is date-scoped
             - { name: REBUILD_AT, value: "07:00,19:00" } # calendar rebuild wall-clock anchors (local TZ); unset → interval mode
+            # pgvector read path for chat tools (search_transcripts / semantic_search);
+            # tools fall back to substring scan when unset (src/db/reader.ts pgConfigured).
+            - { name: PGHOST, value: auto-school-pg }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: autoschool }
           envFrom:
             - secretRef: { name: auto-school-env }
+            - secretRef: { name: auto-school-pg }
           ports:
             - { containerPort: 7800, name: ctrl }
           livenessProbe: # entrypoint clears stale Xvfb/Pulse locks, so a hung
