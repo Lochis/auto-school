@@ -407,7 +407,7 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
       for (const c of await resolveCourses()) {
         const cfg = getCourseConfig(c);
         const n = (await scanCourseSessions(c)).length;
-        const m = listMaterials(c).length;
+        const m = (await listMaterials(c)).length;
         rows.push(`- ${c}${cfg?.semesterStart ? ` — semester starts ${cfg.semesterStart}` : ""} [${n} session${n === 1 ? "" : "s"}, ${m} material${m === 1 ? "" : "s"}]`);
       }
       return rows.join("\n") || "no courses exist yet";
@@ -429,7 +429,7 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
         const to = new Date(mon); to.setUTCDate(to.getUTCDate() + 6);
         const toStr = to.toISOString().slice(0, 10);
         const sess = (await scanCourseSessions(c)).filter((s) => s.stem.slice(0, 10) >= from && s.stem.slice(0, 10) <= toStr);
-        const mats = listMaterials(c).filter((m) => m.week === week);
+        const mats = (await listMaterials(c)).filter((m) => m.week === week);
         const lines = [`### ${c} (${from} … ${toStr})`];
         lines.push(sess.length
           ? sess.map((s) => {
@@ -579,7 +579,7 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
     }
     case "list_checklists": return checklistRows(slug || undefined);
     case "list_materials": {
-      const mats = listMaterials(slug);
+      const mats = await listMaterials(slug);
       if (!mats.length) return "no materials uploaded";
       return mats.map((m) => {
         const pages = indexedPages(slug, m.path);

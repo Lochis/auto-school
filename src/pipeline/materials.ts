@@ -13,7 +13,7 @@ import { join, dirname } from "node:path";
 import { DATA_DIR } from "../paths.ts";
 import { getPool } from "../db/client.ts";
 import { pgConfigured } from "../db/reader.ts";
-import { upsertCourseConfig } from "../db/writes.ts";
+import { upsertCourseConfig, courseId, OWNER } from "../db/writes.ts";
 
 export type MaterialCategory =
   | "syllabus" | "assignment" | "lecture-notes" | "reference" | "rubric" | "transcript" | "other";
@@ -233,8 +233,32 @@ function saveManifest(course: string, entries: MaterialEntry[]): void {
   writeFileSync(join(MATERIALS_DIR(course), "materials.json"), JSON.stringify(entries, null, 2));
 }
 
-export function listMaterials(course: string): MaterialEntry[] {
-  // live tree is the source of truth; rebuild cheaply on every list
+export async function listMaterials(course: string): Promise<MaterialEntry[]> {
+  if (pgConfigured()) {
+    try {
+      const { rows } = await getPool().query(
+        `select rel_path, filename, week, category, description, size_bytes, uploaded_at
+         from documents
+         where course_id = (select id from courses where slug=$1) and kind='material'
+         order by rel_path`,
+        [course],
+      );
+      if (rows.length > 0) {
+        return rows.map((r) => ({
+          path: String(r.rel_path),
+          filename: String(r.filename),
+          week: r.week == null ? null : Number(r.week),
+          category: DOC_CATEGORIES.has(r.category) ? (r.category as MaterialCategory) : "other",
+          description: r.description == null ? "" : String(r.description),
+          uploadedAt: r.uploaded_at ? new Date(String(r.uploaded_at)).toISOString() : "",
+          size: Number(r.size_bytes ?? 0),
+        }));
+      }
+    } catch (e) {
+      console.error(`materials: DB list failed (${course}), falling back to fs tree:`, e);
+    }
+  }
+  // no PG, no rows yet (pre-import/cold), or query failed — fs tree is the fallback
   return rebuildTree(course);
 }
 
@@ -275,9 +299,39 @@ export function registerMaterial(course: string, entry: MaterialEntry): void {
   const idx = list.findIndex((e) => e.path === entry.path);
   if (idx >= 0) list[idx] = entry; else list.push(entry);
   saveManifest(course, list);
+  void upsertDocumentRow(course, entry); // immediate documents row (embeddable or not)
 }
 
 // ── Postgres documents-row sync ─────────────────────────────────────────────
+// documents.category CHECK whitelist — manifest categories outside it coerce to "other".
+const DOC_CATEGORIES = new Set(["syllabus", "assignment", "lecture-notes", "reference", "rubric", "transcript", "other"]);
+
+/** Immediate documents-row upsert for a freshly uploaded material (embeddable
+ *  or not). Fire-and-forget + fully guarded: an fs-only caller must NEVER fail
+ *  because PG is down. embedPendingMaterials() later chunks/embeds stale rows;
+ *  this call only guarantees the LISTING row exists the moment upload lands. */
+async function upsertDocumentRow(course: string, entry: MaterialEntry): Promise<void> {
+  try {
+    if (!pgConfigured()) return;
+    const cid = await courseId(course);
+    await getPool().query(
+      `insert into documents (course_id, kind, rel_path, filename, week, category, description, size_bytes, uploaded_at, owner_user_id, updated_at)
+       values ($1,'material',$2,$3,$4,$5,$6,$7,$8,$9, now())
+       on conflict (course_id, kind, rel_path) do update set
+         filename=excluded.filename, week=excluded.week, category=excluded.category,
+         description=excluded.description, size_bytes=excluded.size_bytes, updated_at=now()`,
+      [cid, entry.path, entry.filename, entry.week,
+        DOC_CATEGORIES.has(entry.category) ? entry.category : "other",
+        entry.description ?? "",
+        Number(entry.size) || 0,
+        entry.uploadedAt ? new Date(entry.uploadedAt) : null,
+        OWNER],
+    );
+  } catch (e) {
+    console.error(`materials: document row upsert failed (${course}/${entry.path}):`, e);
+  }
+}
+
 // deleteMaterial/renameMaterial mutate the fs tree + materials.json, but
 // vector/keyword search reads the `documents` table — without these syncs
 // deleted materials keep surfacing with dead rel_paths and renames leave
