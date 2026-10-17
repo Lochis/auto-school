@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   stem          text NOT NULL,                  -- "2026-08-20__Java_Programming__T190012"
   session_date  date   NOT NULL,
   start_time    time,                           -- from __THHMMSS suffix else artifact mtime
-  title         text NOT NULL,                  -- raw meeting title
+  title         text,                           -- display title from __title.txt (fs-only; nullable)
   join_url      text,                           -- Teams link (SessionState.joinUrl)
   stage         text NOT NULL DEFAULT 'recording'
                 CHECK (stage IN ('recording','remuxing','transcribing','noting','consolidating','done','failed')),

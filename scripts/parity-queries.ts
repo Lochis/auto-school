@@ -81,11 +81,11 @@ for (const course of unionCourses) {
   const fsOnly = fsStems.filter((s) => !dbStems.includes(s));
   const dbOnly = dbStems.filter((s) => !fsStems.includes(s));
   check(
-    `${course}: session stems`,
-    fsOnly.length === 0 && dbOnly.length === 0,
+    `${course}: session stems (fs ⊆ db)`,
+    fsOnly.length === 0,
     `fs=${fsS.length} db=${dbS.length}` +
       (fsOnly.length ? ` | only-fs: ${head(fsOnly)}` : "") +
-      (dbOnly.length ? ` | only-db: ${head(dbOnly)}` : ""),
+      (dbOnly.length ? ` | only-db (journal-only, expected): ${head(dbOnly)}` : ""),
   );
   const common = fsStems.filter((s) => dbStems.includes(s));
   const dbCommon = dbStems.filter((s) => fsStems.includes(s));

@@ -63,6 +63,16 @@ const dirs = (base: string): string[] => {
       .map((d) => d.name);
   } catch { return []; }
 };
+/** data.ts courses() dir listing — same as `dirs` but WITHOUT the SKIP_DIRS
+ *  filter: fs lists 'attic' as a course (it just has no flat artifacts), and
+ *  data.ts never skips it. */
+const courseDirs = (base: string): string[] => {
+  try {
+    return readdirSync(join(DATA_DIR, base), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch { return []; }
+};
 const files = (base: string): string[] => {
   try {
     return readdirSync(join(DATA_DIR, base), { withFileTypes: true })
@@ -123,6 +133,7 @@ async function main() {
   await importCourses();
   await importMappings();
   await importSessionsAndArtifacts();
+  await applyFsJoinUrls();
   await importMaterials();
   await importDeadlines();
   await importFolds();
@@ -138,7 +149,12 @@ async function main() {
 
 // ── 2. courses from folder union ───────────────────────────────────────────
 async function importCourses() {
-  const union = [...new Set([...dirs("recordings"), ...dirs("notes"), ...dirs("courses")])].sort();
+  // data.ts courses() = union of recordings/ + notes/ dirs ONLY (frontend/src/lib/data.ts:60-62).
+  // courses/ holds course.json + materials and can contain slugs with no fs artifacts
+  // (e.g. 26F-COMP231_-_SEC_401_-_Lab, COMP303-Lesson_12) that data.ts never surfaces as courses;
+  // including it here would fabricate db-only courses. code/icon/semester_start default when
+  // course.json is absent (data.ts courseIcon()/semesterStartOf() return null).
+  const union = [...new Set([...courseDirs("recordings"), ...courseDirs("notes")])].sort();
   for (const slug of union) {
     const cfg = readJson<{ semesterStart?: string; icon?: string; code?: string }>(join("courses", slug, "course.json")) ?? {};
     const r = await q(`insert into courses (slug, name, code, icon, semester_start, owner_user_id, updated_at)
@@ -184,8 +200,21 @@ interface Sess { course: string; stem: string; date: string; time?: string; titl
 async function upsertSession(s: Sess): Promise<number> {
   const key = `${s.course}|${s.stem}`;
   const existing = sessionIds.get(key);
-  if (existing) return existing;
-  const title = (s.title ?? s.stem.split("__")[1] ?? s.stem).replace(/_/g, " ");
+  if (existing) {
+    // A later pass may know more than the first (recordings run before notes).
+    // data.ts sessions() is last-write-wins: each add() overwrites `time`, so the
+    // final value is timeFromStem(stem) ?? mtime of the LAST notes/running file
+    // (__notes.md and __running.md can differ by a minute — consolidated notes
+    // land after the live running file). Replicate that by overwriting, not
+    // coalescing; re-runs are deterministic (same files, same order, same value).
+    if (s.time) await q(`update sessions set start_time = $2 where id = $1`, [existing, s.time]);
+    // title provenance: fs surfaces it ONLY from __title.txt (data.ts:104-109).
+    if (s.title !== undefined) await q(`update sessions set title = $2 where id = $1`, [existing, s.title]);
+    return existing;
+  }
+  // No stem-derived title: data.ts has none — sessions.title is null unless a
+  // __title.txt exists (or the row is a journal-only meeting-title seed).
+  const title = s.title !== undefined ? s.title : null;
   const startedAt = s.startedAt ?? new Date(`${s.date}T${s.time ?? "12:00"}:00`);
   const r = await q(`insert into sessions (course_id, stem, session_date, start_time, title,
       join_url, stage, seg_count, duration_sec, size_mb, started_at, updated_at, owner_user_id)
@@ -193,7 +222,7 @@ async function upsertSession(s: Sess): Promise<number> {
     on conflict (course_id, stem) do update set session_date=excluded.session_date,
       start_time=excluded.start_time, title=excluded.title, started_at=excluded.started_at
     returning id`,
-    [courseIds.get(s.course), s.stem, s.date, s.time ?? null, title.slice(0, 200),
+    [courseIds.get(s.course), s.stem, s.date, s.time ?? null, title,
       startedAt, s.updatedAt ?? startedAt, OWNER]);
   const id = Number(r.rows[0].id);
   sessionIds.set(key, id);
@@ -223,7 +252,7 @@ async function importSessionsAndArtifacts() {
     // task mandates mtime+365d; honor an explicit positive setting, note 0 (=forever) in report
     return s?.recordRetentionDays && s.recordRetentionDays > 0 ? s.recordRetentionDays : 365;
   })();
-  const coursesWithFs = [...new Set([...dirs("recordings"), ...dirs("notes")])];
+  const coursesWithFs = [...new Set([...courseDirs("recordings"), ...courseDirs("notes")])];
   let skippedSubdirs = 0;
   for (const course of coursesWithFs) {
     const cid = courseIds.get(course);
@@ -281,7 +310,7 @@ async function importSessionsAndArtifacts() {
         try {
           const t = readFileSync(abs, "utf8").trim();
           const s = sess(f.replace(/__title\.txt$/, ""));
-          if (t) s.title = t.slice(0, 80);
+          if (t) { s.title = t.slice(0, 80); await upsertSession(s); } // persist title (creates title-only sessions too)
         } catch { /* unreadable */ }
       }
     }
@@ -477,7 +506,32 @@ async function importChecklists() {
   }
 }
 
-// ── 7. out/sessions.json merge (fuzzy title match, data.ts:110-119) ────────
+// ── 6b. joinUrl fuzzy match (data.ts:110-119) ───────────────────────────────
+/** data.ts sessions() attaches the live pipeline's joinUrls by normalized
+ *  title ⊇ normalized stem-fragment: title index is last-write-wins (duplicate
+ *  titles), and each session takes the FIRST matching title.  Replicates that
+ *  exactly so sessions.join_url == fs reads.  Runs before mergeSessionJournal
+ *  so only fs-derived sessions are in sessionIds (journal-only rows keep their
+ *  own row.joinUrl, set in mergeSessionJournal). */
+async function applyFsJoinUrls() {
+  const journal = readJson<SessionState[]>("out/sessions.json") ?? [];
+  const idx = new Map<string, string>();
+  for (const row of journal) if (row.joinUrl && row.title) idx.set(row.title, row.joinUrl);
+  if (!idx.size) return;
+  for (const [key, sid] of sessionIds) {
+    const [, stem] = key.split("|");
+    const frag = norm(stem.split("__")[1] ?? "");
+    if (!frag) continue;
+    for (const [title, url] of idx) {
+      if (norm(title).includes(frag.slice(0, 20))) {
+        await q(`update sessions set join_url = $2 where id = $1`, [sid, url]);
+        break;
+      }
+    }
+  }
+}
+
+// ── 7. out/sessions.json merge (stage/seg_count/duration/size state) ────────
 async function mergeSessionJournal() {
   const journal = readJson<SessionState[]>("out/sessions.json") ?? [];
   let unmatched = 0;
@@ -488,12 +542,14 @@ async function mergeSessionJournal() {
       const [slug, stem] = key.split("|");
       const frag = norm(stem.split("__")[1] ?? "");
       if (!frag || !nt.includes(frag.slice(0, 20))) continue;
+      // join_url is applied by applyFsJoinUrls (exact data.ts algorithm);
+      // title is __title.txt-only (never the journal meeting title).
       await q(`update sessions set
-          title = coalesce($2, title), stage = $3, seg_count = coalesce($4, seg_count),
-          join_url = coalesce($5, join_url), duration_sec = coalesce($6, duration_sec),
-          size_mb = coalesce($7, size_mb), updated_at = $8
+          stage = $2, seg_count = coalesce($3, seg_count),
+          duration_sec = coalesce($4, duration_sec),
+          size_mb = coalesce($5, size_mb), updated_at = $6
         where id = $1`,
-        [sid, row.title ?? null, row.stage, row.segCount ?? null, row.joinUrl ?? null,
+        [sid, row.stage, row.segCount ?? null,
           row.durationSec != null ? String(row.durationSec) : null,
           row.sizeMB != null ? String(row.sizeMB) : null, new Date(row.updatedAt)]);
       matched = true;
