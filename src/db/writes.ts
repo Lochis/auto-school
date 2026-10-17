@@ -35,13 +35,14 @@ export interface SessionInit {
   segCount?: number | null;
   durationSec?: number | null;
   sizeMb?: number | null;
+  startedAt?: number | null;           // epoch-ms real capture start (stem __ISO / file mtime); absent → now()
 }
 
 /** Upsert a session by natural key (course_id, stem); return its id. */
 export async function sessionId(courseId: number, stem: string, init: SessionInit = { sessionDate: stem.slice(0, 10) }): Promise<number> {
   const r = await q(
-    `insert into sessions (course_id, stem, session_date, start_time, title, join_url, stage, stage_note, seg_count, duration_sec, size_mb, owner_user_id)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    `insert into sessions (course_id, stem, session_date, start_time, title, join_url, stage, stage_note, seg_count, duration_sec, size_mb, started_at, owner_user_id)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,coalesce($12::timestamptz, now()),$13)
      on conflict (course_id, stem) do update set
        session_date = excluded.session_date,
        start_time = coalesce(excluded.start_time, sessions.start_time),
@@ -52,13 +53,40 @@ export async function sessionId(courseId: number, stem: string, init: SessionIni
        seg_count = coalesce(excluded.seg_count, sessions.seg_count),
        duration_sec = coalesce(excluded.duration_sec, sessions.duration_sec),
        size_mb = coalesce(excluded.size_mb, sessions.size_mb),
+       started_at = coalesce($12::timestamptz, sessions.started_at),
        updated_at = now()
      returning id`,
     [courseId, stem, init.sessionDate, init.startTime ?? null, init.title ?? "",
       init.joinUrl ?? null, init.stage ?? "recording", init.stageNote ?? null,
-      init.segCount ?? null, init.durationSec ?? null, init.sizeMb ?? null, OWNER],
+      init.segCount ?? null, init.durationSec ?? null, init.sizeMb ?? null,
+      init.startedAt != null ? new Date(init.startedAt).toISOString() : null, OWNER],
   );
   return Number(r.rows[0].id);
+}
+
+/** Upsert per-course config (course.json's semesterStart/icon → courses
+ *  columns). Absent keys keep their current value; a present-but-empty
+ *  value clears the column. */
+export async function upsertCourseConfig(
+  slug: string,
+  cfg: { semesterStart?: string | null; icon?: string | null },
+): Promise<void> {
+  const cols = ["slug", "name", "owner_user_id"];
+  const vals: unknown[] = [slug, slug.replace(/_/g, " "), OWNER];
+  const sets = ["name = excluded.name"];
+  if ("semesterStart" in cfg) {
+    cols.push("semester_start"); vals.push(cfg.semesterStart || null);
+    sets.push("semester_start = excluded.semester_start");
+  }
+  if ("icon" in cfg) {
+    cols.push("icon"); vals.push(cfg.icon || null);
+    sets.push("icon = excluded.icon");
+  }
+  await q(
+    `insert into courses (${cols.join(",")}) values (${cols.map((_, i) => `$${i + 1}`).join(",")})
+     on conflict (slug) do update set ${sets.join(", ")}, updated_at = now()`,
+    vals,
+  );
 }
 
 /** Partial session update (stage transitions etc.). */

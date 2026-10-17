@@ -6,7 +6,8 @@ import { join, dirname } from "node:path";
 import { DATA_DIR } from "./paths.ts";
 import { listSessions } from "./pipeline/sessions.ts";
 import { appendEvent, listEvents } from "./db/writes.ts";
-import { leftLoad, leftAdd, leftPruneExcept, leftClear } from "./db/state.ts";
+import { leftLoad, leftAdd, leftPruneExcept, leftClear, settingsLoad, settingsSave } from "./db/state.ts";
+import { pgConfigured } from "./db/reader.ts";
 
 export interface StatusEvent { ts: string; msg: string }
 
@@ -72,6 +73,35 @@ export interface ModelQuota {
 }
 
 const SETTINGS_FILE = join(DATA_DIR, "settings.json");
+
+/** DB-primary settings: app_settings['settings'] owns the truth; this cache
+ *  is hydrated once at daemon start (hydrateSettings) and updated on every
+ *  write. Before hydration (or in fs-only mode) the fs file answers — same
+ *  values, since the DB row was seed-migrated from it. */
+let settingsCache: Settings | null = null;
+
+/** One-time boot hydration: DB row wins; absent row gets seeded from the fs
+ *  file (or defaults) so the next read is DB-authoritative. */
+export async function hydrateSettings(): Promise<void> {
+  try {
+    const row = await settingsLoad();
+    if (row) {
+      settingsCache = { ...defaultSettings(), ...(row as Partial<Settings>) };
+    } else {
+      // first boot (or cleared row): seed the DB from the fs mirror / defaults
+      const s = getSettings(); // settingsCache still null → fsSettings()
+      settingsCache = s;
+      await settingsSave(s).catch(() => { /* DB down mid-seed — fs mirror answers */ });
+    }
+  } catch {
+    settingsCache = getSettings(); // DB down — fs mirror keeps the daemon booting
+  }
+}
+
+function fsSettings(): Settings {
+  try { return { ...defaultSettings(), ...JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) }; }
+  catch { return defaultSettings(); }
+}
 
 const modelQuotas = new Map<string, ModelQuota>();
 
@@ -195,8 +225,7 @@ export function glmBase(): string {
 }
 
 export function getSettings(): Settings {
-  try { return { ...defaultSettings(), ...JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) }; }
-  catch { return defaultSettings(); }
+  return settingsCache ?? fsSettings();
 }
 
 export function setSettings(patch: Partial<Settings>): Settings {
@@ -204,10 +233,12 @@ export function setSettings(patch: Partial<Settings>): Settings {
   // canonicalize the chain no matter who writes it
   if (typeof next.geminiModels === "string")
     next.geminiModels = next.geminiModels.split(",").map((m) => m.trim()).filter(Boolean).join(",");
+  settingsCache = next;
   try {
     mkdirSync(dirname(SETTINGS_FILE), { recursive: true }); // fresh volume: /data may not exist yet
     writeFileSync(SETTINGS_FILE, JSON.stringify(next, null, 2));
   } catch { /* read-only fs: in-memory only */ }
+  if (pgConfigured()) void settingsSave(next).catch((e) => console.warn(`[settings] DB write failed: ${String(e).slice(0, 120)}`));
   return next;
 }
 

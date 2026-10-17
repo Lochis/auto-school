@@ -11,6 +11,27 @@ import { pgConfigured } from "./reader.ts";
 
 const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
 
+// ── app_settings (settings.json → single jsonb row, key 'settings') ───────
+
+/** The stored Settings object, or null when the row is absent (first boot —
+ *  caller seed-migrates from the fs file). */
+export async function settingsLoad(): Promise<unknown | null> {
+  if (!pgConfigured()) return null;
+  const r = await q(`select value from app_settings where key = 'settings'`);
+  return r.rows[0]?.value ?? null;
+}
+
+/** Upsert the full Settings object (DB is the primary store; the fs
+ *  settings.json stays as a Phase-4-removable mirror). */
+export async function settingsSave(value: unknown): Promise<void> {
+  if (!pgConfigured()) return;
+  await q(
+    `insert into app_settings (key, value) values ('settings', $1::jsonb)
+     on conflict (key) do update set value = excluded.value, updated_at = now()`,
+    [JSON.stringify(value)],
+  );
+}
+
 export interface ChatMsg {
   role: "user" | "assistant";
   content: string;

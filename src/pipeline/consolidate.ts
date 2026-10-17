@@ -14,6 +14,7 @@ import { RECORDINGS_DIR, outPath } from "../paths.ts";
 import { pushEvent } from "../status.ts";
 import { upsertArtifact, updateSession as updateSessionDb } from "../db/writes.ts";
 import { resolveSession } from "./sessions.ts";
+import { retainedUntilFrom } from "./retention.ts";
 
 function run(cmd: string, args: string[]): Promise<{ code: number; err: string }> {
   return new Promise((res) => {
@@ -138,6 +139,7 @@ export async function consolidateSession(
       mimeType: "video/webm",
       bytes: outBytes,
       checksum: null,
+      retainedUntil: retainedUntilFrom(), // DB-authoritative retention schedule
     });
     await updateSessionDb(r.courseId, r.stem, { duration_sec: got, size_mb: Math.round(outBytes / 1e6) });
   } catch (e) {

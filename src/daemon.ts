@@ -29,10 +29,10 @@ import { parseMultipart, placePart, discardPart } from "./http/multipart.ts";
 import { startRecording, quickStopRecording, stopRecording, stillInMeeting, rebuildSeekPoints, RECORD_DIR } from "./record/recorder.ts";
 import { consolidateSession } from "./pipeline/consolidate.ts";
 import { notify } from "./notify.ts";
-import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, hydrateLeftToday, applySettingsPatch } from "./status.ts";
+import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, hydrateLeftToday, applySettingsPatch, hydrateSettings } from "./status.ts";
 import { lastDeviceCode } from "./graph/auth.ts";
 import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
-import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday } from "./pipeline/materials.ts";
+import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday, hydrateCourseConfigs } from "./pipeline/materials.ts";
 import { glmChatRaw, glmChatStream, type ChatMsg, type ToolCall } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
 import { ensureIndex, indexDir, bundleFresh, supportsIndex } from "./pipeline/docindex.ts";
@@ -40,12 +40,12 @@ import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir, refreshMappings, normTitle as normMappingTitle } from "./pipeline/courses.ts";
 import { finalizeNotes } from "./pipeline/notes.ts";
-import { updateSession, listSessions, hydrateSessions } from "./pipeline/sessions.ts";
+import { updateSession, listSessions, hydrateSessions, stemTimes } from "./pipeline/sessions.ts";
 import { transcribeFile } from "./transcribe/transcribe.ts";
-import { runRetention } from "./pipeline/retention.ts";
+import { runRetention, retainedUntilFrom } from "./pipeline/retention.ts";
 import { embedPendingMaterials, embedPendingSessions } from "./db/ingest-embed.ts";
 import { getPool } from "./db/client.ts";
-import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId, upsertArtifact } from "./db/writes.ts";
+import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId, upsertArtifact, upsertCourseConfig } from "./db/writes.ts";
 import { chatList, chatSave, chatClear, attendanceLoad, attendanceUpsert, metaLoad, metaReplace } from "./db/state.ts";
 
 const POLL_MS = (Number(process.env.POLL_MINUTES ?? 2) || 2) * 60_000;
@@ -155,6 +155,12 @@ async function rescueOrphans(): Promise<void> {
     // audio ogg is named with the SESSION-start timestamp: <slug>__<ISO>.audio.ogg
     const oggName = readdirSync(RECORD_DIR).find((f) => f.startsWith(`${stem}__`) && f.endsWith(".audio.ogg"));
     const ogg = oggName ? join(RECORD_DIR, oggName) : undefined;
+    // real capture start: the ogg carries the session-start ISO (audio on);
+    // fall back to seg 0's own start timestamp (video-only). Both are the
+    // "<slug>__<ISO>" shape stemTimes() reads, so started_at/start_time land
+    // in the sessions row as the capture instant — not the rescue time.
+    const capStem = oggName?.replace(/\.audio\.ogg$/, "")
+      ?? parts[0].split(/[\\/]/).pop()!.replace(/__\d{3}\.webm$/, "");
     // title slug lives before the "__<ISO timestamp>" suffix — keeps
     // rescued sessions filed under the same course folder as live ones
     const title = stem.replace(/__\d{4}-\d{2}-\d{2}.*$/, "").replace(/_/g, " ") || stem;
@@ -180,17 +186,17 @@ async function rescueOrphans(): Promise<void> {
     }
     setActivity("rescuing orphaned session", { meeting: stem });
     console.log(`[daemon] orphan rescue: ${parts.length} segment(s) from ${stem}`);
-    updateSession(stem, { stage: "consolidating", stageNote: "orphan rescue", segCount: parts.length });
+    updateSession(capStem, { stage: "consolidating", stageNote: "orphan rescue", segCount: parts.length });
     for (const p of paths) await rebuildSeekPoints(p.split(/[\\/]/).pop()!);
     try {
       const r = await consolidateSession(title, paths, undefined, ogg && existsSync(ogg) ? ogg : undefined);
       pushEvent(r ? `orphan rescued ✓ ${r.mp4}` : `orphan rescue failed for ${stem} (segments kept)`);
-      updateSession(stem, r ? { stage: "done", mp4: r.mp4, sizeMB: Math.round(r.outBytes / 1e6) } : { stage: "failed", stageNote: "rescue failed — segments kept" });
+      updateSession(capStem, r ? { stage: "done", mp4: r.mp4, sizeMB: Math.round(r.outBytes / 1e6) } : { stage: "failed", stageNote: "rescue failed — segments kept" });
     } catch (e) {
       console.warn(`[daemon] orphan rescue failed: ${String(e).slice(0, 120)}`);
       // mark it failed so the sessions row doesn't linger as "consolidating"
       // forever (the row exists — updateSession ran before the failure)
-      try { await updateSession(stem, { stage: "failed", stageNote: `rescue failed — ${String(e).slice(0, 60)}` }); } catch { /* best effort */ }
+      try { await updateSession(capStem, { stage: "failed", stageNote: `rescue failed — ${String(e).slice(0, 60)}` }); } catch { /* best effort */ }
     }
   }
 }
@@ -1226,7 +1232,10 @@ function startController(): void {
             runningMd: join(dir, `${realStem}__running.md`),
             timelineJson: join(dir, `${realStem}__timeline.json`) };
           const cid = await courseId(course);
-          const sid = await sessionId(cid, realStem, { sessionDate: realStem.slice(0, 10) });
+          const sid = await sessionId(cid, realStem, {
+            sessionDate: realStem.slice(0, 10),
+            ...stemTimes(realStem), // __THHMMSS suffix → time-of-day (mtime semantics)
+          });
           await upsertArtifact(sid, "transcript", `notes/${course}/${realStem}__transcript.md`, { content: `# Transcript — ${title}\n\n${t.text}` });
           pushEvent(`transcribe ✓ ${course}/${stem} — ${t.chunks.length} chunk(s) → transcript.md`);
           // notes live in PG now (session_artifacts kind='notes') — the fs
@@ -1401,20 +1410,37 @@ function startController(): void {
 
         // move the streamed temp files into place (no RAM copies)
         placePart(fileP!.path!, join(rdir, mp4name));
-        // display name → sessions.title, transcript.md → session_artifacts
+        // display name → sessions.title, transcript.md → session_artifacts;
+        // capture time from the placed file's mtime (preserved by the move)
+        // and the HHMMSS sequence (Toronto-local, like the importer's start_time)
+        let placedMtime: number | null = null;
+        try { placedMtime = statSync(join(rdir, mp4name)).mtimeMs; } catch { /* just moved — should exist */ }
+        const seqTime = Number.isFinite(seq) && seq > 0
+          ? `${String(Math.floor(seq / 10000)).padStart(2, "0")}:${String(Math.floor(seq / 100) % 60).padStart(2, "0")}:${String(seq % 60).padStart(2, "0")}`
+          : null;
         const cid = await courseId(course);
-        const sid = await sessionId(cid, stem, { sessionDate: date, title: name });
+        // session stem matches the on-disk filename (incl. the __HHMMSS suffix)
+        // so the DB row keys exactly what data.ts / the importer derive for the
+        // same recording — two uploads on one day stay two sessions.
+        const mp4Stem = mp4name.replace(/\.(mp4|webm)$/, "");
+        const sid = await sessionId(cid, mp4Stem, {
+          sessionDate: date,
+          title: name,
+          startTime: seqTime,
+          startedAt: placedMtime,
+        });
         // Phase-4: the recording blob itself stays on fs, but its artifact
         // row must exist (mirrors consolidate.ts' post-copy upsert)
         await upsertArtifact(sid, "recording", `recordings/${course}/${mp4name}`, {
           storageUri: `file://recordings/${course}/${mp4name}`,
           mimeType: mp4name.endsWith(".webm") ? "video/webm" : "video/mp4",
           bytes: fileP?.bytes ?? null,
+          retainedUntil: retainedUntilFrom(),
         });
         let wroteTranscript = false;
         if (tfileP) {
           const txt = (await import("node:fs/promises")).readFile(tfileP.path!, "utf8");
-          await upsertArtifact(sid, "transcript", `notes/${course}/${stem}__transcript.md`,
+          await upsertArtifact(sid, "transcript", `notes/${course}/${mp4Stem}__transcript.md`,
             { content: `# ${name || "Transcript"}${name ? " — transcript" : ""} — ${course.replace(/_/g, " ")} (${date})\n\n${await txt}` });
           discardPart(tfileP.path!);
           wroteTranscript = true;
@@ -1772,18 +1798,9 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         }
         if (patch.semesterStart === undefined && patch.icon === undefined) return send(400, { error: "provide semesterStart and/or icon" });
         const cfg = setCourseConfig(slug, patch);
-        // mirror into PG — only the keys this patch actually includes
-        try {
-          const cols = ["slug", "name", "owner_user_id"];
-          const vals: unknown[] = [slug, slug.replace(/_/g, " "), curOwner()];
-          const sets: string[] = [];
-          if (patch.semesterStart !== undefined) { cols.push("semester_start"); vals.push(patch.semesterStart); sets.push("semester_start = excluded.semester_start"); }
-          if (patch.icon !== undefined) { cols.push("icon"); vals.push(patch.icon); sets.push("icon = excluded.icon"); }
-          if (sets.length) await q(
-            `insert into courses (${cols.join(",")}) values (${cols.map((_, i) => `$${i + 1}`).join(",")})
-             on conflict (slug) do update set ${sets.join(", ")}, updated_at = now()`,
-            vals);
-        } catch (e) { console.error(`[daemon] DB course config failed: ${String(e)}`); }
+        // mirror into PG (DB-primary) — only the keys this patch actually includes
+        try { await upsertCourseConfig(slug, patch); }
+        catch (e) { console.error(`[daemon] DB course config failed: ${String(e)}`); }
         pushEvent(`course config: ${slug} updated (${Object.keys(patch).join(", ")})`);
         return send(200, cfg);
       }
@@ -1855,12 +1872,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         mkdirSync(MATERIALS_DIR(slug), { recursive: true });
         if (s) setCourseConfig(slug, { semesterStart: s });
         // register in PG (folder-union parity; semester_start when given)
-        try {
-          await q(
-            `insert into courses (slug, name, semester_start, owner_user_id) values ($1,$2,nullif($3,'')::date,$4)
-             on conflict (slug) do nothing`,
-            [slug, slug.replace(/_/g, " "), s, curOwner()]);
-        } catch (e) { console.error(`[daemon] DB course create failed: ${String(e)}`); }
+        try { await upsertCourseConfig(slug, s ? { semesterStart: s } : {}); }
+        catch (e) { console.error(`[daemon] DB course create failed: ${String(e)}`); }
         pushEvent(`course created: ${slug}${s ? ` (semester starts ${s})` : ""}`);
         return send(200, { ok: true, slug });
       } catch (e) {
@@ -2697,6 +2710,10 @@ export async function daemon(): Promise<void> {
   await refreshMappings().catch(() => { /* DB down → empty mapping cache until first write */ });
   await hydrateAttendance();
   await hydrateLeftToday();
+  // DB-primary state: settings (seed-migrated from fs on first boot — must
+  // precede retentionPass, whose schedule reads them) and course configs
+  await hydrateSettings();
+  await hydrateCourseConfigs().catch(() => { /* DB down → fs configs answer */ });
   startController();
   // fresh volume guarantee: the whole dir skeleton exists before anything writes
   // (k8s PVCs start empty — compose had these pre-created by the seed volume)
