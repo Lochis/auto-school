@@ -83,7 +83,7 @@ const B = `__smoke__Renamed_${Date.now() % 100000}`;
   const cfg = await q(`select semester_start::text, icon from courses where slug = $1`, [A]);
   ok("config PUT mirrors into PG", cfg.rows[0]?.semester_start === "2026-09-08", JSON.stringify(cfg.rows[0]));
   const idA = rowA.rows[0]?.id;
-  const r = await api("POST", "/courses/rename", { from: A, to: B });
+  const r = await api("POST", `/courses/${encodeURIComponent(A)}/rename`, { to: B });
   ok("POST /courses/rename", r.status === 200, JSON.stringify(r.json).slice(0, 120));
   const rows = await q(`select id, slug from courses where slug = any($1) order by id`, [[A, B]]);
   ok("rename updates the SAME row (no dup/ghost)", rows.rows.length === 1 && String(rows.rows[0].slug) === B && String(rows.rows[0].id) === String(idA), JSON.stringify(rows.rows));
@@ -109,16 +109,16 @@ console.log("\n4 · deadlines (owner-scoped): feed · toggle · fold");
   const feed = await api("GET", "/deadlines");
   const ids = (feed.json.deadlines ?? []).map((d: any) => d.id);
   ok("GET /deadlines shows smoke rows", ids.includes("smokeparent") && ids.includes("smokechild"));
-  const t = await api("POST", "/deadlines", { id: "smokeparent", done: true });
-  ok("toggle done accepted", t.status === 200, JSON.stringify(t.json).slice(0, 120));
-  const back = await api("GET", "/deadlines");
-  const mine = (back.json.deadlines ?? []).find((d: any) => d.id === "smokeparent");
-  ok("toggle PERSISTS across a fresh read", mine?.done === true, JSON.stringify(mine).slice(0, 80));
   const f = await api("POST", "/deadlines", { fold: { parent: "smokeparent", child: "smokechild" } });
   ok("fold child into parent", f.status === 200, JSON.stringify(f.json).slice(0, 120));
   const after = await api("GET", "/deadlines");
   const left = (after.json.deadlines ?? []).filter((d: any) => ["smokeparent", "smokechild"].includes(d.id));
   ok("folded child no longer a standalone item", left.length === 1 && left[0].id === "smokeparent", JSON.stringify(left.map((x: any) => x.id)));
+  const t = await api("POST", "/deadlines", { id: "smokeparent", done: true });
+  ok("toggle done accepted", t.status === 200, JSON.stringify(t.json).slice(0, 120));
+  const back = await api("GET", "/deadlines");
+  const mine = (back.json.deadlines ?? []).find((d: any) => d.id === "smokeparent");
+  ok("toggle PERSISTS across a fresh read", mine?.done === true, JSON.stringify(mine).slice(0, 80));
   await q(`delete from courses where slug = '__smoke__dl'`).catch(() => {});
 }
 
@@ -127,6 +127,7 @@ console.log("\n5 · session move + delete (fs + PG)");
   const from = "__smoke__From", to = "__smoke__To";
   mkdirSync(join(DATA, "recordings", from), { recursive: true });
   mkdirSync(join(DATA, "notes", from), { recursive: true });
+  mkdirSync(join(DATA, "recordings", to), { recursive: true }); // /session/move requires the target to exist in allCourses()
   writeFileSync(join(DATA, "recordings", from, "2026-10-17____smoke__.webm"), "x");
   writeFileSync(join(DATA, "notes", from, "2026-10-17____smoke____notes.md"), "# notes");
   const cf = (await q(`insert into courses (slug, name, owner_user_id) values ($1,$1,$2) on conflict (slug) do update set name=$1 returning id`, [from, SMOKE])).rows[0].id;
@@ -146,8 +147,8 @@ console.log("\n5 · session move + delete (fs + PG)");
 
 console.log("\n6 · read-path parity (real data, read-only): daemon vs frontend vs PG");
 {
-  const daemonFeed = await api("GET", "/deadlines");
-  const daemonIds = new Set((daemonFeed.json.deadlines ?? []).map((d: any) => `${d.id}|${d.done}`));
+  const daemonFeed = await fetch(`${BASE}/deadlines`, { headers: { "Content-Type": "application/json" } }).then((r) => r.json()); // NO smoke header — real owner, like the UI
+  const daemonIds = new Set(((daemonFeed.deadlines ?? []) as any[]).map((d) => `${d.id}|${d.done}`));
   let feIds: Set<string> | null = null;
   try {
     const fe = await fetch(`${FE}/api/deadlines`, { signal: AbortSignal.timeout(5000) });
