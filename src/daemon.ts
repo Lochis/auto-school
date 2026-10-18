@@ -22,7 +22,7 @@ import { getBrowser, invalidateBrowser, closeBrowser, authAlive, isSharedPage, l
 import { listMeetings } from "./meetings/list.ts";
 import { joinMeeting, joinMeetingByUrl } from "./meetings/join.ts";
 import { listTodayMeetings } from "./graph/meetings.ts";
-import { startNetworkHarvest, harvestCalendarEvents } from "./graph/calendar.ts";
+import { startNetworkHarvest } from "./graph/calendar.ts";
 import { getAccessToken } from "./graph/auth.ts";
 import { config } from "./config.ts";
 import { parseMultipart, placePart, discardPart } from "./http/multipart.ts";
@@ -107,6 +107,11 @@ let buildBusy = false;
 /** one "session expired" Discord ping per process (login MFA pushes still
  *  ping per attempt — that's the actionable ask) */
 let authExpiredPinged = false;
+/** consecutive schedule builds that scraped the calendar via the browser and
+ *  got ZERO events with no Graph token — the cached-shell trap: the page
+ *  renders Teams but the session is dead, so authAlive stays true and the
+ *  expiry guard never fires. 3 in a row ⇒ force a recycle + fresh login. */
+let emptyScrapes = 0;
 
 /** Graceful shutdown on SIGTERM/SIGINT (docker stop / compose recreate):
  *  stop the recorder (remux + notes + consolidate) BEFORE dying, so a
@@ -288,49 +293,18 @@ async function buildSchedule(): Promise<Sched[]> {
     const b = await getBrowser();
     if (b) {
       try {
-        // Start intercepting Bearer tokens from Teams' own Graph API calls.
-        // This MUST happen before listMeetings navigates to the calendar —
-        // Teams makes graph.microsoft.com requests during calendar load.
+        // Bearer interception stays (Graph token capture) — but the schedule
+        // itself is DOM-scrape only now: the OWA/REST join-URL harvest was
+        // removed (it never captured URLs and pinged every restart).
         const drainNetwork = startNetworkHarvest(b.page);
         const ms = await listMeetings(b.page);
         lastScan = new Date().toISOString();
         lastSeen = ms.length;
+        emptyScrapes = ms.length ? 0 : emptyScrapes + 1; // cached-shell trap detector input
         for (const m of ms) evs.push({ title: m.title, start: m.start.getTime(), end: m.end.getTime(), ...(m.joinUrl ? { joinUrl: m.joinUrl } : {}) });
-        // PREFERRED: call Outlook REST API from the OWA frame (cookie-based)
-        // or Graph API with a captured token — both give real join URLs.
-        try {
-          const apiEvts = await harvestCalendarEvents(b.page, drainNetwork);
-          if (apiEvts.length) {
-            // match by title + same calendar day (titles recur across days)
-            const sameDay = (a: number, b: number): boolean =>
-              new Date(a).toDateString() === new Date(b).toDateString();
-            const used = new Set<number>();
-            // calendar chips truncate titles at ~40 chars and drop "&" — match
-            // API events to scraped ones by normalized containment so a
-            // truncated chip never spawns a duplicate event, and the join
-            // uses the FULL API title (mapping keys match those exactly)
-            const nKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-            const sameEvt = (a: string, b: string): boolean => {
-              const x = nKey(a), y = nKey(b);
-              return x === y || (x.length >= 10 && (x.includes(y) || y.includes(x)));
-            };
-            for (const ae of apiEvts) {
-              if (!ae.joinUrl) continue;
-              const idx = evs.findIndex((e) =>
-                !used.has(evs.indexOf(e)) &&
-                sameDay(e.start, ae.start) &&
-                (e.title.toLowerCase() === ae.title.toLowerCase() || sameEvt(e.title, ae.title)));
-              if (idx >= 0) { evs[idx].joinUrl = ae.joinUrl; evs[idx].title = ae.title; used.add(idx); }
-              else evs.push({ title: ae.title, start: ae.start, end: ae.end, joinUrl: ae.joinUrl });
-            }
-            // NOTE: no cross-day URL propagation — weekly-recurring classes
-            // rotate meeting links per occurrence, so a URL-less event stays
-            // URL-less; joinScheduled falls back to the DOM card click
-            console.log(`[daemon] API enriched: ${apiEvts.filter((e) => e.joinUrl).length} event(s) with join URLs`);
-          }
-        } catch (e) {
-          console.warn(`[daemon] Calendar API pull failed: ${String(e).slice(0, 120)} — using OWA scrape data`);
-        }
+        // drain captured events into the graph-token store (join URLs are NOT
+        // harvested — joinScheduled falls back to the calendar card click)
+        await drainNetwork().catch(() => {});
       } catch (e) {
         if (/Target closed|Browser.*(closed|crashed)|context destroyed/i.test(String(e))) invalidateBrowser();
         console.warn(`[daemon] schedule scrape failed: ${String(e).slice(0, 120)}`);
@@ -343,7 +317,8 @@ async function buildSchedule(): Promise<Sched[]> {
     // Never recycle while a meeting is live (active session shares the ctx).
     if (!evs.length && !hasGraphToken() && !active) {
       const b2 = await getBrowser();
-      if (b2 && !(await authAlive(b2.page))) {
+      const shellDead = b2 && emptyScrapes >= 3; // cached-shell trap: alive probe passes but the calendar never loads
+      if (b2 && (!(await authAlive(b2.page)) || shellDead)) {
         if (!authExpiredPinged) {
           authExpiredPinged = true;
           // screenshot of the dead page accompanies the ping; the Approve
@@ -352,7 +327,8 @@ async function buildSchedule(): Promise<Sched[]> {
           const expiredShot = await b2.page.screenshot({ type: "png" }).catch(() => undefined);
           void notify("🔑 **Teams session expired** — re-authenticating now. **Approve-sign-in screenshot + number follows in ~a minute — enter the number on your phone to approve.**", expiredShot).catch(() => {});
         }
-        pushEvent("Teams session expired — recycling browser for fresh login");
+        pushEvent(shellDead ? "cached Teams shell never loads (3 empty scrapes) — recycling for a fresh login" : "Teams session expired — recycling browser for fresh login");
+        if (shellDead) emptyScrapes = 0; // escalation fired — give the fresh login a clean slate
         invalidateBrowser();
         const b3 = await getBrowser(); // fresh login — full auth state machine
         if (b3 && (await authAlive(b3.page).catch(() => true))) authExpiredPinged = false; // recovered — a future expiry pings again
@@ -2835,8 +2811,13 @@ console.log(`[daemon] schedule-driven: ${process.env.REBUILD_AT ? `wall-clock re
       // bring the next push back quickly instead of an hour later.
       const loginDown = lastLoginFailedAt > 0 && Date.now() - lastLoginFailedAt < 15 * 60_000;
       const mfaWaited = loginDown && /state "mfa/i.test(lastLoginFailDetail);
+      // unverified-shell: the login "worked" but nothing authenticated — the
+      // browser module wipes the poisoned profile on the 2nd occurrence and
+      // the NEXT attempt is a full SSO; retry at the short MFA cadence so the
+      // wipe+recovery isn't gated behind the 60-min generic backoff.
+      const unverified = loginDown && /unverified-shell/.test(lastLoginFailDetail);
       const loginRetryMs = (Number(process.env.MFA_RETRY_MINUTES ?? 12) || 12) * 60_000;
-      const sleepMs = Math.max(5_000, Math.min(wakeAt - now, schedule.length ? 60 * 60_000 : loginDown ? (mfaWaited ? loginRetryMs : 60 * 60_000) : 10 * 60_000));
+      const sleepMs = Math.max(5_000, Math.min(wakeAt - now, schedule.length ? 60 * 60_000 : loginDown ? (mfaWaited || unverified ? loginRetryMs : 60 * 60_000) : 10 * 60_000));
       state = "idle";
       const rescueBusy = scheduleBuiltAt === 0; // rescue may still be pre-schedule
       const t12 = (d: number) => new Date(d).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });

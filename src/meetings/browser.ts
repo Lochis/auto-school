@@ -14,10 +14,21 @@
  * invalidateBrowser() so the next getBrowser() relaunches + relogs in.
  */
 import type { BrowserContext, Page } from "playwright";
+import { rmSync } from "node:fs";
+import { resolve } from "node:path";
 import { loginTeams, TEAMS_URL } from "../login/teams-login.ts";
+import { config } from "../config.ts";
+import { notify } from "../notify.ts";
 
 let cached: { ctx: BrowserContext; page: Page } | null = null;
 let inflight: Promise<{ ctx: BrowserContext; page: Page } | null> | null = null;
+/** in-flight close of a previous context — a relaunch MUST await it or the
+ *  profile lock clash makes launchPersistentContext fail mid-login. */
+let closing: Promise<void> | null = null;
+/** consecutive logins that ended "unverified-shell" (rendered shell, no
+ *  fresh auth signal). 2 in a row ⇒ the profile is poisoned → wipe once. */
+let consecutiveUnverified = 0;
+let lastProfileWipe = 0;
 /** epoch ms of the last FAILED login attempt (0 = none) — lets the daemon
  *  stretch empty-schedule retries instead of spamming MFA pushes */
 export let lastLoginFailedAt = 0;
@@ -50,9 +61,23 @@ export async function getBrowser(): Promise<{ ctx: BrowserContext; page: Page } 
   }
   inflight ??= (async () => {
     try {
+      if (closing) { await closing; closing = null; } // profile lock: never launch while the old ctx still holds it
       const r = await loginTeams({ keepOpen: true });
-      if (!r.ok || !r.ctx || !r.page) { lastLoginFailedAt = Date.now(); lastLoginFailDetail = r.detail ?? "login failed"; return null; }
+      if (!r.ok || !r.ctx || !r.page) {
+        lastLoginFailedAt = Date.now(); lastLoginFailDetail = r.detail ?? "login failed";
+        if (/unverified-shell/.test(r.detail ?? "")) {
+          consecutiveUnverified++;
+          if (consecutiveUnverified >= 2 && Date.now() - lastProfileWipe > 30 * 60_000) {
+            lastProfileWipe = Date.now(); consecutiveUnverified = 0;
+            try { rmSync(resolve(config.userDataDir), { recursive: true, force: true }); } catch { /* best effort */ }
+            console.warn("[browser] repeated unverified logins — profile poisoned; wiped. Next login is a full SSO.");
+            void notify("🧹 **Teams profile poisoned** (login keeps 'succeeding' with a dead session) — profile **wiped**. The next login is a FULL sign-in: **approve its MFA push**.").catch(() => {});
+          }
+        }
+        return null;
+      }
       lastLoginFailedAt = 0; lastLoginFailDetail = ""; // healthy login clears the backoff signal
+      consecutiveUnverified = 0;
       try { await r.ctx.grantPermissions(["microphone", "camera"]); } catch { /* non-fatal */ }
       cached = { ctx: r.ctx, page: r.page };
       return cached;
@@ -92,11 +117,14 @@ export function isSharedPage(page: Page): boolean {
   return cached?.page === page;
 }
 
-/** Drop the shared context (next getBrowser() relaunches). Use on browser-level errors. */
+/** Drop the shared context (next getBrowser() relaunches). Use on browser-level errors.
+ *  The close is tracked so the NEXT launch waits for it — an unawaited close
+ *  used to leave the profile locked and the relaunch would rm the Singleton*
+ *  locks out from under the dying browser, corrupting the profile mid-login. */
 export function invalidateBrowser(): void {
   const c = cached;
   cached = null;
-  c?.ctx.close().catch(() => {});
+  closing = c?.ctx.close().catch(() => {}) ?? null;
 }
 
 /** Close the shared context (pod shutdown). */

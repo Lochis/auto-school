@@ -196,7 +196,7 @@ async function importMappings() {
 
 // ── 3+4. sessions / artifacts / segments ───────────────────────────────────
 interface Sess { course: string; stem: string; date: string; time?: string; title?: string;
-  startedAt?: Date; updatedAt?: Date }
+  startedAt?: Date; updatedAt?: Date; stage?: string }
 async function upsertSession(s: Sess): Promise<number> {
   const key = `${s.course}|${s.stem}`;
   const existing = sessionIds.get(key);
@@ -216,14 +216,20 @@ async function upsertSession(s: Sess): Promise<number> {
   // __title.txt exists (or the row is a journal-only meeting-title seed).
   const title = s.title !== undefined ? s.title : null;
   const startedAt = s.startedAt ?? new Date(`${s.date}T${s.time ?? "12:00"}:00`);
+  // fs-discovered rows are historical sessions — the capture is over by
+  // definition. 'recording' here was a bug: the daemon's startup hydrate
+  // read those rows as "process died mid-session" and mass-failed every
+  // past class as "interrupted by restart". The journal merge below still
+  // overwrites stage from out/sessions.json when a row matches.
+  const stage = s.stage ?? "done";
   const r = await q(`insert into sessions (course_id, stem, session_date, start_time, title,
       join_url, stage, seg_count, duration_sec, size_mb, started_at, updated_at, owner_user_id)
-    values ($1,$2,$3,$4,$5,null,'recording',null,null,null,$6,$7,$8)
+    values ($1,$2,$3,$4,$5,null,$6,null,null,null,$7,$8,$9)
     on conflict (course_id, stem) do update set session_date=excluded.session_date,
       start_time=excluded.start_time, title=excluded.title, started_at=excluded.started_at
     returning id`,
     [courseIds.get(s.course), s.stem, s.date, s.time ?? null, title,
-      startedAt, s.updatedAt ?? startedAt, OWNER]);
+      stage, startedAt, s.updatedAt ?? startedAt, OWNER]);
   const id = Number(r.rows[0].id);
   sessionIds.set(key, id);
   seen.sessions.add(key);

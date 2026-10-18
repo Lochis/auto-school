@@ -10,6 +10,8 @@ import { chromium, type Page, type BrowserContext } from "playwright";
 import { config } from "../config.ts";
 import { notify } from "../notify.ts";
 import { outPath } from "../paths.ts";
+import { pushEvent } from "../status.ts";
+import { SEL } from "./selectors.ts";
 import {
   type AuthState,
   detectState,
@@ -18,6 +20,7 @@ import {
   handlePassword,
   handleAccountPicker,
   handleMfaChooser,
+  handleMfaDenied,
   handleMfaPush,
   handleMfaTotp,
   handleKmsi,
@@ -28,10 +31,31 @@ import {
   handleAuthFailure,
   handleProcessing,
   handleUnknown,
+  readMfaNumber,
 } from "./auth-state.ts";
 
 export const TEAMS_URL = "https://teams.microsoft.com";
 const POLL_MS = 800;
+
+// login-attempt instrumentation state (module scope: survives attempts)
+let attemptNo = 0;
+let lastSeqKey = "";
+
+/** POSITIVE authentication signal for a rendered Teams shell — the app-shell
+ *  selector, or Microsoft auth cookies that are still valid for >5 min. A
+ *  cached shell with half-dead cookies matches NEITHER (that trap used to
+ *  pass the 20s "no sign-in UI" heuristic and left an empty calendar). */
+async function verifyShell(ctx: BrowserContext, page: Page): Promise<string | null> {
+  try {
+    if (await page.locator(SEL.teamsApp.join(", ")).first().isVisible({ timeout: 1_500 }).catch(() => false)) return "teams-app-shell";
+    const soon = Date.now() / 1000 + 300;
+    const fresh = (await ctx.cookies()).some((c) =>
+      /(?:^|\.)microsoftonline\.com$|(?:^|\.)teams\.(?:cloud\.)?microsoft\.com$/.test(c.domain) &&
+      c.expires > soon && /auth|sess|tgt|ests/i.test(c.name));
+    if (fresh) return "fresh-auth-cookies";
+  } catch { /* probe failure → not verified */ }
+  return null;
+}
 
 export interface LoginResult {
   ok: boolean;
@@ -115,6 +139,43 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
   let stuckPinged = false;
   let iter = 0;
 
+  // ── per-attempt instrumentation: every state transition → Discord + UI ──
+  attemptNo++;
+  const steps: string[] = [];
+  const shotBudget = 15;
+  let seqKey = "";
+  const deniedResends = { current: 0 };
+  const emitStep = async (state: AuthState): Promise<void> => {
+    if (state === "unknown" || state === "processing") return; // poll noise
+    seqKey += state[0];
+    const num = state === "mfa-push" ? ` (${await readMfaNumber(page)})` : "";
+    steps.push(state + num);
+    const shot = steps.length <= shotBudget ? await page.screenshot({ type: "png" }).catch(() => undefined) : undefined;
+    pushEvent(`login #${attemptNo} step ${steps.length}: ${state}${num}`);
+    void notify(`🔐 login attempt #${attemptNo} step ${steps.length}/${shotBudget}: ${state}${num}`, shot).catch(() => {});
+  };
+  const summarize = async (ok: boolean, detail: string): Promise<void> => {
+    const seq = seqKey || "(no states)";
+    const same = seq === lastSeqKey;
+    lastSeqKey = seq;
+    const dur = Math.round((Date.now() - started) / 1000);
+    const finalShot = await page.screenshot({ type: "png" }).catch(() => undefined);
+    try {
+      if (finalShot) { mkdirSync(dirname(outPath("x")), { recursive: true }); writeFileSync(outPath(`login-attempt-${attemptNo}.png`), finalShot); }
+    } catch { /* forensics only */ }
+    pushEvent(`login #${attemptNo} ${ok ? "✓" : "✗"} ${detail} [${seq}]`);
+    await notify(
+      same
+        ? `🔐 login #${attemptNo} ${ok ? "✓" : "✗"} ${detail} — same state sequence as the previous attempt (${seq}); staying quiet.`
+        : `🔐 login attempt #${attemptNo} ${ok ? "✓" : "✗"} after ${dur}s: ${steps.join(" → ") || "(no states)"} — ${detail}`,
+      same ? undefined : finalShot,
+    ).catch(() => {});
+  };
+  const done = (ok: boolean, method: "fresh" | "session", detail: string, extra: Partial<LoginResult> = {}): LoginResult => {
+    void summarize(ok, detail);
+    return { ok, method, detail, ...extra };
+  };
+
   while (true) {
     // check for a new tab (MS sometimes opens one)
     const actionable = await findActionablePage(ctx);
@@ -124,7 +185,13 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     }
 
     const url = page.url();
-    if (/login\.microsoftonline\.com|authenticationendpoint|\/commonauth|aka\.ms/.test(url)) sawLoginUrl = true;
+    if (/login\.microsoftonline\.com|authenticationendpoint|\/commonauth|aka\.ms/.test(url)) {
+      if (!sawLoginUrl) {
+        sawLoginUrl = true;
+        steps.push("→MS-signin");
+        void notify(`🔐 login #${attemptNo}: landed on a Microsoft sign-in page — SSO chain starting`, undefined).catch(() => {});
+      }
+    }
 
     // detect current state
     const state = await detectState(page);
@@ -138,7 +205,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
         const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
         await notify(`🚨 **Teams login failing repeatedly** — ${sameAuthFailures} consecutive SSO auth failures. Password may be wrong/expired.`, shot).catch(() => {});
         await ctx.close();
-        return { ok: false, method: "fresh", detail: `SSO auth failed ${sameAuthFailures} times in a row` };
+        return done(false, "fresh", `SSO auth failed ${sameAuthFailures} times in a row`);
       }
     } else if (state !== "unknown" && state !== "account-picker" && state !== "processing") {
       sameAuthFailures = 0;
@@ -147,7 +214,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     // track stuck states
     if (state === lastState) {
       sameStateCount++;
-      if (sameStateCount > 30 && state !== "processing" && state !== "mfa-push" && state !== "mfa-chooser" && state !== "password-expired") {
+      if (sameStateCount > 30 && state !== "processing" && state !== "mfa-push" && state !== "mfa-chooser" && state !== "mfa-denied" && state !== "password-expired") {
         await page.screenshot({ path: outPath("login-stuck.png") }).catch(() => {});
         const txt = await page.evaluate(() => document.body?.innerText?.slice(0, 4_000) ?? "").catch(() => "");
         if (txt) writeFileSync(outPath("login-stuck.txt"), txt);
@@ -164,24 +231,35 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
       sameStateCount = 0;
       console.log(`[login] state: ${state}`);
       lastState = state;
+      await emitStep(state);
     }
 
-    // ── session heuristic (from the original flow): on a Teams URL with no
-    //    sign-in UI and no login-form markers for 20s+ → already logged in.
-    //    Covers new-Teams DOMs whose app shell doesn't match SEL.teamsApp. ──
+    // ── shell verification (replaces the old 20s "no sign-in UI → logged
+    //    in" heuristic, which a cached shell with half-dead cookies passed
+    //    forever). After 20s of no sign-in UI we require a POSITIVE signal
+    //    (app shell selector / fresh auth cookies); without one we keep
+    //    polling until 45s, then fail the attempt as unverified — the
+    //    browser module then counts these and wipes the poisoned profile. ──
     const onTeams = url.startsWith("https://teams.microsoft.com") || url.startsWith("https://teams.cloud.microsoft");
     if (onTeams && state !== "teams-ready") {
-      // Check for the "We need you to sign in again" banner — if present, the
-      // session is expired even though the shell loaded. Don't declare logged in.
       const signInUi = await page.evaluate(() => /sign in/i.test(document.body?.innerText ?? "")).catch(() => false);
       const loginForm = await page.locator('input[type="email"], input[type="password"]').first().isVisible({ timeout: 300 }).catch(() => false);
       if (!signInUi && !loginForm) {
         firstTeamsTs ??= Date.now();
-        if (Date.now() - firstTeamsTs > 20_000) {
-          console.log("[login] ✓ logged in (heuristic: 20s on Teams, no sign-in UI)"); // Discord: login success is routine — console only (stuck/auth-fail still ping)
-          if (keepOpen) return { ok: true, method: "session", detail: "session-heuristic", page, ctx };
-          await ctx.close();
-          return { ok: true, method: "session", detail: "session-heuristic" };
+        const elapsed = Date.now() - firstTeamsTs;
+        if (elapsed > 20_000) {
+          const signal = await verifyShell(ctx, page);
+          if (signal) {
+            console.log(`[login] ✓ logged in (verified: ${signal})`);
+            if (keepOpen) return done(true, "session", `verified-shell(${signal})`, { page, ctx });
+            await ctx.close();
+            return done(true, "session", `verified-shell(${signal})`);
+          }
+          if (elapsed > 45_000) {
+            console.log("[login] ✗ Teams shell rendered but no fresh auth signal after 45s — unverified, failing attempt");
+            await ctx.close().catch(() => {});
+            return done(false, "fresh", "unverified-shell");
+          }
         }
       } else {
         firstTeamsTs = undefined;
@@ -194,9 +272,9 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
     if (state === "teams-ready") {
       const method = (!sawLoginUrl || iter < 3) ? "session" : "fresh";
       console.log(`[login] ✓ teams-ready (method=${method}, ${iter} iterations)`);
-      if (keepOpen) return { ok: true, method, detail: "teams-ready", page, ctx };
+      if (keepOpen) return done(true, method, "teams-ready", { page, ctx });
       await ctx.close();
-      return { ok: true, method, detail: "teams-ready" };
+      return done(true, method, "teams-ready");
     }
 
     // ── timeout check ──
@@ -208,7 +286,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
       if (state.startsWith("mfa")) {
         await notify(`⌛ **Teams login: no MFA approval in time** — attempt gave up in state "${state}" after ${Math.round((Date.now() - started) / 60_000)} min. The daemon retries shortly; approve the **next** push when it arrives.`, shot).catch(() => {});
       }
-      return { ok: false, method: "fresh", detail: `login timed out in state "${state}" after ${Math.round((Date.now() - started) / 1000)}s` };
+      return done(false, "fresh", `login timed out in state "${state}" after ${Math.round((Date.now() - started) / 1000)}s`);
     }
 
     // ── handle state ──
@@ -218,11 +296,11 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
         break;
       case "email":
         if (email) await handleEmail(page, email);
-        else { await ctx.close(); return { ok: false, method: "fresh", detail: "no email configured" }; }
+        else { await ctx.close(); return done(false, "fresh", "no email configured"); }
         break;
       case "password":
         if (password) await handlePassword(page, password);
-        else { await ctx.close(); return { ok: false, method: "fresh", detail: "no password configured" }; }
+        else { await ctx.close(); return done(false, "fresh", "no password configured"); }
         break;
       case "account-picker":
         await handleAccountPicker(page, email);
@@ -233,6 +311,15 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
       case "mfa-chooser":
         await handleMfaChooser(page, totpSecret, mfaPushNotified);
         break;
+      case "mfa-denied": {
+        const sent = await handleMfaDenied(page, mfaPushNotified, deniedResends);
+        if (!sent) { // denied again after our one resend — stop pinging the human
+          await notify(`🚫 login #${attemptNo}: MFA push denied twice — giving up this attempt (the daemon retries later).`).catch(() => {});
+          await ctx.close().catch(() => {});
+          return done(false, "fresh", "mfa-denied-twice");
+        }
+        break;
+      }
       case "mfa-totp":
         await handleMfaTotp(page, totpSecret, mfaPushNotified); // same once-only ping guard
         break;
@@ -250,7 +337,7 @@ export async function teamsLogin(opts: { fresh?: boolean; keepOpen?: boolean; ho
         break;
       case "sso-login":
         if (email && password) await handleSsoLogin(page, email, password);
-        else { await ctx.close(); return { ok: false, method: "fresh", detail: "SSO login page but no credentials configured" }; }
+        else { await ctx.close(); return done(false, "fresh", "SSO login page but no credentials configured"); }
         break;
       case "auth-failure":
         await handleAuthFailure(page, email, password);

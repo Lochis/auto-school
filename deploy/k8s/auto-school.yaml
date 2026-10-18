@@ -62,7 +62,7 @@ spec:
   storageClassName: longhorn
   resources:
     requests:
-      storage: 40Gi # expanded on the live PVC 2026-09 (attic cleanup) — keep in sync
+      storage: 60Gi # live PVC capacity 2026-10 (apply fails if the request is below status.capacity) — keep in sync
 ---
 
 ---
@@ -121,11 +121,13 @@ spec:
             httpGet: { path: /healthz, port: ctrl } # daemon is the only real failure
             initialDelaySeconds: 30
             periodSeconds: 30
-            failureThreshold: 3
+            timeoutSeconds: 5 # default 1s killed the pod during busy bursts (boot index sweep / Playwright MFA waits)
+            failureThreshold: 5 # ~2.5 min of pressure before a restart — an MFA approval window must never be SIGKILLed
           readinessProbe:
             httpGet: { path: /healthz, port: ctrl }
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             requests: { cpu: 500m, memory: 1Gi }
             limits: { cpu: "4", memory: 4Gi } # headroom for Chromium + ffmpeg bursts (was 2 — cgroup throttling choppy’d audio in 42% of periods)
@@ -182,6 +184,7 @@ spec:
           persistentVolumeClaim: { claimName: auto-school-data }
         - name: shm
           emptyDir: { medium: Memory, sizeLimit: 1Gi }
+      terminationGracePeriodSeconds: 120 # SIGTERM consolidation of a long class needs more than the 30s default
 ---
 apiVersion: v1
 kind: Service

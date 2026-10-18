@@ -29,9 +29,14 @@ const TEXTUAL = new Set([".md", ".txt", ".csv", ".json", ".ts", ".tsx", ".js", "
 const SHEETLY = new Set([".xlsx", ".xls"]);
 const pageNum = (f: string): number => Number(f.match(/page-(\d+)\.txt$/)?.[1] ?? 0);
 
-/** .index/<relPath>/ for a material — mirrors the tree, extension stripped per leaf. */
+/** .index/<relPath>/ for a material — mirrors the tree, leaf keeps the FULL
+ *  filename (with extension). The old extension-stripped layout made any two
+ *  same-basename materials (a.md + a.pdf, x.props + x.targets, high.js +
+ *  high.php) share ONE bundle dir: their .src markers and page-*.txt
+ *  ping-ponged — every sweep logged "source changed" and rebuilt the pair,
+ *  and the bundle could serve the wrong file's text. */
 export const indexDir = (course: string, rel: string): string =>
-  join(MATERIALS_DIR(course), ".index", rel.replace(/\.[^.]+$/, ""));
+  join(MATERIALS_DIR(course), ".index", rel);
 
 export const supportsIndex = (rel: string): boolean => {
   const e = extname(rel).toLowerCase();
@@ -101,6 +106,10 @@ export async function ensureIndex(course: string, rel: string): Promise<number> 
   const dir = indexDir(course, rel);
   const src = join(MATERIALS_DIR(course), rel);
   if (!existsSync(src)) return 0;
+  // one-time: drop the legacy extension-stripped sibling (pre-collision-fix
+  // layout) so its stale pages can't surface via the cache view
+  const legacy = join(MATERIALS_DIR(course), ".index", rel.replace(/\.[^.]+$/, ""));
+  if (legacy !== dir) rmSync(legacy, { recursive: true, force: true });
   // stale check: source changed under an existing bundle ⇒ wipe, rebuild lazily
   let fresh = false;
   try { fresh = readFileSync(join(dir, ".src"), "utf8") === bundleStamp(src); } catch { /* no marker */ }

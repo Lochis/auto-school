@@ -23,6 +23,7 @@ export type AuthState =
   | "password"           // password input
   | "account-picker"     // "Pick an account" tiles
   | "mfa-chooser"        // "sign in another way" / "I can't use my Authenticator"
+  | "mfa-denied"         // "Request denied — you denied it" (expired/rejected push; resend link present)
   | "mfa-push"           // "Approve sign in request" (Authenticator push, incl. number matching)
   | "mfa-totp"           // TOTP / verification code input
   | "kmsi"               // "Stay signed in?" prompt
@@ -90,6 +91,9 @@ export async function detectState(page: Page): Promise<AuthState> {
 
   // ── Account picker ──
   if (await visText(page, ["pick an account", "choose an account", "which account do you want"])) return "account-picker";
+
+  // ── MFA: previous push denied/expired (school SSO "Request denied" page) ──
+  if (await visText(page, ["request denied", "you denied it"])) return "mfa-denied";
 
   // ── MFA: method chooser ("sign in another way" / can't use authenticator) ──
   if (await visText(page, [...MS_MFA.cantUseAuthenticator, "additional sign in methods"])) return "mfa-chooser";
@@ -202,13 +206,20 @@ export async function handleAccountPicker(page: Page, email?: string): Promise<b
   return false;
 }
 
+/** Number-match digit on the Approve screen, e.g. "number 42" ("" when
+ *  absent). Shared by handleMfaPush's ping and the login-step instrumentation. */
+export async function readMfaNumber(page: Page): Promise<string> {
+  const numTxt = await page.locator(SEL.mfaNumberMatch).first().innerText({ timeout: 1_000 }).catch(() => "");
+  const num = numTxt.match(/\d+/)?.[0];
+  return num ? `number ${num}` : "";
+}
+
 export async function handleMfaPush(page: Page, notified: { current: boolean }): Promise<boolean> {
   const isPush = (await visText(page, ["approve sign in request", "approve a request"])) || (await vis(page, [SEL.mfaNumberMatch]));
   if (!isPush) return false;
   if (!notified.current) {
     // number matching: relay the on-screen number so it can be entered on the phone
-    const numTxt = await page.locator(SEL.mfaNumberMatch).first().innerText({ timeout: 1_000 }).catch(() => "");
-    const num = numTxt.match(/\d+/)?.[0];
+    const num = (await readMfaNumber(page)).replace("number ", "");
     console.log(`[auth] MFA push detected${num ? ` (number matching: ${num})` : ""} — waiting for approval on phone`);
     const shot = await page.screenshot({ type: "png" }).catch(() => undefined);
     await notify(
@@ -218,6 +229,28 @@ export async function handleMfaPush(page: Page, notified: { current: boolean }):
     notified.current = true;
   }
   return true; // keep polling — caller manages deadline
+}
+
+/** Denied/expired MFA push (school SSO "Request denied" page): click
+ *  "Send another request to my Microsoft Authenticator app" to fire a fresh
+ *  push, and clear the once-per-attempt ping guard so the new number-match
+ *  gets relayed to the user (with screenshot). Without this the login loop
+ *  sees an unknown state and the 20s heuristic declares a dead session
+ *  "logged in" while the browser sits on the denied page forever. */
+export async function handleMfaDenied(page: Page, notified: { current: boolean }, resends?: { current: number }): Promise<boolean> {
+  const resend = page.getByText("send another request to my microsoft authenticator app", { exact: false }).first();
+  if (!(await resend.isVisible({ timeout: 1_000 }).catch(() => false))) return false;
+  // one resend per attempt — an expire/resend loop must not ping the user forever
+  if (resends && resends.current >= 1) {
+    console.log("[auth] MFA push denied again after one resend — stopping this attempt");
+    return false;
+  }
+  console.log("[auth] MFA push denied/expired — sending another Authenticator request");
+  await resend.click({ timeout: 3_000 }).catch(() => {});
+  await page.waitForTimeout(2_000);
+  if (resends) resends.current++;
+  notified.current = false; // re-arm: the fresh push must ping again with ITS number
+  return true;
 }
 
 /** MFA method chooser ("sign in another way" / "I can't use my Authenticator").

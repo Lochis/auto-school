@@ -1,8 +1,34 @@
-import { writeFileSync } from "node:fs";
+/** Discord webhook helpers with optional file attachment (screenshot).
+ *  All sends go through a FIFO queue with a ~700ms floor between posts
+ *  (Discord rate limit ≈5 req/2s per webhook) and a drop-oldest cap so a
+ *  tight poll loop can never flood the webhook. */
 
-/** Discord webhook helpers with optional file attachment (screenshot). */
+const MIN_GAP_MS = 700;
+const MAX_PENDING = 10;
 
-export async function notify(content: string, screenshot?: Buffer): Promise<void> {
+let queue: Array<() => Promise<void>> = [];
+let draining = false;
+
+function drain(): void {
+  if (draining) return;
+  draining = true;
+  void (async () => {
+    while (queue.length) {
+      const job = queue.shift()!;
+      try { await job(); } catch { /* jobs never reject (inner try/catch) */ }
+      await new Promise((r) => setTimeout(r, MIN_GAP_MS));
+    }
+    draining = false;
+  })();
+}
+
+function enqueue(job: () => Promise<void>): void {
+  if (queue.length >= MAX_PENDING) queue.shift(); // drop-oldest under flood
+  queue.push(job);
+  drain();
+}
+
+async function send(content: string, screenshot?: Buffer): Promise<void> {
   const url = process.env.DISCORD_WEBHOOK_URL;
   if (!url) {
     console.warn(`[notify] (no webhook configured) ${content}`);
@@ -30,4 +56,8 @@ export async function notify(content: string, screenshot?: Buffer): Promise<void
   } catch (err) {
     console.warn(`[notify] webhook failed:`, err);
   }
+}
+
+export async function notify(content: string, screenshot?: Buffer): Promise<void> {
+  enqueue(() => send(content, screenshot));
 }
