@@ -15,6 +15,12 @@ const vector768 = customType<{ data: string; driverData: string }>({
   dataType() { return "vector(768)"; },
 });
 
+/** bytea column — drizzle-orm/pg-core has no native bytea type (as of 0.45.x).
+ *  node-postgres returns Buffer for bytea, and accepts Buffer params. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() { return "bytea"; },
+});
+
 const tstz = (name: string) => timestamp(name, { withTimezone: true });
 
 // ── users (stub; full design in authentik-federation.md) ──────────────────
@@ -25,6 +31,9 @@ export const users = pgTable("users", {
   email: text("email").unique("users_email_key"),
   displayName: text("display_name").notNull().default(""),
   role: text("role").notNull().default("owner"),
+  avatar: bytea("avatar"),
+  avatarMime: text("avatar_mime"),
+  avatarSyncedAt: tstz("avatar_synced_at"),
   createdAt: tstz("created_at").notNull().defaultNow(),
 }, (t) => [
   check("users_role_check", sql`${t.role} IN ('owner','member','viewer')`),

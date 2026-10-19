@@ -271,3 +271,11 @@ CREATE TABLE IF NOT EXISTS deadlines_meta (
   created_at    timestamptz NOT NULL DEFAULT now(),
   UNIQUE (owner_user_id, doc_key)
 );
+
+-- ── users.avatar (Gap 4: identity avatar cached in app DB, not provider API) ──
+-- Additive migration; IF NOT EXISTS keeps re-applying ddl.sql idempotent.
+-- Avatars are KB-scale (authentik data-URI SVGs / small uploads) so bytea is fine
+-- (bytes-out-of-PG in Gap 3 was for video/document scale).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar          bytea;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime     text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_synced_at timestamptz;
