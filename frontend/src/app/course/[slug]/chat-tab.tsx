@@ -344,7 +344,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
 
   return (
     <div className="chat-layout">
-      {preview && <DocPreview slug={preview.course} path={preview.path} onClose={() => setPreview(null)} />}
+      {preview && <DocPreview slug={preview.course} path={preview.path} linkify={linkify} onOpenPreview={openPreviewHash} onClose={() => setPreview(null)} />}
 
       {/* ── left: conversational stream ── */}
       <section className="chat-main">
@@ -467,7 +467,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
                   </div>
                 )}
                 {pinned && (
-                  <p className="muted" style={{ margin: "0 0 2px", fontSize: "0.7rem" }}>📌 pinned paste — always in the assistant's context</p>
+                  <p className="muted" style={{ margin: "0 0 2px", fontSize: "0.7rem" }}>📌 your message — always in the assistant's context</p>
                 )}
                 <MessageRow
                   m={m}

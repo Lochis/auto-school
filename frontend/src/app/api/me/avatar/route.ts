@@ -2,10 +2,9 @@ import { getAuthUser } from "@/lib/auth";
 import {
   AVATAR_MIME_ALLOWLIST,
   MAX_AVATAR_BYTES,
+  clearAvatar,
   ensureUserRow,
   getAvatarFor,
-  resetAvatarToClaim,
-  syncAvatarIfNeeded,
   upsertAvatar,
 } from "@/lib/avatar";
 import { facehashSvg } from "@/lib/facehash";
@@ -55,10 +54,10 @@ export async function GET() {
   }
 }
 
-/** Upload a user avatar (Gap 4b): multipart file field, 256KB cap (checked
- *  on the declared size and again on the decoded bytes) and the same mime
- *  allowlist as the claim sync. Marks provenance 'upload' so the lazy sync
- *  never overwrites it. Returns the new cache-buster epoch. */
+/** Upload a user avatar: multipart file field, 256KB cap (checked on the
+ *  declared size and again on the decoded bytes) and the mime allowlist.
+ *  The upload is the ONLY way bytes enter users.avatar (no provider sync,
+ *  Gap 4 rework 2026-10-18). Returns the new cache-buster epoch. */
 export async function POST(request: Request) {
   try {
     const user = await getAuthUser();
@@ -80,26 +79,24 @@ export async function POST(request: Request) {
     }
     const id = await ensureUserRow(user);
     if (!id) return notFound();
-    const syncedAt = await upsertAvatar(id, bytes, file.type, "upload");
+    const syncedAt = await upsertAvatar(id, bytes, file.type);
     return NextResponse.json({ ok: true, v: syncedAt?.getTime() ?? Date.now() });
   } catch {
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }
 
-/** Reset to the provider avatar (Gap 4b): drop the upload, flip provenance
- *  back to 'claim', then immediately re-run the sync so the provider avatar
- *  returns without waiting for /api/me's next pass (the reset nulls synced_at,
- *  so the freshness gate doesn't block it). */
+/** Remove the uploaded avatar: nulls the blob so /api/me/avatar falls back
+ *  to the FaceHash identicon (there is no provider avatar to revert to —
+ *  Gap 4 rework, 2026-10-18). Bumps synced_at for a fresh ?v=. */
 export async function DELETE() {
   try {
     const user = await getAuthUser();
     if (!user) return notFound(); // untrusted edge / not behind the outpost
     const id = await ensureUserRow(user);
     if (!id) return notFound();
-    await resetAvatarToClaim(id);
-    const syncedAt = await syncAvatarIfNeeded(user);
-    return NextResponse.json({ ok: true, v: syncedAt?.getTime() ?? Date.now() });
+    await clearAvatar(id);
+    return NextResponse.json({ ok: true, v: Date.now() });
   } catch {
     return NextResponse.json({ ok: false }, { status: 500 });
   }

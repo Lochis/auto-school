@@ -100,11 +100,14 @@ provider URL scheme, no migration. The JWT `picture` claim path (`auth.ts`) stay
 decide later; Gap 4 makes it strictly optional. LOGOUT_URL env-ification is separate and
 small.
 
-**Status: LANDED** on `feat/phase3-gap4-avatar` (19235aa storage → 7425198 serving/sync →
-3fa0cee Gap 4b extensions, both waves verifier-approved). Gap 4b additions beyond this spec:
-`users.avatar_source` provenance (`claim`/`upload` — sync never overwrites uploads),
-`POST /api/me/avatar` upload + `DELETE` provider-reset, and a zero-dep FaceHash identicon
-(`frontend/src/lib/facehash.ts`, sha256-of-uid 5×5 mirrored SVG) as the default when no avatar
-exists. Deploy follow-ups: run the new ddl ALTERs (`avatar`, `avatar_mime`, `avatar_synced_at`,
-`avatar_source`) on prod; delete `AUTHENTIK_API_TOKEN` from the `auto-school-env` secret and
-revoke `svc-autoschool-avatar` in authentik.
+**Status: LANDED, then REWORKED** on `feat/phase3-gap4-avatar` (merged to `main`):
+19235aa storage → 7425198 serving/sync → 3fa0cee Gap 4b extensions. **Rework (owner decision,
+2026-10-18): the provider-picture sync was removed entirely** — the JWT `picture` claim is no
+longer consumed anywhere (`auth.ts` parsing deleted), `avatar_source` provenance and the
+7-day sync gate are gone, and `avatar_synced_at` survives only as a write-timestamp for the
+`?v=` cache-buster. Final model: avatar = **user upload or FaceHash identicon** (sha256-of-uid,
+`frontend/src/lib/facehash.ts`); `DELETE /api/me/avatar` now means "remove upload → FaceHash".
+`ensureUserRow` (seed-row claim + JIT) stays — identity infrastructure Phase 1 builds on.
+DB note: prod briefly had `users.avatar_source`; dropped 2026-10-18. Deploy follow-ups: ddl
+ALTERs applied to prod 2026-10-18; `AUTHENTIK_API_TOKEN` never existed in `auto-school-env`;
+the `svc-autoschool-avatar` token was never minted in authentik — nothing to revoke.

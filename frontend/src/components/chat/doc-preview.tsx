@@ -7,7 +7,16 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowUpRightIcon, XMarkIcon } from "@heroicons/react/24/outline";
 
-export default function DocPreview({ slug, path, onClose }: { slug: string; path: string; onClose: () => void }) {
+export default function DocPreview({ slug, path, onClose, linkify, onOpenPreview }: {
+  slug: string;
+  path: string;
+  onClose: () => void;
+  /** chat linkifier — turns [[path]] citations and model-drifted
+   *  [label](#doc:…) markdown into proper clickable preview links */
+  linkify?: (md: string) => string;
+  /** "#doc:<encoded course/path>" click handler (nested doc navigation) */
+  onOpenPreview?: (hash: string) => void;
+}) {
   const [text, setText] = useState<string | null>(null);
   const [twin, setTwin] = useState<string | null>(null); // docx→pdf twin, if converted
   const ext = path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
@@ -67,7 +76,18 @@ export default function DocPreview({ slug, path, onClose }: { slug: string; path
             <div className="notes" style={{ fontSize: 14 }}>
               {ext === "docx" && twin === null ? <p className="muted">checking for PDF twin…</p> : null}
               {text === null && !(ext === "docx" && twin === null) ? <p className="muted">extracting text…</p> : null}
-              {text !== null ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown> : null}
+              {text !== null ? (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={onOpenPreview ? {
+                    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => href?.startsWith("#doc:") ? (
+                      <a href="#" onClick={(e) => { e.preventDefault(); onOpenPreview(href); }} className="chat-cite">{children} 👁</a>
+                    ) : (
+                      <a href={href} target="_blank" rel="noreferrer">{children}</a>
+                    ),
+                  } : undefined}
+                >{linkify ? linkify(text) : text}</ReactMarkdown>
+              ) : null}
             </div>
           )}
         </div>

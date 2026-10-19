@@ -35,8 +35,8 @@ interface AvatarMsg {
 }
 
 /** Profile — identity as seen by the Authentik edge (Phase 0). Read-only
- *  except the avatar (Gap 4b: upload + revert-to-provider); name/password
- *  changes happen in authentik, not here. */
+ *  except the avatar (upload / remove — Gap 4); name/password changes
+ *  happen in authentik, not here. */
 export default function ProfilePage() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -94,15 +94,15 @@ export default function ProfilePage() {
     }
   };
 
-  const resetAvatar = async () => {
+  const removeAvatar = async () => {
     setBusy(true);
     try {
       const r = await fetch("/api/me/avatar", { method: "DELETE" });
-      if (!r.ok) return flash({ kind: "err", text: "Reset failed — try again." });
+      if (!r.ok) return flash({ kind: "err", text: "Removal failed — try again." });
       await refreshMe();
-      flash({ kind: "ok", text: "Using provider avatar." });
+      flash({ kind: "ok", text: "Avatar removed — using the default identicon." });
     } catch {
-      flash({ kind: "err", text: "Reset failed — try again." });
+      flash({ kind: "err", text: "Removal failed — try again." });
     } finally {
       setBusy(false);
     }
@@ -156,11 +156,11 @@ export default function ProfilePage() {
             <div className="profile-avatar-actions">
               <GhostButton
                 icon={<ArrowPathIcon className="heroicon" />}
-                onClick={() => void resetAvatar()}
+                onClick={() => void removeAvatar()}
                 disabled={busy}
-                title="Drop any uploaded avatar and re-sync from the identity provider"
+                title="Remove the uploaded avatar and use the default FaceHash identicon"
               >
-                Use provider avatar
+                Remove avatar
               </GhostButton>
               {msg && <span className={`profile-avatar-msg ${msg.kind}`}>{msg.text}</span>}
             </div>

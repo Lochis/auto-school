@@ -272,13 +272,12 @@ CREATE TABLE IF NOT EXISTS deadlines_meta (
   UNIQUE (owner_user_id, doc_key)
 );
 
--- ── users.avatar (Gap 4: identity avatar cached in app DB, not provider API) ──
+-- ── users.avatar (Gap 4: avatar cached in app DB — upload or FaceHash, no provider sync) ──
 -- Additive migration; IF NOT EXISTS keeps re-applying ddl.sql idempotent.
--- Avatars are KB-scale (authentik data-URI SVGs / small uploads) so bytea is fine
--- (bytes-out-of-PG in Gap 3 was for video/document scale).
+-- Avatars are KB-scale (small uploads) so bytea is fine (bytes-out-of-PG in
+-- Gap 3 was for video/document scale). avatar_synced_at is a write-timestamp
+-- for cache-busting only. (avatar_source provenance existed briefly in the
+-- Gap 4b provider-sync design; removed with it — dropped 2026-10-18.)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar          bytea;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime     text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_synced_at timestamptz;
--- Gap 4b provenance: 'claim' = synced from the provider JWT picture claim;
--- 'upload' = user-set via POST /api/me/avatar; the lazy sync never overwrites 'upload'.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_source   text NOT NULL DEFAULT 'claim';

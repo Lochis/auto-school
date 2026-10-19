@@ -1,23 +1,27 @@
-/** Avatar lazy-sync + hardened claim resolution — Gap 4
+/** Avatar helpers — Gap 4, post-rework (2026-10-18)
  *  (docs/planning/personal-not-commercial-phase3-gaps.md §Gap 4).
  *
- *  The DB (users.avatar, via src/db/avatar.ts) is the source of truth for
- *  serving; the JWT `picture` claim is only a *sync source*, consumed
- *  server-side by /api/me. Writes happen there — at most once per
- *  AVATAR_SYNC_INTERVAL_MS per user — never inside getAuthUser().
+ *  The DB (users.avatar, via src/db/avatar.ts) holds the ONLY avatar state:
+ *  a user upload, or nothing — in which case /api/me/avatar serves the
+ *  FaceHash identicon. There is NO provider sync: the JWT picture-claim
+ *  path was removed by owner decision. `avatar_synced_at` survives purely
+ *  as a write-timestamp for cache-busting (?v=).
  *
- *  Nothing here throws: DB-down or a bad picture degrades to
- *  avatarUrl: undefined (UI initials), and /api/me still 200s.
+ *  ensureUserRow stays: it is identity infrastructure (claims the pre-seeded
+ *  row on first login / JIT-provisions new users, per
+ *  docs/planning/authentik-federation.md §5) that Phase 1 will build on.
+ *
+ *  Nothing here throws: DB-down degrades to a plain /api/me/avatar URL
+ *  (FaceHash), and /api/me still 200s.
  *
  *  Connection: shared Pool from src/db/pg.ts (same import as lib/db.ts). */
 import type { AuthUser } from "./auth";
 import { getPool } from "../../../src/db/pg.ts";
 import {
   MAX_AVATAR_BYTES,
+  clearAvatar,
   getAvatar,
   getUserIdBySub,
-  markAvatarSynced,
-  resetAvatarToClaim,
   upsertAvatar,
 } from "../../../src/db/avatar.ts";
 
@@ -25,15 +29,10 @@ import {
 export {
   MAX_AVATAR_BYTES as AVATAR_MAX_BYTES,
   MAX_AVATAR_BYTES,
-  resetAvatarToClaim,
+  clearAvatar,
   upsertAvatar,
 };
 
-/** Re-sync from the picture claim at most once a week (mirrors the 7d
- *  private cache on /api/me/avatar). */
-export const AVATAR_SYNC_INTERVAL_MS = 7 * 24 * 3600 * 1000;
-/** A hostile `picture` URL must not hang the /api/me request. */
-export const AVATAR_FETCH_TIMEOUT_MS = 10_000;
 /** Stored-XSS surface control: only these mimes may enter users.avatar. */
 export const AVATAR_MIME_ALLOWLIST = [
   "image/svg+xml",
@@ -43,69 +42,12 @@ export const AVATAR_MIME_ALLOWLIST = [
   "image/webp",
 ];
 
-/** Hardened claim → bytes: decode a data URI or fetch an http(s) URL under
- *  the size cap (enforced on the wire, not just via Content-Length), the
- *  mime allowlist, a fetch timeout, and redirect: "manual". Never throws —
- *  any failure returns null and the caller degrades to initials. */
-export async function resolveAvatarBytes(
-  picture: string | undefined,
-): Promise<{ bytes: Buffer; mime: string } | null> {
-  if (!picture) return null;
-  try {
-    // data URI (authentik's generated initials avatar)
-    const m = /^data:(image\/[\w.+-]+);base64,([\s\S]*)$/.exec(picture);
-    if (m) {
-      if (!AVATAR_MIME_ALLOWLIST.includes(m[1])) return null;
-      // cap applies to the *decoded* size: bound the base64 before decoding
-      if (m[2].length > (MAX_AVATAR_BYTES * 4) / 3 + 4) return null;
-      const buf = Buffer.from(m[2], "base64");
-      if (buf.length > MAX_AVATAR_BYTES) return null;
-      return { bytes: buf, mime: m[1] };
-    }
-
-    // http(s) URL (gravatar / custom avatar attribute)
-    if (/^https?:\/\//i.test(picture)) {
-      const res = await fetch(picture, {
-        cache: "no-store",
-        signal: AbortSignal.timeout(AVATAR_FETCH_TIMEOUT_MS),
-        redirect: "manual", // no bouncing a "picture" elsewhere
-      });
-      if (!res.ok || !res.body) return null;
-      const mime = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-      if (!AVATAR_MIME_ALLOWLIST.includes(mime)) return null;
-      // cheap early reject when the header is honest; the count below is
-      // the real cap — never trust Content-Length alone
-      const len = Number(res.headers.get("content-length"));
-      if (Number.isFinite(len) && len > MAX_AVATAR_BYTES) return null;
-      const reader = res.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > MAX_AVATAR_BYTES) {
-          await reader.cancel().catch(() => {});
-          return null;
-        }
-        chunks.push(value);
-      }
-      const bytes = Buffer.concat(chunks);
-      if (bytes.length > MAX_AVATAR_BYTES) return null;
-      return { bytes, mime };
-    }
-    return null;
-  } catch {
-    return null; // timeout / bad base64 / network failure
-  }
-}
-
-/** Gap 4 claim/JIT step: claim the pre-seeded identity row on first login
+/** Identity claim/JIT step: claim the pre-seeded identity row on first login
  *  (authentik_sub is NULL until then), JIT-provision rows for other users,
  *  then resolve the row id (idempotent, per authentik-federation.md §5).
  *  May throw on DB failure — callers wrap; null when the row can't be
- *  resolved. Shared by syncAvatarIfNeeded and the /api/me/avatar POST/DELETE
- *  handlers (Gap 4b) so the upload path never duplicates the SQL. */
+ *  resolved. Shared by /api/me and the /api/me/avatar POST/DELETE handlers
+ *  so no path duplicates the SQL. */
 export async function ensureUserRow(user: AuthUser): Promise<string | null> {
   const pool = getPool();
   await pool.query(
@@ -122,39 +64,22 @@ export async function ensureUserRow(user: AuthUser): Promise<string | null> {
   return getUserIdBySub(user.uid);
 }
 
-/** Lazy avatar sync — called only from /api/me (and the Gap 4b reset, which
- *  leaves the row stale so this re-fetches). Claims the identity row, then
- *  serves from DB unless avatar_synced_at is missing or older than 7 days,
- *  in which case it re-syncs from the picture claim. A user-set upload
- *  (avatar_source = 'upload', Gap 4b) always wins — the claim sync never
- *  overwrites it. A missing/broken claim still bumps synced_at (marked
- *  "checked") so it isn't retried every page load. Returns the effective
- *  synced_at, or null on any failure. Never throws. */
-export async function syncAvatarIfNeeded(user: AuthUser): Promise<Date | null> {
+/** Resolve a sub → user id → avatar write-timestamp, for /api/me's ?v=
+ *  cache-buster. Also runs the idempotent claim/JIT first (the only write —
+ *  at most once per user ever). Returns the epoch ms or null; never throws. */
+export async function avatarEpoch(user: AuthUser): Promise<number | null> {
   try {
     const id = await ensureUserRow(user);
     if (!id) return null;
-
-    // Freshness gate: at most one write per 7 days.
     const row = await getAvatar(id);
-    if (row.avatarSyncedAt && Date.now() - row.avatarSyncedAt.getTime() < AVATAR_SYNC_INTERVAL_MS) {
-      return row.avatarSyncedAt;
-    }
-    // Gap 4b: uploads win — skip the claim fetch/upsert entirely, keep the
-    // stable synced_at so /api/me keeps emitting the same ?v=.
-    if (row.avatarSource === "upload" && row.avatarSyncedAt) return row.avatarSyncedAt;
-
-    const resolved = await resolveAvatarBytes(user.avatarUrl);
-    if (resolved) return (await upsertAvatar(id, resolved.bytes, resolved.mime)) ?? new Date();
-    await markAvatarSynced(id);
-    return new Date();
+    return row.avatarSyncedAt?.getTime() ?? null;
   } catch {
-    return null; // DB down / claim-row collision — /api/me must still 200
+    return null; // DB down — plain /api/me/avatar (FaceHash) is fine
   }
 }
 
-/** Serving path for /api/me/avatar: resolve sub → user id → cached bytes.
- *  Read-only; null when the user/avatar row is unknown or empty. */
+/** Serving path for /api/me/avatar: resolve sub → user id → stored bytes.
+ *  Read-only; null when the user/avatar row is unknown or empty (→ FaceHash). */
 export async function getAvatarFor(uid: string): Promise<{ bytes: Buffer; mime: string } | null> {
   const id = await getUserIdBySub(uid);
   if (!id) return null;

@@ -59,12 +59,12 @@ const CHAT_STEPS = Math.max(4, Number(process.env.CHAT_STEPS ?? 16) || 16);
 const CHAT_STEPS_GLOBAL = Math.max(4, Number(process.env.CHAT_STEPS_GLOBAL ?? CHAT_STEPS + 4) || CHAT_STEPS + 4);
 // chat context window: a CHAR budget over recent history instead of a fixed
 // message count — long chats and jumbo pastes don't silently fall out just
-// because "16 messages" ran out. Jumbo user pastes (>CHAT_JUMBO_CHARS) are
-// pinned back into the convo even outside the budget, until CHAT_PIN_CHARS
-// is exhausted (most recent first) — the quiz-paste case: always in context.
+// because "16 messages" ran out. USER messages are pinned back into the
+// convo even outside the budget (collectively, until CHAT_PIN_CHARS is
+// exhausted, most recent first) — the quiz-stems case: the user's own words
+// are always in context; fat regenerable assistant replies are what trims.
 const CHAT_CTX_CHARS = Math.max(8_000, Number(process.env.CHAT_CTX_CHARS ?? 60_000) || 60_000);
-const CHAT_PIN_CHARS = Math.max(0, Number(process.env.CHAT_PIN_CHARS ?? 40_000) || 40_000);
-const CHAT_JUMBO_CHARS = Math.max(1_000, Number(process.env.CHAT_JUMBO_CHARS ?? 6_000) || 6_000);
+const CHAT_PIN_CHARS = Math.max(0, Number(process.env.CHAT_PIN_CHARS ?? 60_000) || 60_000);
 
 /** Graph tokens live next to the browser profile — cheap HTTP polling is only
  *  possible after the one-time device-code approval (POST /auth/graph). */
@@ -518,16 +518,19 @@ function toolPhrase(tc: ToolCall): string {
 }
 
 /** Context-window plan for one chat turn: which history messages the model
- *  sees. Walks BACKWARD within a char budget (newest message always kept —
- *  the incoming question must never be evicted), opens on a user turn (never
- *  an orphaned assistant reply), then pins jumbo user pastes from above the
- *  window back in (most recent first, pin budget). The client renders this as
- *  a context divider; the model gets an honesty note about what's missing. */
+ *  sees. USER MESSAGES ARE NEVER EVICTED (they're the irreplaceable source
+ *  of truth — question stems, pastes — and they're small; collectively capped
+ *  by CHAT_PIN_CHARS, most recent first). The char budget governs ASSISTANT
+ *  replies instead: they're regenerable summaries, and fat ones (answer
+ *  cards, repeated final-answers) are what should trim when a chat grows.
+ *  The live window walks backward within CHAT_CTX_CHARS (newest message
+ *  always kept), opens on a user turn, then all evicted user messages are
+ *  pinned back in at their chronological position. */
 interface ChatWindow {
   msgs: { role: "user" | "assistant"; content: string }[];
   keptFrom: number; // first index of the live window (history indices)
-  pinned: number[]; // jumbo indices re-included above the window, chronological
-  dropped: number; // messages the model cannot see
+  pinned: number[]; // user-message indices re-included above the window, chronological
+  dropped: number; // ASSISTANT messages the model cannot see
 }
 function buildChatWindow(history: readonly { role: string; content: string }[]): ChatWindow {
   const n = history.length;
@@ -541,12 +544,14 @@ function buildChatWindow(history: readonly { role: string; content: string }[]):
     start = i;
   }
   while (start < n && history[start]!.role === "assistant") start++; // pair alignment
+  // pin EVERY evicted user message (jumbo pastes and small incremental stems
+  // alike), most recent first, until the pin budget is exhausted
   const pinned: number[] = [];
   let pinUsed = 0;
   for (let i = start - 1; i >= 0; i--) {
     if (history[i]!.role !== "user") continue;
     const len = history[i]!.content.length;
-    if (len <= CHAT_JUMBO_CHARS || pinUsed + len > CHAT_PIN_CHARS) continue;
+    if (pinUsed + len > CHAT_PIN_CHARS) continue;
     pinned.push(i);
     pinUsed += len;
   }
@@ -554,17 +559,18 @@ function buildChatWindow(history: readonly { role: string; content: string }[]):
   const pinnedSet = new Set(pinned);
   const msgs = history
     .map((m, i) => ({ m, i }))
-    .filter(({ i }) => i >= start || pinnedSet.has(i))
+    .filter(({ m, i }) => i >= start || pinnedSet.has(i))
     .map(({ m }) => ({ role: m.role as "user" | "assistant", content: m.content }));
-  return { msgs, keptFrom: start, pinned, dropped: start - pinned.length };
+  const droppedAssist = history.reduce((acc, m, i) => acc + (i < start && m.role === "assistant" && !pinnedSet.has(i) ? 1 : 0), 0);
+  return { msgs, keptFrom: start, pinned, dropped: droppedAssist };
 }
 
 /** Honesty note appended to the system prompt when the window cuts history:
  *  the model must say it can't see something rather than guess at it. */
 function contextNote(win: ChatWindow): string {
   if (win.dropped <= 0) return "";
-  const pin = win.pinned.length ? `, except ${win.pinned.length} large paste(s) from earlier, which ARE included at their original position` : "";
-  return `\nCONTEXT WINDOW: ${win.dropped} earlier message(s) are omitted from this conversation for context budget${pin}. If the user references something you cannot see, say so — never guess its contents.`;
+  const pin = win.pinned.length ? " ALL of the user's own messages (questions, pastes) are included at their original positions" : "";
+  return `\nCONTEXT WINDOW: ${win.dropped} earlier assistant answer(s) are omitted from this conversation for context budget —${pin}. Your read_conversation tool can show ANY of them verbatim (including every user message). If the user references something you cannot see, read it or say so — never guess its contents.`;
 }
 
 /** Discovery shortcut for follow-up questions: harvest [[path]] citations
@@ -2665,7 +2671,7 @@ For "what's due / what should I do next" questions, call list_deadlines FIRST �
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
 Start broad: list_deadlines, week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
 Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date' (e.g. "the git workshop").
-Read enough of the actual materials to answer concretely — never guess what a file contains. CITATIONS: every file you reference in your answer MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link. Cite each file at first mention; never invent or shorten paths. NEVER write document links as markdown like [label](#doc:…) — the app renders citations itself; write them ONLY as [[path]]. If nothing exists for a week/course, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
+Read enough of the actual materials to answer concretely — never guess what a file contains. CITATIONS: every file you reference in your answer MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link. Cite each file at first mention; never invent or shorten paths. NEVER write document links as markdown like [label](#doc:…) — the app renders citations itself; write them ONLY as [[path]]. If nothing exists for a week/course, say so honestly. TRANSCRIPTION: when asked to quote, repeat or list something from earlier in the conversation, call read_conversation (or scan your context) and quote directly — never claim you 'no longer have access' to earlier messages: they are stored and readable via read_conversation even if a CONTEXT WINDOW note says some were omitted.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
             const convo: ChatMsg[] = [
               { role: "system", content: systemPrompt + citationReuseLine(history) },
@@ -2732,7 +2738,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar for THIS course (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
-Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date'. CITATIONS: every material file you reference MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) — the exact filename alone is fine when it is unambiguous. Cite each file at first mention; never invent or shorten paths. NEVER write document links as markdown like [label](#doc:…) — the app renders citations itself; write them ONLY as [[path]]. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
+Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date'. CITATIONS: every material file you reference MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) — the exact filename alone is fine when it is unambiguous. Cite each file at first mention; never invent or shorten paths. NEVER write document links as markdown like [label](#doc:…) — the app renders citations itself; write them ONLY as [[path]]. If tools show nothing relevant, say so honestly. TRANSCRIPTION: when asked to quote, repeat or list something from earlier in the conversation, call read_conversation (or scan your context) and quote directly — never claim you 'no longer have access' to earlier messages: they are stored and readable via read_conversation even if a CONTEXT WINDOW note says some were omitted.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 
             const convo: ChatMsg[] = [

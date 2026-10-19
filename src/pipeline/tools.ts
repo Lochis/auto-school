@@ -235,6 +235,21 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "read_conversation",
+      description: "Read THIS chat's own stored history verbatim — every user and assistant message, oldest first, with message numbers. Use it whenever you're asked to quote, repeat, or list something said earlier in the conversation, and BEFORE EVER claiming you 'no longer have access' to earlier messages: the full history is stored and readable even when the CONTEXT WINDOW note says parts were omitted from your working context. The message you are currently answering may not be saved yet — everything before it is.",
+      parameters: {
+        type: "object",
+        properties: {
+          from: { type: "number", description: "0-based message number to start from (for paging past a truncation)" },
+          role: { type: "string", description: "filter: user | assistant" },
+          needle: { type: "string", description: "only return messages whose text contains this (case-insensitive)" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "semantic_search",
       description: "Semantic (meaning-based) search across ALL course materials, notes, transcripts and timelines via vector similarity. Finds content keyword search misses (different phrasing). Returns kind, course, file/session, page and up to ~1200 chars of source text with similarity score — enough for pinpoint facts; read_document/read_notes for synthesis, full sections or trimmed hits.",
       parameters: {
@@ -484,6 +499,40 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
         blocks.push(lines.join("\n"));
       }
       return `Week ${week} across all courses:\n\n${blocks.join("\n\n")}`;
+    }
+    case "read_conversation": {
+      // this chat's own stored history, verbatim — the mechanical cure for
+      // context-anchoring: the model can pull what it actually said/was told
+      // instead of trusting its self-summarized claims about what it can see
+      try {
+        const { chatList } = await import("../db/state.ts");
+        const h = await chatList(slug ?? "global");
+        if (h.length === 0) return "conversation history is empty (or no database configured)";
+        const from = Math.max(0, Math.min(Number(args.from ?? 0) || 0, h.length - 1));
+        const role = args.role === "user" || args.role === "assistant" ? String(args.role) : undefined;
+        const needle = args.needle ? String(args.needle).toLowerCase() : undefined;
+        let out = "";
+        let lastShown = -1;
+        let matched = 0;
+        for (let i = from; i < h.length; i++) {
+          const m = h[i]!;
+          if (role && m.role !== role) continue;
+          if (needle && !m.content.toLowerCase().includes(needle)) continue;
+          matched++;
+          const line = `[${i}] ${m.role}: ${m.content}\n`;
+          if (out.length + line.length > 24_000) break;
+          out += line;
+          lastShown = i;
+        }
+        const flt = `${role ? `, filtered to role=${role}` : ""}${needle ? `, containing "${String(args.needle)}"` : ""}`;
+        if (matched === 0) return `no messages match${flt} from message ${from} onward (history has ${h.length})`;
+        const more = lastShown >= 0 && lastShown < h.length - 1
+          ? `\n…truncated — call again with from=${lastShown + 1} to continue`
+          : "";
+        return `Conversation history, ${h.length} message(s) stored, oldest first (numbers are message indices${flt}):\n\n${out}${more}`;
+      } catch (e) {
+        return `read_conversation failed: ${String(e).slice(0, 120)}`;
+      }
     }
     case "semantic_search": {
       const query = String(args.query ?? "").trim();
