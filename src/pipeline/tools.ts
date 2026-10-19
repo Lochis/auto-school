@@ -21,8 +21,49 @@ function chunkHitLines(hits: ChunkHit[]): string[] {
   return hits.map((h) => {
     const where = h.stem ? `session ${h.stem}` : h.rel_path;
     const loc = h.kind === "material" ? ` p${h.page}` : "";
-    return `- [${h.kind}] ${h.slug} · ${where}${loc} (score ${h.score.toFixed(2)}): …${h.preview.replace(/\s+/g, " ").trim()}…`;
+    // preview caps at 1200 chars (reader.ts) — hitting the cap means the chunk
+    // continues; flag it so the model knows the text is partial, not whole
+    const trimmed = h.preview.length >= 1200 ? " [trimmed — chunk continues]" : "";
+    return `- [${h.kind}] ${h.slug} · ${where}${loc} (score ${h.score.toFixed(2)}): …${h.preview.replace(/\s+/g, " ").trim()}…${trimmed}`;
   });
+}
+
+/** Near-duplicate removal for search hits. Similarity search (HNSW, trgm)
+ *  loves returning adjacent chunks of the same passage — near-identical text,
+ *  wasted tokens, no new facts. Safe by construction:
+ *  • callers over-fetch (3×k) so this trims a fatter list down to k DISTINCT
+ *    hits — freed slots get recycled, never returned as fewer results
+ *  • podium: the top 3 by score are immune — the strongest matches survive
+ *  • exact-answer guard: any hit literally containing the query stays
+ *  • drop criterion is containment, not sameness: a hit is dropped only when
+ *    ≥90% of its tokens are already covered by KEPT hits — by definition it
+ *    adds nothing the model isn't already seeing. */
+function dedupHits(hitsIn: ChunkHit[], k: number, query: string): ChunkHit[] {
+  if (hitsIn.length <= k) return hitsIn;
+  // exact-answer hits lead — a literal match must never be starved by the
+  // k-budget no matter where it ranked (stable: relative order otherwise kept)
+  const q = query.toLowerCase().trim();
+  const lit = (h: ChunkHit): boolean => q.length >= 4 && h.preview.toLowerCase().includes(q);
+  const hits = q.length >= 4 ? [...hitsIn.filter(lit), ...hitsIn.filter((h) => !lit(h))] : hitsIn;
+  const tokens = (s: string): Set<string> =>
+    new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3));
+  const kept: ChunkHit[] = [];
+  const union = new Set<string>();
+  for (let i = 0; i < hits.length && kept.length < k; i++) {
+    const h = hits[i]!;
+    const immune = i < Math.min(3, k) || lit(h);
+    if (!immune) {
+      const toks = tokens(h.preview);
+      if (toks.size > 0) {
+        let covered = 0;
+        for (const t of toks) if (union.has(t)) covered++;
+        if (covered / toks.size >= 0.9) continue; // redundant with kept hits — recycle the slot
+      }
+    }
+    kept.push(h);
+    for (const t of tokens(h.preview)) union.add(t);
+  }
+  return kept;
 }
 
 /** Every known course (union of recordings/, notes/ and materials roots). */
@@ -195,7 +236,7 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "semantic_search",
-      description: "Semantic (meaning-based) search across ALL course materials, notes, transcripts and timelines via vector similarity. Finds content keyword search misses (different phrasing). Returns kind, course, file/session, page and a snippet with similarity score; read_document/read_notes can then fetch the full text.",
+      description: "Semantic (meaning-based) search across ALL course materials, notes, transcripts and timelines via vector similarity. Finds content keyword search misses (different phrasing). Returns kind, course, file/session, page and up to ~1200 chars of source text with similarity score — enough for pinpoint facts; read_document/read_notes for synthesis, full sections or trimmed hits.",
       parameters: {
         type: "object",
         properties: {
@@ -458,9 +499,9 @@ export async function execTool(name: string, args: Record<string, unknown>, fall
       if (!key) return "semantic search unavailable — no Gemini API key (settings or GEMINI_API_KEY)";
       try {
         const embedding = await embedQuery(query, { apiKey: key });
-        const hits = await vectorSearch({ embedding, course: slug, k });
+        const hits = dedupHits(await vectorSearch({ embedding, course: slug, k: Math.min(k * 3, 50) }), k, query);
         return hits.length
-          ? `Semantic matches for "${query}" (kind · course · source · page, most similar first; follow up with read_document/read_notes for full text). CITE material hits inline as [[<full path from source>]] — the path shown includes its folders; cite it verbatim:
+          ? `Semantic matches for "${query}" (kind · course · source · page, most similar first). Each hit includes up to ~1200 chars of source text — usually enough for pinpoint facts. For synthesis across sources, full sections, or hits marked [trimmed], still read_document/read_notes. CITE material hits inline as [[<full path from source>]] — the path shown includes its folders; cite it verbatim:
 ${chunkHitLines(hits).join("\n")}`
           : `no semantic matches for "${query}" — the embedding index may be empty; try search_transcripts (keyword) or list_materials`;
       } catch (e) { return `semantic search failed: ${String(e).slice(0, 150)}`; }
@@ -645,7 +686,7 @@ async function courseTool(name: string, args: Record<string, unknown>, slug: str
           const key = geminiApiKey();
           if (key) {
             const embedding = await embedQuery(String(args.query ?? ""), { apiKey: key });
-            const hits = await vectorSearch({ embedding, kind: "timeline", course: slug, k: 8 });
+            const hits = dedupHits(await vectorSearch({ embedding, kind: "timeline", course: slug, k: 24 }), 8, String(args.query ?? ""));
             if (hits.length) {
               return `Transcript/timeline matches for "${args.query}" (semantic, most similar first):
 ${chunkHitLines(hits).join("\n")}`;
@@ -658,7 +699,7 @@ ${chunkHitLines(hits).join("\n")}`;
             keywordSearch({ query, kind: "transcript", course: slug, k: 8 }),
             keywordSearch({ query, kind: "timeline", course: slug, k: 8 }),
           ]);
-          const hits = [...tr, ...tl].sort((a, b) => b.score - a.score).slice(0, 8);
+          const hits = dedupHits([...tr, ...tl].sort((a, b) => b.score - a.score).slice(0, 24), 8, query);
           if (hits.length) return `Transcript/timeline matches for "${args.query}" (keyword, most relevant first):\n${chunkHitLines(hits).join("\n")}`;
         } catch { /* DB hiccup */ }
         return `no matches for "${args.query}"`;

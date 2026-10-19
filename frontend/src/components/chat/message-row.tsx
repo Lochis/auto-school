@@ -60,9 +60,31 @@ export function makeLinkifier(byPath: Map<string, LexHit[]>, byLeaf: Map<string,
     byPath.get(raw) ?? byLeaf.get(raw) ?? tset.get(raw) ?? lset.get(raw.toLowerCase());
   const linkifySegment = (seg: string): string => {
     const lseg = seg.toLowerCase();
+    // course slugs appear as the first path segment inside #doc: hrefs —
+    // needed to strip it before byPath (paths are course-relative) can resolve
+    const courseSlugs = new Set([...byPath.values(), ...byLeaf.values()].flat().map((h) => h.course));
     let out = "";
     let i = 0;
     while (i < seg.length) {
+      // drifted citation: the model sometimes writes the RENDERED form itself —
+      // `[label](#doc:<url>)` with its own lossy encoding (spaces %20 but raw
+      // parens). Unbalanced ( in a CommonMark destination breaks link parsing,
+      // so the whole thing shows as literal text. Normalize through the same
+      // resolver as [[…]]: decode → strip course slug → canonical re-encode,
+      // or degrade to the bare label.
+      const dl = /^\[([^\]]*)\]\(#doc:([^)\s]*)\)/.exec(seg.slice(i));
+      if (dl) {
+        const label = dl[1]!.trim();
+        let path = dl[2]!;
+        try { path = decodeURIComponent(path); } catch { /* wasn't encoded — use raw */ }
+        const slash = path.indexOf("/");
+        const rel = slash > 0 && courseSlugs.has(path.slice(0, slash)) ? path.slice(slash + 1) : path;
+        const leaf = rel.slice(rel.lastIndexOf("/") + 1);
+        const cands = findCands(rel) ?? byLeaf.get(leaf);
+        out += cands ? linkFor(label || leaf, resolveHit(cands, seg.slice(0, i))) : (label || path);
+        i += dl[0].length;
+        continue;
+      }
       // model citation syntax [[path]] → link when it resolves; unmatched
       // ones degrade to plain text (no stray brackets)
       if (seg.startsWith("[[", i)) {

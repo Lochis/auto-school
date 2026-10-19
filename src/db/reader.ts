@@ -24,7 +24,7 @@ export interface ChunkHit {
 
 const SELECT = `
   select d.kind, c.slug, s.stem, d.rel_path, dc.page, dc.chunk_index,
-         left(dc.content, 240) as preview, $score$ as score
+         left(dc.content, 1200) as preview, $score$ as score
   from document_chunks dc
   join documents d on d.id = dc.document_id
   join courses c on c.id = d.course_id

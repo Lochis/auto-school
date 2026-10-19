@@ -509,6 +509,26 @@ function toolPhrase(tc: ToolCall): string {
   return `${tc.function.name.replace(/_/g, " ")}${arg ? ` · ${arg}` : ""}`;
 }
 
+/** Discovery shortcut for follow-up questions: harvest [[path]] citations
+ *  from recent assistant replies and hand them back in the system prompt —
+ *  similar questions skip list/search rounds and read_document the known
+ *  files directly (page text from the on-disk .index bundle; embeddings are
+ *  never involved — they only power discovery, which this replaces). */
+function citationReuseLine(history: { role: string; content: string }[]): string {
+  const paths = new Set<string>();
+  for (const m of history.slice(-16)) {
+    if (m.role !== "assistant") continue;
+    for (const c of m.content.matchAll(/\[\[([^\]]+)\]\]/g)) {
+      const p = c[1]!.trim();
+      if (p && !/^https?:/i.test(p)) paths.add(p); // web URLs aren't material paths
+      if (paths.size >= 10) break;
+    }
+  }
+  return paths.size
+    ? `\nMATERIALS ALREADY CITED in this conversation — for anything about these, skip discovery (list_materials / search) and read_document the exact path directly, or lean on your earlier answer: ${[...paths].map((p) => `[[${p}]]`).join(", ")}.`
+    : "";
+}
+
 async function streamChatLoop(
   res: ServerResponse,
   convo: ChatMsg[],
@@ -528,6 +548,11 @@ async function streamChatLoop(
   const ac = new AbortController();
   res.on("close", () => ac.abort());
   const stopped = (): boolean => res.destroyed;
+  // keepalive: SSE comment every 20s so silent stretches (slow tools, model
+  // thinking before its first content token) never trip proxy idle timeouts —
+  // undici's 300s bodyTimeout killed 5-minute chats as "request failed".
+  // ": ping" lines are ignored by SSE parsers (client only reads data: lines).
+  const beat = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* client gone */ } }, 20_000);
   let reply = "";
   let partial = ""; // text streamed by the round in progress
   let webReads = 0;
@@ -580,14 +605,17 @@ async function streamChatLoop(
   } catch (e) {
     if (stopped() || (e instanceof Error && e.name === "AbortError")) {
       // user cancelled: persist exactly the partial answer they saw
+      clearInterval(beat);
       try { res.end(); } catch { /* already closed */ }
       return partial.trim() || null;
     }
     event({ type: "error", error: `chat failed: ${String(e).slice(0, 150)}` });
+    clearInterval(beat);
     res.end();
     return null;
   }
   if (!reply) reply = partial.trim() || "(no answer — model hit the tool-step limit; try a more specific question)";
+  clearInterval(beat);
   event({ type: "done", reply });
   res.end();
   return reply;
@@ -2574,10 +2602,10 @@ For "what's due / what should I do next" questions, call list_deadlines FIRST �
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
 Start broad: list_deadlines, week_overview or list_courses, then inspect the promising documents with the course-scoped tools (they need a 'course' argument — use exact slugs from list_courses).
 Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date' (e.g. "the git workshop").
-Read enough of the actual materials to answer concretely — never guess what a file contains. CITATIONS: every file you reference in your answer MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link. Cite each file at first mention; never invent or shorten paths. If nothing exists for a week/course, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
+Read enough of the actual materials to answer concretely — never guess what a file contains. CITATIONS: every file you reference in your answer MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link. Cite each file at first mention; never invent or shorten paths. NEVER write document links as markdown like [label](#doc:…) — the app renders citations itself; write them ONLY as [[path]]. If nothing exists for a week/course, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result. Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
             const convo: ChatMsg[] = [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: systemPrompt + citationReuseLine(history) },
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
             // SSE stream: tool statuses + live answer tokens
@@ -2637,11 +2665,11 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
             const systemPrompt = `You are a study assistant for the course "${slug.replace(/_/g, " ")}".${cfg?.semesterStart ? ` Semester starts ${cfg.semesterStart}.` : ""}
 For "what's due / what should I do next" questions, call list_deadlines FIRST — it's the student's curated calendar for THIS course (items they finished are checked off and excluded — never re-suggest those).
 For "what's left / where am I on X" questions also call list_checklists — it shows per-task step progress and the student's own context notes (group members, roles, …).
-Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date'. CITATIONS: every material file you reference MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) so it becomes a clickable link — the exact filename alone is fine when it is unambiguous. Cite each file at first mention; never invent or shorten paths. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
+Use the tools to inspect materials, documents and recorded sessions before answering — never guess what a file contains. Recorded sessions may carry a display name the student gave at upload (workshops etc.) — list_sessions shows them; read_notes also accepts (part of) a name as 'date'. CITATIONS: every material file you reference MUST be cited inline as [[exact/path.pdf]] using the EXACT path shown by list_materials (keep folders + extension, e.g. [[Week 1/1.1_ Data Warehousing - Dimensional Modeling.pdf]]) — the exact filename alone is fine when it is unambiguous. Cite each file at first mention; never invent or shorten paths. NEVER write document links as markdown like [label](#doc:…) — the app renders citations itself; write them ONLY as [[path]]. If tools show nothing relevant, say so honestly.${webSearch ? "\nWEB ACCESS enabled: when the course materials genuinely don't cover the question, you may web_search the public web and web_read a result (docs, background). Always prefer course materials when they answer it; cite web sources by URL." : ""}
 FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("1. …" or "- …"), never an inline ①②③ run-on line.`;
 
             const convo: ChatMsg[] = [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: systemPrompt + citationReuseLine(history) },
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
             // SSE stream: tool statuses + live answer tokens

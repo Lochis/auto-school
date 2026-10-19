@@ -54,6 +54,14 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   };
   const [err, setErr] = useState("");
   const [status, setStatus] = useState(""); // live tool status while a streamed answer is being built
+  // gathering vs writing: streamed text that hasn't been committed by {done}
+  // is a DRAFT (the model often writes a full-looking answer, then calls more
+  // tools — that text is preface, not the answer). Drafts render dimmed under
+  // the status line; wiped prefaces become one-line "thoughts". Only {done}
+  // (or a Stop-press/cancel with partial text) writes into the message bubble
+  // — so a question always ends with exactly ONE answer, never rewrites.
+  const [draft, setDraft] = useState("");
+  const [gathered, setGathered] = useState<string[]>([]);
   const [note, setNote] = useState(""); // transient confirmations ("saved to …")
   useEffect(() => {
     if (!note) return;
@@ -149,6 +157,8 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     const dropPlaceholder = (): void => setMessages((m) => m.slice(0, -1));
     const ac = new AbortController();
     abortRef.current = ac;
+    // hoisted so the abort/cancel path can commit a partial draft
+    let draftLocal = "";
     try {
       const r = await fetch(slug ? `/api/courses/${encodeURIComponent(slug)}/chat` : "/api/chat", {
         method: "POST",
@@ -163,11 +173,14 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
         dropPlaceholder();
         return;
       }
-      // SSE: {status} tool progress → {delta} answer tokens → {done|error}
+      // SSE: {status} tool progress → {delta} draft tokens → {reset} draft was
+      // preface, archive it → {done} commits the single authoritative answer
       const reader = r.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
       let errored = false;
+      let gatheredLocal: string[] = [];
+      const sync = (): void => { setDraft(draftLocal); setGathered([...gatheredLocal]); };
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -180,17 +193,29 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           if (!line) continue;
           let ev: { type?: string; text?: string; reply?: string; error?: string };
           try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-          if (ev.type === "delta" && ev.text) patchAssistant((c) => c + ev.text!);
-          else if (ev.type === "reset") patchAssistant(() => ""); // that text was tool-preface, not the answer
+          if (ev.type === "delta" && ev.text) { draftLocal += ev.text!; sync(); }
+          else if (ev.type === "reset") { // that text was tool-preface, not the answer — archive, don't display-as-answer
+            if (draftLocal.trim()) gatheredLocal = [...gatheredLocal.slice(-4), draftLocal.trim()];
+            draftLocal = "";
+            sync();
+          }
           else if (ev.type === "status" && ev.text) setStatus(ev.text);
-          else if (ev.type === "done" && typeof ev.reply === "string") patchAssistant(() => ev.reply!); // authoritative full text
+          else if (ev.type === "done" && typeof ev.reply === "string") {
+            patchAssistant(() => ev.reply!); // authoritative full text — the one commit
+            draftLocal = ""; gatheredLocal = []; sync();
+          }
           else if (ev.type === "error") { setErr(ev.error ?? "chat failed"); errored = true; }
         }
       }
+      // stream ended without {done} (e.g. server closed early): commit what we
+      // have rather than losing it — matches the old partial-keeping behavior
+      if (!errored && draftLocal.trim()) patchAssistant(() => draftLocal.trim());
       if (errored) dropPlaceholder();
     } catch (e) {
       if (ac.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
-        // Stop pressed: keep whatever streamed; drop the bubble only if nothing landed
+        // Stop pressed: commit whatever draft had streamed, then keep the
+        // bubble only if something landed
+        if (draftLocal.trim()) patchAssistant(() => draftLocal.trim());
         setMessages((m) => (m.length > 0 && m[m.length - 1]!.role === "assistant" && !m[m.length - 1]!.content ? m.slice(0, -1) : m));
       } else {
         setErr("request failed");
@@ -200,6 +225,8 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
       abortRef.current = null;
       setBusy(false);
       setStatus("");
+      setDraft("");
+      setGathered([]);
     }
   };
 
@@ -434,6 +461,23 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
             <p className="muted" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: "0.8125rem" }}>
               <LiveDot static /> {status || `thinking (may read documents / view pages${webSearch ? " / search the web" : ""})…`}
             </p>
+          )}
+          {/* gathering layer: archived prefaces (one-liners) + the live draft,
+              both clearly NOT the answer — dimmed, below the status line.
+              Vanishes when {done} commits the real answer. */}
+          {busy && (gathered.length > 0 || draft) && (
+            <div className="muted" style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: "0.8125rem", margin: "4px 0 0 10px" }}>
+              {gathered.map((g, i) => (
+                <p key={i} style={{ margin: 0, opacity: 0.5, borderLeft: "2px solid currentColor", paddingLeft: 8, whiteSpace: "pre-wrap" }}>
+                  {g.length > 160 ? `${g.slice(0, 160)}…` : g}
+                </p>
+              ))}
+              {draft && (
+                <p style={{ margin: 0, opacity: 0.75, borderLeft: "2px solid currentColor", paddingLeft: 8, whiteSpace: "pre-wrap" }}>
+                  {draft}
+                </p>
+              )}
+            </div>
           )}
           {err && (
             <p className="badge badge-red" style={{ alignSelf: "flex-start" }}>{err}</p>
