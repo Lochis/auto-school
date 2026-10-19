@@ -62,6 +62,9 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
   // — so a question always ends with exactly ONE answer, never rewrites.
   const [draft, setDraft] = useState("");
   const [gathered, setGathered] = useState<string[]>([]);
+  // context divider info from the server: which history messages the model
+  // actually sees (token-budget window + pinned jumbo pastes). null = all in.
+  const [ctxInfo, setCtxInfo] = useState<{ keptFrom: number; pinned: number[] } | null>(null);
   const [note, setNote] = useState(""); // transient confirmations ("saved to …")
   useEffect(() => {
     if (!note) return;
@@ -84,7 +87,10 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
     const chatUrl = slug ? `/api/courses/${encodeURIComponent(slug)}/chat` : "/api/chat";
     fetch(chatUrl)
       .then((r) => r.json())
-      .then((j: { messages?: Msg[] }) => setMessages(j.messages ?? []))
+      .then((j: { messages?: Msg[]; ctx?: { keptFrom: number; pinned: number[] } }) => {
+        setMessages(j.messages ?? []);
+        setCtxInfo(j.ctx ?? null);
+      })
       .catch(() => setErr("backend unreachable"));
     if (slug) {
       reloadMaterials();
@@ -191,7 +197,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           buf = buf.slice(sep + 2);
           const line = raw.split("\n").find((l) => l.startsWith("data:"));
           if (!line) continue;
-          let ev: { type?: string; text?: string; reply?: string; error?: string };
+          let ev: { type?: string; text?: string; reply?: string; error?: string; keptFrom?: number; pinned?: number[] };
           try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
           if (ev.type === "delta" && ev.text) { draftLocal += ev.text!; sync(); }
           else if (ev.type === "reset") { // that text was tool-preface, not the answer — archive, don't display-as-answer
@@ -205,6 +211,7 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
             draftLocal = ""; gatheredLocal = []; sync();
           }
           else if (ev.type === "error") { setErr(ev.error ?? "chat failed"); errored = true; }
+          else if (ev.type === "ctx") setCtxInfo({ keptFrom: ev.keptFrom ?? 0, pinned: ev.pinned ?? [] });
         }
       }
       // stream ended without {done} (e.g. server closed early): commit what we
@@ -446,15 +453,30 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
             // streaming placeholder: invisible until its first token lands —
             // only the status line shows while the model is still exploring
             if (busy && i === messages.length - 1 && m.role === "assistant" && !m.content) return null;
+            // context zones: pinned jumbos (above the window, always seen by
+            // the model), the live window, and dimmed out-of-context history
+            const pinned = ctxInfo?.pinned.includes(i) ?? false;
+            const inCtx = !ctxInfo || i >= ctxInfo.keptFrom || pinned;
             return (
-              <MessageRow
-                key={m.at ? `${i}-${m.at}` : i}
-                m={m}
-                linkify={linkify}
-                onOpenPreview={openPreviewHash}
-                onSave={slug ? handleSave : undefined}
-                onDownload={downloadMd}
-              />
+              <div key={m.at ? `${i}-${m.at}` : i} style={inCtx ? undefined : { opacity: 0.45 }} title={inCtx ? undefined : "outside the model's context window for new replies"}>
+                {ctxInfo && i === ctxInfo.keptFrom && i > 0 && (
+                  <div className="muted" style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0", fontSize: "0.75rem" }}>
+                    <span style={{ flex: 1, height: 1, background: "currentColor", opacity: 0.25 }} />
+                    the assistant sees this and below
+                    <span style={{ flex: 1, height: 1, background: "currentColor", opacity: 0.25 }} />
+                  </div>
+                )}
+                {pinned && (
+                  <p className="muted" style={{ margin: "0 0 2px", fontSize: "0.7rem" }}>📌 pinned paste — always in the assistant's context</p>
+                )}
+                <MessageRow
+                  m={m}
+                  linkify={linkify}
+                  onOpenPreview={openPreviewHash}
+                  onSave={slug ? handleSave : undefined}
+                  onDownload={downloadMd}
+                />
+              </div>
             );
           })}
           {busy && messages.length > 0 && messages[messages.length - 1]!.role === "assistant" && !messages[messages.length - 1]!.content && (
@@ -499,6 +521,11 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           className="chat-composer"
           onSubmit={(e) => { e.preventDefault(); if (busy) abort(); else void send(); }}
         >
+          {ctxInfo && ctxInfo.keptFrom > 0 && !busy && (
+            <p className="muted" style={{ margin: "0 0 6px", fontSize: "0.75rem" }}>
+              ⚠ The assistant only sees the conversation below the divider. Older replies aren't lost if you save them — 📖 <b>save as material</b> under a reply keeps it indexed and semantic-searchable in every future chat (chat history isn't).
+            </p>
+          )}
           <div className="chat-composer-row">
             <input
               className="chat-composer-input"

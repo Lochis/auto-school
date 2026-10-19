@@ -57,6 +57,14 @@ const PORT = Number(process.env.CONTROLLER_PORT ?? 7800) || 7800;
 // need more than a handful of search/read rounds; env-tunable per deployment
 const CHAT_STEPS = Math.max(4, Number(process.env.CHAT_STEPS ?? 16) || 16);
 const CHAT_STEPS_GLOBAL = Math.max(4, Number(process.env.CHAT_STEPS_GLOBAL ?? CHAT_STEPS + 4) || CHAT_STEPS + 4);
+// chat context window: a CHAR budget over recent history instead of a fixed
+// message count — long chats and jumbo pastes don't silently fall out just
+// because "16 messages" ran out. Jumbo user pastes (>CHAT_JUMBO_CHARS) are
+// pinned back into the convo even outside the budget, until CHAT_PIN_CHARS
+// is exhausted (most recent first) — the quiz-paste case: always in context.
+const CHAT_CTX_CHARS = Math.max(8_000, Number(process.env.CHAT_CTX_CHARS ?? 60_000) || 60_000);
+const CHAT_PIN_CHARS = Math.max(0, Number(process.env.CHAT_PIN_CHARS ?? 40_000) || 40_000);
+const CHAT_JUMBO_CHARS = Math.max(1_000, Number(process.env.CHAT_JUMBO_CHARS ?? 6_000) || 6_000);
 
 /** Graph tokens live next to the browser profile — cheap HTTP polling is only
  *  possible after the one-time device-code approval (POST /auth/graph). */
@@ -509,6 +517,56 @@ function toolPhrase(tc: ToolCall): string {
   return `${tc.function.name.replace(/_/g, " ")}${arg ? ` · ${arg}` : ""}`;
 }
 
+/** Context-window plan for one chat turn: which history messages the model
+ *  sees. Walks BACKWARD within a char budget (newest message always kept —
+ *  the incoming question must never be evicted), opens on a user turn (never
+ *  an orphaned assistant reply), then pins jumbo user pastes from above the
+ *  window back in (most recent first, pin budget). The client renders this as
+ *  a context divider; the model gets an honesty note about what's missing. */
+interface ChatWindow {
+  msgs: { role: "user" | "assistant"; content: string }[];
+  keptFrom: number; // first index of the live window (history indices)
+  pinned: number[]; // jumbo indices re-included above the window, chronological
+  dropped: number; // messages the model cannot see
+}
+function buildChatWindow(history: readonly { role: string; content: string }[]): ChatWindow {
+  const n = history.length;
+  if (n === 0) return { msgs: [], keptFrom: 0, pinned: [], dropped: 0 };
+  let used = 0;
+  let start = n;
+  for (let i = n - 1; i >= 0; i--) {
+    const len = history[i]!.content.length;
+    if (i < n - 1 && used + len > CHAT_CTX_CHARS) break; // newest msg is exempt from the cap
+    used += len;
+    start = i;
+  }
+  while (start < n && history[start]!.role === "assistant") start++; // pair alignment
+  const pinned: number[] = [];
+  let pinUsed = 0;
+  for (let i = start - 1; i >= 0; i--) {
+    if (history[i]!.role !== "user") continue;
+    const len = history[i]!.content.length;
+    if (len <= CHAT_JUMBO_CHARS || pinUsed + len > CHAT_PIN_CHARS) continue;
+    pinned.push(i);
+    pinUsed += len;
+  }
+  pinned.reverse();
+  const pinnedSet = new Set(pinned);
+  const msgs = history
+    .map((m, i) => ({ m, i }))
+    .filter(({ i }) => i >= start || pinnedSet.has(i))
+    .map(({ m }) => ({ role: m.role as "user" | "assistant", content: m.content }));
+  return { msgs, keptFrom: start, pinned, dropped: start - pinned.length };
+}
+
+/** Honesty note appended to the system prompt when the window cuts history:
+ *  the model must say it can't see something rather than guess at it. */
+function contextNote(win: ChatWindow): string {
+  if (win.dropped <= 0) return "";
+  const pin = win.pinned.length ? `, except ${win.pinned.length} large paste(s) from earlier, which ARE included at their original position` : "";
+  return `\nCONTEXT WINDOW: ${win.dropped} earlier message(s) are omitted from this conversation for context budget${pin}. If the user references something you cannot see, say so — never guess its contents.`;
+}
+
 /** Discovery shortcut for follow-up questions: harvest [[path]] citations
  *  from recent assistant replies and hand them back in the system prompt —
  *  similar questions skip list/search rounds and read_document the known
@@ -532,7 +590,7 @@ function citationReuseLine(history: { role: string; content: string }[]): string
 async function streamChatLoop(
   res: ServerResponse,
   convo: ChatMsg[],
-  opts: { tools: unknown[]; webSearch: boolean; fallbackSlug?: string; maxSteps: number; toolLabel: string },
+  opts: { tools: unknown[]; webSearch: boolean; fallbackSlug?: string; maxSteps: number; toolLabel: string; ctx?: (reply: string) => Record<string, unknown> },
 ): Promise<string | null> {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -616,6 +674,7 @@ async function streamChatLoop(
   }
   if (!reply) reply = partial.trim() || "(no answer — model hit the tool-step limit; try a more specific question)";
   clearInterval(beat);
+  if (opts.ctx) { try { event({ type: "ctx", ...opts.ctx(reply) }); } catch { /* best-effort divider info */ } }
   event({ type: "done", reply });
   res.end();
   return reply;
@@ -2580,7 +2639,11 @@ Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered step
       }
       const loadChat = (): Promise<{ role: "user" | "assistant"; content: string; at: string }[]> => chatList("global");
       const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): Promise<void> => chatSave("global", msgs);
-      if (req.method === "GET") return send(200, { messages: await loadChat() });
+      if (req.method === "GET") {
+        const h = await loadChat();
+        const w = buildChatWindow(h);
+        return send(200, { messages: h, ctx: { keptFrom: w.keptFrom, pinned: w.pinned } });
+      }
       if (req.method === "DELETE") {
         await chatClear("global");
         return send(200, { ok: true });
@@ -2647,7 +2710,11 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
       const slug = decodeURIComponent(chatM[1]!);
       const loadChat = (): Promise<{ role: "user" | "assistant"; content: string; at: string }[]> => chatList(slug);
       const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): Promise<void> => chatSave(slug, msgs);
-      if (req.method === "GET") return send(200, { messages: await loadChat() });
+      if (req.method === "GET") {
+        const h = await loadChat();
+        const w = buildChatWindow(h);
+        return send(200, { messages: h, ctx: { keptFrom: w.keptFrom, pinned: w.pinned } });
+      }
       if (req.method === "POST") {
         (async () => {
           try {
