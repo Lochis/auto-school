@@ -15,8 +15,9 @@ const NAV = [
   { href: "/courses", label: "Courses & Deadlines" },
 ];
 
-/** Avatar from the Authentik login (JWT `picture` claim via /api/me);
- *  falls back to the user icon when absent (local dev, no claim set). */
+/** Avatar from the DB-backed /api/me/avatar route (Gap 4; served from
+ *  users.avatar, synced lazily from the identity provider's picture claim);
+ *  falls back to the user icon when absent or 404 (local dev, not yet synced). */
 function AvatarImg({ src, size }: { src?: string; size: number }) {
   const [err, setErr] = useState(false);
   if (!src || err) return <UserIcon className="heroicon" style={{ display: "inline", width: size, height: size }} />;

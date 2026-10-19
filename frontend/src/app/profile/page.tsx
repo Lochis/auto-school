@@ -6,7 +6,7 @@ import { Badge, Panel, PanelHeader } from "@/components/ui";
 import type { AuthUser } from "@/lib/auth";
 import "../profile-ui.css";
 
-/** Authentik avatar (JWT picture claim) with initials fallback */
+/** DB-backed avatar (/api/me/avatar — Gap 4) with initials fallback */
 function ProfileAvatar({ src, fallback }: { src?: string; fallback: string }) {
   const [err, setErr] = useState(false);
   if (!src || err) return <>{fallback}</>;

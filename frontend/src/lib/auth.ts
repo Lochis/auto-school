@@ -25,8 +25,10 @@ export interface AuthUser {
   email?: string;
   groups: string[];
   role: "admin" | "member";
-  /** avatar from the X-authentik-jwt `picture` claim (set via a scope mapping
-   *  on the provider): an http(s) URL or data URI, or undefined → UI initials. */
+  /** avatar sync source only (Gap 4): the X-authentik-jwt `picture` claim
+   *  (http(s) URL or data URI, or undefined). Consumed server-side by
+   *  /api/me's lazy sync into users.avatar — never sent to the browser
+   *  as-is; the browser gets /api/me/avatar?v=<epoch> from the DB. */
   avatarUrl?: string;
 }
 

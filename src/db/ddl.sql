@@ -9,7 +9,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;      -- keyword fallback / fuzzy title m
 -- ── users (stub; full design in authentik-federation.md) ──────────────────
 CREATE TABLE IF NOT EXISTS users (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  authentik_sub text UNIQUE,                 -- OIDC "sub" claim; NULL until first login claims the seed row
+  authentik_sub text UNIQUE,                 -- X-authentik-uid = authentik user pk (the stable key, per authentik-federation.md §5); NULL until first login claims the seed row
   username      text UNIQUE,
   email         text UNIQUE,
   display_name  text NOT NULL DEFAULT '',

@@ -44,3 +44,21 @@ export async function upsertAvatar(userId: string, bytes: Buffer, mime: string):
     [userId, bytes, mime],
   );
 }
+
+/** Mark the avatar as checked without storing bytes — claim absent or fetch
+ *  failed; bumps synced_at so a missing/broken picture isn't retried on every
+ *  page load (Gap 4 freshness gate). */
+export async function markAvatarSynced(userId: string): Promise<void> {
+  await getPool().query(
+    `update users set avatar = null, avatar_mime = null, avatar_synced_at = now() where id = $1`,
+    [userId],
+  );
+}
+
+/** Resolve a user id by authentik_sub — the value stored is X-authentik-uid
+ *  (the authentik user pk, per authentik-federation.md §5), the stable key
+ *  Gap 4's claim/JIT step writes. Null when the sub is unknown. */
+export async function getUserIdBySub(sub: string): Promise<string | null> {
+  const r = await getPool().query(`select id from users where authentik_sub = $1`, [sub]);
+  return (r.rows[0]?.id as string) ?? null;
+}
