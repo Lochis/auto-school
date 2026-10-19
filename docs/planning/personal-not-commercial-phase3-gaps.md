@@ -99,3 +99,12 @@ provider URL scheme, no migration. The JWT `picture` claim path (`auth.ts`) stay
 **Out of scope:** full provider-adapter rewiring (`AUTH_PROVIDER` + `parseIdentity` interface) —
 decide later; Gap 4 makes it strictly optional. LOGOUT_URL env-ification is separate and
 small.
+
+**Status: LANDED** on `feat/phase3-gap4-avatar` (19235aa storage → 7425198 serving/sync →
+3fa0cee Gap 4b extensions, both waves verifier-approved). Gap 4b additions beyond this spec:
+`users.avatar_source` provenance (`claim`/`upload` — sync never overwrites uploads),
+`POST /api/me/avatar` upload + `DELETE` provider-reset, and a zero-dep FaceHash identicon
+(`frontend/src/lib/facehash.ts`, sha256-of-uid 5×5 mirrored SVG) as the default when no avatar
+exists. Deploy follow-ups: run the new ddl ALTERs (`avatar`, `avatar_mime`, `avatar_synced_at`,
+`avatar_source`) on prod; delete `AUTHENTIK_API_TOKEN` from the `auto-school-env` secret and
+revoke `svc-autoschool-avatar` in authentik.
