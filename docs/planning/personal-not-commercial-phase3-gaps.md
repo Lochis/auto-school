@@ -7,9 +7,8 @@ Three read-path gaps remained after Phase 3. This doc splits them into:
 - **Personal-only** (Gaps 1–2) — owner conveniences for the personal auto-join flow; **deferred,
   not commercial**. The commercial product gives each user their own meeting source, so these
   do not transfer.
-- **Commercial** (Gap 3) — materials metadata/embeddings; **in scope**, because every user
-  (including the owner) uses materials and they must be searchable regardless of where the
-  bytes live.
+- **Commercial** (Gaps 3–4) — materials metadata/embeddings and avatar storage; **in scope**,
+  because every user hits them and neither should depend on the auth provider's live API.
 
 ---
 
@@ -66,3 +65,37 @@ caches (rebuildable), `materials.json` (becomes derived/legacy once `documents` 
 
 **Open question:** per-user cloud material storage later needs a `storage_uri` on `documents`
 (mirroring `session_artifacts.storage_uri`) — additive column, no change now.
+
+## Gap 4 — Avatar: store in `users`, not the provider API — COMMERCIAL, in scope
+
+*Added after Gap 3 landed (listMaterials reads `documents`; uploads auto-embed). Not a
+Phase-3 fs leftover — an identity-coupling cleanup tracked here because it's the same
+one-source-of-truth principle: identity-adjacent data the app needs should live in the app's
+DB, not behind the auth provider's API.*
+
+**What:** `/api/me/avatar` proxies Authentik's core API v3 (`/api/v3/core/users/{uid}/`) with
+a service token + `AUTHENTIK_API_URL` env. That is the app's only provider-API call and the
+last blocker (besides header names) to swapping the forward-auth provider later
+(`authentik-federation.md` §5, Phase 2 swap optionality).
+
+**Why:** with the avatar cached in `users`, a provider swap loses nothing — no token, no
+provider URL scheme, no migration. The JWT `picture` claim path (`auth.ts`) stays as the
+*sync source* only.
+
+**Requirements:**
+1. **Schema** (additive): `users.avatar bytea`, `users.avatar_mime text`,
+   `users.avatar_synced_at timestamptz`. Avatars are KB-scale (authentik generated =
+   data-URI SVGs; uploads small), so `bytea` in PG is fine — the bytes-out-of-PG principle
+   (Gap 3) was for video/document scale.
+2. **Lazy sync:** on `/api/me` (first authenticated load), serve from DB; if null or
+   `avatar_synced_at` older than N days, fetch once from the `picture` claim (URL → fetch
+   with timeout; data URI → decode directly) and upsert. Never write on every `getAuthUser()`
+   call. Optional explicit refresh action on `/settings`.
+3. **Serving:** `/api/me/avatar` becomes a DB read + long-cache headers; drop the service
+   token, `AUTHENTIK_API_URL`, and the v3 proxy. Keep UI initials fallback for null.
+4. **Hardening:** cap blob size (~256KB) and claim-URL length; timeout the fetch so a hostile
+   `picture` can't bloat rows or hang the request.
+
+**Out of scope:** full provider-adapter rewiring (`AUTH_PROVIDER` + `parseIdentity` interface) —
+decide later; Gap 4 makes it strictly optional. LOGOUT_URL env-ification is separate and
+small.

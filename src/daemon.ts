@@ -53,6 +53,10 @@ const DISCOVERY_MS = (Number(process.env.DISCOVERY_SECONDS ?? 60) || 60) * 1_000
 // join this long before start — re-read at use so Settings applies without restart
 const joinEarlyMs = () => Math.max(0, getSettings().joinEarlyMinutes) * 60_000;
 const PORT = Number(process.env.CONTROLLER_PORT ?? 7800) || 7800;
+// chat tool-calling rounds — deep transcript forensics (workshops, long Q&A)
+// need more than a handful of search/read rounds; env-tunable per deployment
+const CHAT_STEPS = Math.max(4, Number(process.env.CHAT_STEPS ?? 16) || 16);
+const CHAT_STEPS_GLOBAL = Math.max(4, Number(process.env.CHAT_STEPS_GLOBAL ?? CHAT_STEPS + 4) || CHAT_STEPS + 4);
 
 /** Graph tokens live next to the browser profile — cheap HTTP polling is only
  *  possible after the one-time device-code approval (POST /auth/graph). */
@@ -527,11 +531,18 @@ async function streamChatLoop(
   let reply = "";
   let partial = ""; // text streamed by the round in progress
   let webReads = 0;
+  let nudges = 0; // continuation nudges for narrate-without-calling rounds
   try {
+    const half = Math.floor(opts.maxSteps / 2);
     for (let step = 0; step < opts.maxSteps; step++) {
       if (stopped()) break; // cancelled — stop burning model calls
+      const final = step === opts.maxSteps - 1;
+      if (step === half)
+        convo.push({ role: "user", content: "Tool budget is half used. If you already have the key facts, answer now — at most two more tool rounds for critical gaps." });
+      if (final)
+        convo.push({ role: "user", content: "FINAL ROUND — tool budget is exhausted. Answer now with what you already have; say what you could not verify." });
       partial = "";
-      const msg = await glmChatStream(convo, opts.tools, (t) => { partial += t; event({ type: "delta", text: t }); }, ac.signal);
+      const msg = await glmChatStream(convo, final ? undefined : opts.tools, (t) => { partial += t; event({ type: "delta", text: t }); }, ac.signal);
       if (msg.tool_calls?.length) {
         // that round's streamed text was tool-preface — client discards it
         event({ type: "reset" });
@@ -550,6 +561,17 @@ async function streamChatLoop(
         if (stopped()) break; // cancelled mid-tools — don't start another round
         convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
         msg.tool_calls.forEach((tc, i) => convo.push({ role: "tool", tool_call_id: tc.id, content: results[i]! }));
+        continue;
+      }
+      // text-only round — GLM sometimes narrates its next step ("let me check
+      // X…") without emitting a tool call; accepting that as the answer
+      // truncates the investigation. Push it back once or twice while
+      // budget remains, then accept whatever comes.
+      if (step < half && nudges < 2) {
+        nudges++;
+        event({ type: "reset" }); // client discards the narration text
+        convo.push({ role: "assistant", content: msg.content || "(no reply)" });
+        convo.push({ role: "user", content: `You still have ${opts.maxSteps - step - 1} tool rounds. If you need more information, call the tools NOW in this round. Otherwise reply with your FINAL answer to the student.` });
         continue;
       }
       reply = msg.content;
@@ -2559,7 +2581,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
             // SSE stream: tool statuses + live answer tokens
-            const reply = await streamChatLoop(res, convo, { tools, webSearch, maxSteps: 12, toolLabel: "global chat tool" });
+            const reply = await streamChatLoop(res, convo, { tools, webSearch, maxSteps: CHAT_STEPS_GLOBAL, toolLabel: "global chat tool" });
             if (reply !== null) {
               history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
               await saveChat(history);
@@ -2623,7 +2645,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
               ...history.slice(-16).map((m) => ({ role: m.role, content: m.content }) as ChatMsg),
             ];
             // SSE stream: tool statuses + live answer tokens
-            const reply = await streamChatLoop(res, convo, { tools, webSearch, fallbackSlug: slug, maxSteps: 8, toolLabel: "chat tool" });
+            const reply = await streamChatLoop(res, convo, { tools, webSearch, fallbackSlug: slug, maxSteps: CHAT_STEPS, toolLabel: "chat tool" });
             if (reply !== null) {
               history.push({ role: "assistant", content: reply, at: new Date().toISOString() });
               await saveChat(history);
