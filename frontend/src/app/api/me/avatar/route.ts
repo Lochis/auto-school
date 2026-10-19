@@ -1,25 +1,106 @@
+import { getAuthUser } from "@/lib/auth";
+import {
+  AVATAR_MIME_ALLOWLIST,
+  MAX_AVATAR_BYTES,
+  ensureUserRow,
+  getAvatarFor,
+  resetAvatarToClaim,
+  syncAvatarIfNeeded,
+  upsertAvatar,
+} from "@/lib/avatar";
+import { facehashSvg } from "@/lib/facehash";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { getAvatarFor } from "@/lib/avatar";
 
 export const dynamic = "force-dynamic";
 
+/** Unauthenticated / no edge trust → indistinguishable from "no such route". */
+const notFound = () => new NextResponse(null, { status: 404, headers: { "cache-control": "no-store" } });
+
+/** Same hardening on every 200 this route emits (stored blob or FaceHash
+ *  SVG — both may be SVG, so the CSP + nosniff stay on both paths). */
+const serveHeaders = (contentType: string, etag: string) => ({
+  "content-type": contentType,
+  "cache-control": "private, max-age=604800", // 7d, aligned with sync interval
+  etag,
+  "x-content-type-options": "nosniff",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", // SVG hardening
+});
+
+/** Serve the DB-cached avatar; when none is stored (never synced, missing
+ *  claim, or reset), fall back to the FaceHash identicon — deterministic
+ *  per uid, so it caches as safely as a stored avatar (Gap 4b). 404 (no-store)
+ *  only for unauthenticated / no-uid / no-trust. */
 export async function GET() {
-  const notFound = () => new NextResponse(null, { status: 404, headers: { "cache-control": "no-store" } });
   if (process.env.TRUST_AUTHENTIK_HEADERS !== "1") return notFound();
   const uid = (await headers()).get("x-authentik-uid");
   if (!uid) return notFound();
   try {
-    const av = await getAvatarFor(uid);
-    if (!av || !av.bytes.length) return notFound();
-    return new NextResponse(new Uint8Array(av.bytes), {
-      headers: {
-        "content-type": av.mime,
-        "cache-control": "private, max-age=604800",          // 7d, aligned with sync interval
-        etag: `"${uid}-${av.bytes.length}"`,
-        "x-content-type-options": "nosniff",
-        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'", // SVG hardening
-      },
+    let av: Awaited<ReturnType<typeof getAvatarFor>> = null;
+    try {
+      av = await getAvatarFor(uid);
+    } catch {
+      // DB down — FaceHash below; still a 200, no provider dependency.
+    }
+    if (av && av.bytes.length) {
+      return new NextResponse(new Uint8Array(av.bytes), {
+        headers: serveHeaders(av.mime, `"${uid}-${av.bytes.length}"`),
+      });
+    }
+    return new NextResponse(facehashSvg(uid), {
+      headers: serveHeaders("image/svg+xml", `"fh-${uid}"`),
     });
-  } catch { return notFound(); }
+  } catch {
+    return notFound();
+  }
+}
+
+/** Upload a user avatar (Gap 4b): multipart file field, 256KB cap (checked
+ *  on the declared size and again on the decoded bytes) and the same mime
+ *  allowlist as the claim sync. Marks provenance 'upload' so the lazy sync
+ *  never overwrites it. Returns the new cache-buster epoch. */
+export async function POST(request: Request) {
+  try {
+    const user = await getAuthUser();
+    if (!user) return notFound(); // untrusted edge / not behind the outpost
+    const form = await request.formData();
+    const file = form.getAll("file").find((v): v is File => v instanceof File);
+    if (!file) {
+      return NextResponse.json({ ok: false, error: "no file field" }, { status: 400 });
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      return NextResponse.json({ ok: false, error: "avatar exceeds 256KB" }, { status: 413 });
+    }
+    if (!AVATAR_MIME_ALLOWLIST.includes(file.type)) {
+      return NextResponse.json({ ok: false, error: `unsupported type: ${file.type || "unknown"}` }, { status: 415 });
+    }
+    const bytes = Buffer.from(await file.arrayBuffer());
+    if (bytes.length > MAX_AVATAR_BYTES) {
+      return NextResponse.json({ ok: false, error: "avatar exceeds 256KB" }, { status: 413 });
+    }
+    const id = await ensureUserRow(user);
+    if (!id) return notFound();
+    const syncedAt = await upsertAvatar(id, bytes, file.type, "upload");
+    return NextResponse.json({ ok: true, v: syncedAt?.getTime() ?? Date.now() });
+  } catch {
+    return NextResponse.json({ ok: false }, { status: 500 });
+  }
+}
+
+/** Reset to the provider avatar (Gap 4b): drop the upload, flip provenance
+ *  back to 'claim', then immediately re-run the sync so the provider avatar
+ *  returns without waiting for /api/me's next pass (the reset nulls synced_at,
+ *  so the freshness gate doesn't block it). */
+export async function DELETE() {
+  try {
+    const user = await getAuthUser();
+    if (!user) return notFound(); // untrusted edge / not behind the outpost
+    const id = await ensureUserRow(user);
+    if (!id) return notFound();
+    await resetAvatarToClaim(id);
+    const syncedAt = await syncAvatarIfNeeded(user);
+    return NextResponse.json({ ok: true, v: syncedAt?.getTime() ?? Date.now() });
+  } catch {
+    return NextResponse.json({ ok: false }, { status: 500 });
+  }
 }

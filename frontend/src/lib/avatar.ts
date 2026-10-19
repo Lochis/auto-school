@@ -17,11 +17,17 @@ import {
   getAvatar,
   getUserIdBySub,
   markAvatarSynced,
+  resetAvatarToClaim,
   upsertAvatar,
 } from "../../../src/db/avatar.ts";
 
 /** Gap 4 hardening: reject avatars over 256KB (re-exported storage cap). */
-export { MAX_AVATAR_BYTES as AVATAR_MAX_BYTES };
+export {
+  MAX_AVATAR_BYTES as AVATAR_MAX_BYTES,
+  MAX_AVATAR_BYTES,
+  resetAvatarToClaim,
+  upsertAvatar,
+};
 
 /** Re-sync from the picture claim at most once a week (mirrors the 7d
  *  private cache on /api/me/avatar). */
@@ -94,29 +100,39 @@ export async function resolveAvatarBytes(
   }
 }
 
-/** Lazy avatar sync — called only from /api/me. Claims the identity row
- *  (seed 'lochis' row on first login, JIT row for other users; idempotent,
- *  per authentik-federation.md §5), then serves from DB unless
- *  avatar_synced_at is missing or older than 7 days, in which case it
- *  re-syncs from the picture claim. A missing/broken claim still bumps
- *  synced_at (marked "checked") so it isn't retried every page load.
- *  Returns the effective synced_at, or null on any failure. Never throws. */
+/** Gap 4 claim/JIT step: claim the pre-seeded identity row on first login
+ *  (authentik_sub is NULL until then), JIT-provision rows for other users,
+ *  then resolve the row id (idempotent, per authentik-federation.md §5).
+ *  May throw on DB failure — callers wrap; null when the row can't be
+ *  resolved. Shared by syncAvatarIfNeeded and the /api/me/avatar POST/DELETE
+ *  handlers (Gap 4b) so the upload path never duplicates the SQL. */
+export async function ensureUserRow(user: AuthUser): Promise<string | null> {
+  const pool = getPool();
+  await pool.query(
+    `update users set authentik_sub = $1 where authentik_sub is null and username = $2`,
+    [user.uid, user.username],
+  );
+  // JIT-provision other users (username collision throws → caller degrades
+  // gracefully).
+  await pool.query(
+    `insert into users (authentik_sub, username, display_name) values ($1, $2, $3)
+     on conflict (authentik_sub) do nothing`,
+    [user.uid, user.username, user.name ?? user.username],
+  );
+  return getUserIdBySub(user.uid);
+}
+
+/** Lazy avatar sync — called only from /api/me (and the Gap 4b reset, which
+ *  leaves the row stale so this re-fetches). Claims the identity row, then
+ *  serves from DB unless avatar_synced_at is missing or older than 7 days,
+ *  in which case it re-syncs from the picture claim. A user-set upload
+ *  (avatar_source = 'upload', Gap 4b) always wins — the claim sync never
+ *  overwrites it. A missing/broken claim still bumps synced_at (marked
+ *  "checked") so it isn't retried every page load. Returns the effective
+ *  synced_at, or null on any failure. Never throws. */
 export async function syncAvatarIfNeeded(user: AuthUser): Promise<Date | null> {
   try {
-    const pool = getPool();
-    // Claim the pre-seeded row once (authentik_sub is NULL until first login).
-    await pool.query(
-      `update users set authentik_sub = $1 where authentik_sub is null and username = $2`,
-      [user.uid, user.username],
-    );
-    // JIT-provision other users (username collision throws → caught below,
-    // degrade gracefully).
-    await pool.query(
-      `insert into users (authentik_sub, username, display_name) values ($1, $2, $3)
-       on conflict (authentik_sub) do nothing`,
-      [user.uid, user.username, user.name ?? user.username],
-    );
-    const id = await getUserIdBySub(user.uid);
+    const id = await ensureUserRow(user);
     if (!id) return null;
 
     // Freshness gate: at most one write per 7 days.
@@ -124,10 +140,13 @@ export async function syncAvatarIfNeeded(user: AuthUser): Promise<Date | null> {
     if (row.avatarSyncedAt && Date.now() - row.avatarSyncedAt.getTime() < AVATAR_SYNC_INTERVAL_MS) {
       return row.avatarSyncedAt;
     }
+    // Gap 4b: uploads win — skip the claim fetch/upsert entirely, keep the
+    // stable synced_at so /api/me keeps emitting the same ?v=.
+    if (row.avatarSource === "upload" && row.avatarSyncedAt) return row.avatarSyncedAt;
 
     const resolved = await resolveAvatarBytes(user.avatarUrl);
-    if (resolved) await upsertAvatar(id, resolved.bytes, resolved.mime);
-    else await markAvatarSynced(id);
+    if (resolved) return (await upsertAvatar(id, resolved.bytes, resolved.mime)) ?? new Date();
+    await markAvatarSynced(id);
     return new Date();
   } catch {
     return null; // DB down / claim-row collision — /api/me must still 200

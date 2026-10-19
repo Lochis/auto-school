@@ -34,6 +34,7 @@ export const users = pgTable("users", {
   avatar: bytea("avatar"),
   avatarMime: text("avatar_mime"),
   avatarSyncedAt: tstz("avatar_synced_at"),
+  avatarSource: text("avatar_source").notNull().default("claim"),
   createdAt: tstz("created_at").notNull().defaultNow(),
 }, (t) => [
   check("users_role_check", sql`${t.role} IN ('owner','member','viewer')`),

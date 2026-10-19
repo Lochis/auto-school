@@ -279,3 +279,6 @@ CREATE TABLE IF NOT EXISTS deadlines_meta (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar          bytea;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime     text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_synced_at timestamptz;
+-- Gap 4b provenance: 'claim' = synced from the provider JWT picture claim;
+-- 'upload' = user-set via POST /api/me/avatar; the lazy sync never overwrites 'upload'.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_source   text NOT NULL DEFAULT 'claim';
