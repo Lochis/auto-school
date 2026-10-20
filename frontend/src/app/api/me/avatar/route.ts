@@ -81,7 +81,8 @@ export async function POST(request: Request) {
     if (!id) return notFound();
     const syncedAt = await upsertAvatar(id, bytes, file.type);
     return NextResponse.json({ ok: true, v: syncedAt?.getTime() ?? Date.now() });
-  } catch {
+  } catch (e) {
+    console.error("[avatar] upload failed:", e);
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }
@@ -97,7 +98,8 @@ export async function DELETE() {
     if (!id) return notFound();
     await clearAvatar(id);
     return NextResponse.json({ ok: true, v: Date.now() });
-  } catch {
+  } catch (e) {
+    console.error("[avatar] remove failed:", e);
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }

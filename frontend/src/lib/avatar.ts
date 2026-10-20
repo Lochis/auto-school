@@ -54,11 +54,15 @@ export async function ensureUserRow(user: AuthUser): Promise<string | null> {
     `update users set authentik_sub = $1 where authentik_sub is null and username = $2`,
     [user.uid, user.username],
   );
-  // JIT-provision other users (username collision throws → caller degrades
-  // gracefully).
+  // JIT-provision other users. BARE on-conflict: after the claim above, the
+  // seed user's row already holds both this sub AND this username — an
+  // arbiter on (authentik_sub) alone would leave the username UNIQUE
+  // violation unhandled and throw on every login of the seed user
+  // (the Gap 4 upload 500s, 2026-10-19). A genuine username collision with a
+  // DIFFERENT sub still inserts nothing here; callers degrade gracefully.
   await pool.query(
     `insert into users (authentik_sub, username, display_name) values ($1, $2, $3)
-     on conflict (authentik_sub) do nothing`,
+     on conflict do nothing`,
     [user.uid, user.username, user.name ?? user.username],
   );
   return getUserIdBySub(user.uid);
