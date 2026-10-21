@@ -1,11 +1,14 @@
 node_modules/
 .env
-user-data/
-out/
-segments/
+# data-dir artifacts at repo ROOT only — anchored so they can't shadow
+# source paths (bug: unanchored `segments/` was ignoring
+# frontend/src/app/api/segments/, found during Phase 1)
+/user-data/
+/out/
+/segments/
 *.log
-notes/
-recordings/
+/notes/
+/recordings/
 frontend/.next/
 *.tsbuildinfo
 stitch/*.zip
