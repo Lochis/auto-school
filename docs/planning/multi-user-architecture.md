@@ -1,6 +1,9 @@
 # Multi-User Architecture — auto-school
 
-Status: PLANNING DOC (no code changed). Branch: `plan/postgres-migration`.
+Status: **HISTORICAL (2026-10-20)** — the pod-per-user scale-out designed here was killed by
+the hosted-platform pivot (daemon is personal-only; commercial multi-user is a hosted web app
+fed by an Electron client — see `hosted-platform.md`). Kept as reference for the concurrency
+verdicts (RWO PVC, profile locks) which still govern the personal pod. Branch: `plan/postgres-migration`.
 Companion doc: `docs/planning/authentik-federation.md` (identity, per-user auth, secrets — not duplicated here).
 
 ## Executive summary

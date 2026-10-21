@@ -1,6 +1,10 @@
 # Planning: Storage backends — whose cloud holds the bytes
 
-Status: PLANNING ONLY — no code changes.
+Status: PLANNING, **RE-SCOPED 2026-10-20** — kept ON after the hosted-platform pivot, but
+the platform never holds blobs: recordings stay user-local, optional sync goes to the USER'S
+own cloud (S3/B2/r2), playback via presigned URLs through the media route. See
+`hosted-platform.md` §4 for the decision and scope. Original per-user-cloud design below
+remains largely applicable with "platform infra" readings replaced by "user's provider".
 Companion docs: `postgres-migration.md` (schema incl. `session_artifacts.storage_uri`, cutover
 phases §4.4), `multi-user-architecture.md` (§5 "Storage evolution": per-user scratch → publish
 artifacts → metadata in PG), `authentik-federation.md` (§5 per-user encrypted credential blob),
