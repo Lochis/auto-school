@@ -269,7 +269,19 @@ status events (`src/status.ts` board messages).
 - Set `TRUST_AUTHENTIK_HEADERS=1` in `deploy/k8s/auto-school.yaml` (secret/env section).
 - Acceptance: logged-in identity visible; curl direct to pod port-forward shows stripped headers.
 
-### Phase 1 — per-user data keys (single daemon still)
+### Phase 1 — per-user data keys (single daemon still) — LANDED 2026-10-20
+
+> **Implementation note (branch `feat/authentik-phase1`, commits 08015b0/b656c0c/2d0448c,
+> agent-verified SHIP):** the daemon's `ownerALS` AsyncLocalStorage became the per-request
+> owner carrier (`src/db/owner.ts`); `resolveRequestOwner` maps `X-Auto-School-User: <uid>` →
+> `getUserIdBySub` → `users.id`, 401s on an unresolvable uid, and falls back to the seed OWNER
+> only when the header is absent (daemon-internal jobs). Frontend: `lib/owner.ts`
+> `ownerId()`/`daemonUserHeaders()` on all 23 proxy routes + owner-scoped db-mode reads; sessions/
+> notes/chat/deadline folds/checklists/tools owner-filtered; courses/mappings/documents/settings
+> stay system-global BY DESIGN. **Deferred to Phase 2 (storage/pod-per-user work):** sessions
+> `UNIQUE(course_id, stem)` blocks same-stem sessions for two owners (needs owner in the key);
+> per-user `app_settings` (needs owner column + knob split); fs blob layer (recordings/notes/
+> materials/user-data) remains global — DB rows carry ownership, bytes have no ACL yet.
 - Postgres `users` table (ties into the migration plan) + JIT provisioning in
   `frontend/src/lib/auth.ts`. Order matters: seed `lochis` claim (above) runs first, so the
   existing dataset attaches to the real account instead of a fresh JIT row.
