@@ -106,33 +106,37 @@ function toSummary(r: SessionRow): SessionSummary {
   return s;
 }
 
-/** data.ts sessions(course): newest first. */
-export async function listSessions(course: string): Promise<SessionSummary[]> {
+/** data.ts sessions(course): newest first.
+ *  `owner` (users.id) filters to that user's sessions; undefined omits the
+ *  filter (unauthenticated local dev / DB_READS=1 without auth parity). */
+export async function listSessions(course: string, owner?: string): Promise<SessionSummary[]> {
   const rows = await q<SessionRow>(
     `${SELECT_SESSIONS}
-     where c.slug = $1
+     where c.slug = $1${owner ? " and s.owner_user_id = $2" : ""}
      order by s.session_date desc, s.start_time desc nulls last, s.id desc`,
-    [course],
+    owner ? [course, owner] : [course],
   );
   return rows.map(toSummary);
 }
 
-/** Single-session variant (session detail pages). Null when unknown. */
-export async function getSession(course: string, stem: string): Promise<SessionSummary | null> {
+/** Single-session variant (session detail pages). Null when unknown.
+ *  `owner` — same optional filter as listSessions. */
+export async function getSession(course: string, stem: string, owner?: string): Promise<SessionSummary | null> {
   const rows = await q<SessionRow>(
     `${SELECT_SESSIONS}
-     where c.slug = $1 and s.stem = $2`,
-    [course, stem],
+     where c.slug = $1 and s.stem = $2${owner ? " and s.owner_user_id = $3" : ""}`,
+    owner ? [course, stem, owner] : [course, stem],
   );
   return rows[0] ? toSummary(rows[0]) : null;
 }
 
-/** Internal: session id by (course, stem) — shared with queries/notes.ts. */
-export async function sessionRowId(course: string, stem: string): Promise<number | null> {
+/** Internal: session id by (course, stem) — shared with queries/notes.ts.
+ *  `owner` — same optional filter; notes.ts threads it through. */
+export async function sessionRowId(course: string, stem: string, owner?: string): Promise<number | null> {
   const rows = await q<{ id: number }>(
     `select s.id::int as id from sessions s
-     join courses c on c.id = s.course_id where c.slug = $1 and s.stem = $2`,
-    [course, stem],
+     join courses c on c.id = s.course_id where c.slug = $1 and s.stem = $2${owner ? " and s.owner_user_id = $3" : ""}`,
+    owner ? [course, stem, owner] : [course, stem],
   );
   return rows[0]?.id ?? null;
 }

@@ -8,9 +8,19 @@
  *  daemon is long-lived so closeDb() is NOT called here). Every write is an
  *  idempotent upsert on the natural key, so re-runs converge. */
 import { getPool } from "./client.ts";
+import { curOwner } from "./owner.ts";
 
 /** lochis bootstrap owner (ddl.sql seed row). Multi-user claims rows later. */
 export const OWNER = "00000000-0000-0000-0000-000000000001";
+
+/** Phase-1 ownership split (federation §8): tables whose rows are owned by
+ *  the *requesting* user take curOwner() — sessions (via sessionId below) is
+ *  the key one, so /ingest, /transcribe and manual /join record as the
+ *  clicking user while the scheduled join loop (no ALS store) stays system.
+ *  SYSTEM-OWNED (keep OWNER — global by UNIQUE constraint, Phase 2 revisits):
+ *  courses (slug UNIQUE global catalog), meeting_mappings (join-loop cache),
+ *  documents (shared corpus, (course_id,kind,rel_path) UNIQUE),
+ *  activity_events (global in-memory board feed). */
 
 const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
 
@@ -59,7 +69,7 @@ export async function sessionId(courseId: number, stem: string, init: SessionIni
     [courseId, stem, init.sessionDate, init.startTime ?? null, init.title ?? "",
       init.joinUrl ?? null, init.stage ?? "recording", init.stageNote ?? null,
       init.segCount ?? null, init.durationSec ?? null, init.sizeMb ?? null,
-      init.startedAt != null ? new Date(init.startedAt).toISOString() : null, OWNER],
+      init.startedAt != null ? new Date(init.startedAt).toISOString() : null, curOwner()],
   );
   return Number(r.rows[0].id);
 }

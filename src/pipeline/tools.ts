@@ -13,6 +13,7 @@ import { listMaterials, getCourseConfig } from "./materials.ts";
 import { ensureIndex, indexedPages, pageImage, readDoc, supportsIndex } from "./docindex.ts";
 import { vlmDescribe } from "./llm.ts";
 import { pgConfigured, vectorSearch, keywordSearch, type ChunkHit } from "../db/reader.ts";
+import { curOwner } from "../db/owner.ts";
 import { embedQuery, geminiApiKey } from "../db/embeddings.ts";
 
 /** One search hit rendered for the model: kind + course + file/session +
@@ -342,9 +343,9 @@ async function scanCourseSessionsDb(slug: string): Promise<SessionScan[]> {
      from sessions s
      join courses c on c.id = s.course_id
      left join session_artifacts a on a.session_id = s.id and a.deleted_at is null
-     where c.slug = $1
+     where c.slug = $1 and s.owner_user_id = $2
      order by s.session_date desc, s.start_time desc nulls last, s.id desc`,
-    [slug]);
+    [slug, curOwner()]);
   const map = new Map<number, SessionScan & { segCount: number }>();
   for (const r of rows as { sid: number; stem: string; title: string | null; kind: string | null; rel_path: string | null; seg_count: number | null }[]) {
     let e = map.get(r.sid);
@@ -583,10 +584,10 @@ async function readDeadlineRowsDb(slug?: string): Promise<DeadlineRow[] | null> 
               d.user_note as "userNote", d.stale
        from deadlines d
        join courses c on c.id = d.course_id
-       ${slug ? "where c.slug = $1 and" : "where"} not exists
+       ${slug ? "where c.slug = $1 and d.owner_user_id = $2 and" : "where d.owner_user_id = $1 and"} not exists
          (select 1 from deadline_folds f where f.child_id = d.id and f.status = 'accepted')
        order by d.due asc nulls last, d.id`,
-      slug ? [slug] : []);
+      slug ? [slug, curOwner()] : [curOwner()]);
     return rows as DeadlineRow[];
   } catch { return null; }
 }
@@ -617,9 +618,9 @@ async function checklistRows(slug?: string): Promise<string> {
          from checklist_items ci
          join deadlines d on d.id = ci.deadline_id
          join courses c on c.id = d.course_id
-         where d.done = false ${slug ? "and c.slug = $1" : ""}
+         where d.done = false and d.owner_user_id = $1 ${slug ? "and c.slug = $2" : ""}
          order by d.due asc nulls last, d.id, ci.position, ci.id`,
-        slug ? [slug] : []);
+        slug ? [curOwner(), slug] : [curOwner()]);
       const byDl = new Map<number, { course: string; title: string; due: string | null; userNote: string | null; items: { text: string; done: boolean; manual: boolean }[] }>();
       for (const r of rows as { id: number; course: string; title: string; due: string | null; userNote: string | null; item_text: string; item_done: boolean; item_manual: boolean }[]) {
         let e = byDl.get(r.id);

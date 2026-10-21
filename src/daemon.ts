@@ -11,8 +11,7 @@
  *         POST /scan?reset=1   → rescan now (reset clears the handled set —
  *                                use to re-attend a same-titled test meeting)
  */
-import { createServer, type ServerResponse } from "node:http";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import archiver from "archiver";
@@ -46,6 +45,8 @@ import { runRetention, retainedUntilFrom } from "./pipeline/retention.ts";
 import { embedPendingMaterials, embedPendingSessions, embedOneMaterial } from "./db/ingest-embed.ts";
 import { getPool } from "./db/client.ts";
 import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId, upsertArtifact, upsertCourseConfig } from "./db/writes.ts";
+import { ownerALS, curOwner } from "./db/owner.ts";
+import { getUserIdBySub } from "./db/avatar.ts";
 import { chatList, chatSave, chatClear, attendanceLoad, attendanceUpsert, metaLoad, metaReplace } from "./db/state.ts";
 
 const POLL_MS = (Number(process.env.POLL_MINUTES ?? 2) || 2) * 60_000;
@@ -715,13 +716,8 @@ async function sweepIndexes(): Promise<void> {
 }
 
 // ── Phase 4: user-data (deadlines / folds / checklists) in Postgres ────────
-/** Request-scoped owner (smoke suite today, authentik identities later).
- *  Requests enter via ownerALS.run(...) in startController; outside a
- *  request (startup, timers) curOwner() resolves the bootstrap owner. */
-const ownerALS = new AsyncLocalStorage<string>();
-export function curOwner(): string {
-  return ownerALS.getStore() ?? OWNER;
-}
+// Request-scoped owner lives in db/owner.ts (ownerALS + curOwner) so db/
+// and pipeline/ modules can share it without importing the daemon.
 
 // The /deadlines and /checklists routes keep their exact mutation semantics
 // (id hashing, dedupe, fold/unfold, carry-over); only the read/write
@@ -1051,15 +1047,33 @@ function startController(): void {
   // doesn't auto-join them again — manual Join via /join still overrides
   for (const t of loadLeftToday()) handled.add(handledKey(t));
   const server = createServer((req, res) => {
-    // request-scoped owner: the smoke suite (and later authentik identities)
-    // can act as a different user. The header is honored ONLY when it exactly
-    // matches SMOKE_OWNER_UUID — unset env (normal prod) ignores any header.
-    const ownerOf = (): string => {
-      const h = String(req.headers["x-owner-uuid"] ?? "");
-      return h && h === process.env.SMOKE_OWNER_UUID ? h : OWNER;
-    };
-    ownerALS.run(ownerOf(), () => { void handleRequest(req, res); });
+    void (async () => {
+      const owner = await resolveRequestOwner(req);
+      if (!owner) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unknown X-Auto-School-User" }));
+        return;
+      }
+      ownerALS.run(owner, () => { void handleRequest(req, res); });
+    })();
   });
+
+  /** Phase-1 owner resolution (federation plan §8):
+   *  X-Auto-School-User <authentik-uid> → users.id via authentik_sub;
+   *  absent header → system OWNER (daemon-internal jobs / unauthenticated pod-local calls);
+   *  present-but-unresolvable uid → null (→ 401) — never silently fall back to OWNER,
+   *    that would leak the seed user's data to a misprovisioned identity.
+   *  x-owner-uuid SMOKE_OWNER_UUID exact-match override stays (scripts/smoke.ts). */
+  async function resolveRequestOwner(req: IncomingMessage): Promise<string | null> {
+    const sub = String(req.headers["x-auto-school-user"] ?? "").trim();
+    if (sub) {
+      const id = await getUserIdBySub(sub).catch(() => null);
+      if (id) return id;
+      return null; // 401 — never fall back to OWNER (data leak)
+    }
+    const h = String(req.headers["x-owner-uuid"] ?? "");
+    return h && h === process.env.SMOKE_OWNER_UUID ? h : OWNER;
+  }
 
   /** The full controller body (was the createServer callback). Runs inside
    *  ownerALS so curOwner() resolves the request's owner everywhere below. */
@@ -1161,21 +1175,21 @@ function startController(): void {
           try {
             const cid = await courseId(safe(to));
             const r = await getPool().query(
-              `update sessions set course_id=$1 where course_id=(select id from courses where slug=$2) and stem=$3`,
-              [cid, safe(from), base]);
+              `update sessions set course_id=$1 where course_id=(select id from courses where slug=$2) and stem=$3 and owner_user_id=$4`,
+              [cid, safe(from), base, curOwner()]);
             if (r.rowCount) {
               await getPool().query(
                 `update session_artifacts set rel_path = replace(rel_path, 'notes/'||$1||'/', 'notes/'||$2||'/')
-                 where session_id in (select id from sessions where course_id=$3 and stem=$4)`,
-                [safe(from), safe(to), cid, base]);
+                 where session_id in (select id from sessions where course_id=$3 and stem=$4 and owner_user_id=$5)`,
+                [safe(from), safe(to), cid, base, curOwner()]);
               await getPool().query(
                 `update session_artifacts set rel_path = replace(rel_path, 'recordings/'||$1||'/', 'recordings/'||$2||'/')
-                 where session_id in (select id from sessions where course_id=$3 and stem=$4)`,
-                [safe(from), safe(to), cid, base]);
+                 where session_id in (select id from sessions where course_id=$3 and stem=$4 and owner_user_id=$5)`,
+                [safe(from), safe(to), cid, base, curOwner()]);
               await getPool().query(
                 `update documents set course_id=$1, rel_path = replace(rel_path, 'notes/'||$2||'/', 'notes/'||$3||'/')
-                 where session_id in (select id from sessions where course_id=$1 and stem=$4)`,
-                [cid, safe(from), safe(to), base]);
+                 where session_id in (select id from sessions where course_id=$1 and stem=$4 and owner_user_id=$5)`,
+                [cid, safe(from), safe(to), base, curOwner()]);
             }
           } catch (e) { console.error(`[daemon] DB session move failed: ${String(e)}`); }
           pushEvent(`moved ${moved} file(s): ${stem} ${from} → ${to}`);
@@ -1223,8 +1237,8 @@ function startController(): void {
       // — gated on the same sibling-recording condition as the fs notes purge
       try {
         if (!sameDayLeft) await getPool().query(
-          `delete from sessions where course_id=(select id from courses where slug=$1) and stem=$2`,
-          [course, base]);
+          `delete from sessions where course_id=(select id from courses where slug=$1) and stem=$2 and owner_user_id=$3`,
+          [course, base, curOwner()]);
       } catch (e) { console.error(`[daemon] DB session purge failed: ${String(e)}`); }
       pushEvent(`purged ${removed} file(s) — ${course}/${stem}`);
       console.log(`[daemon] purged ${removed} file(s) for ${course}/${stem}`);
@@ -1346,8 +1360,8 @@ function startController(): void {
               `select 1 from session_artifacts sa
                join sessions s on s.id = sa.session_id
                join courses c on c.id = s.course_id
-               where c.slug = $1 and s.stem = $2 and sa.kind = 'notes' limit 1`,
-              [course, realStem])).rows.length > 0;
+               where c.slug = $1 and s.stem = $2 and s.owner_user_id = $3 and sa.kind = 'notes' limit 1`,
+              [course, realStem, curOwner()])).rows.length > 0;
           } catch { /* DB down — regenerate rather than skip */ }
           if (!hasNotes) {
             setActivity("transcribing (manual) — generating notes", { meeting: title });

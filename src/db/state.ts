@@ -7,6 +7,7 @@
  *  Raw SQL via the shared Pool (matches writes.ts / reader.ts convention). */
 import { getPool } from "./client.ts";
 import { OWNER } from "./writes.ts";
+import { curOwner } from "./owner.ts";
 import { pgConfigured } from "./reader.ts";
 
 const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
@@ -44,7 +45,7 @@ export async function chatList(scope: string): Promise<ChatMsg[]> {
   const r = await q(
     `select role, content, at from chat_messages
      where scope = $1 and owner_user_id = $2 order by id`,
-    [scope, OWNER],
+    [scope, curOwner()],
   );
   return r.rows.map((x) => ({ role: x.role, content: x.content, at: new Date(x.at).toISOString() }));
 }
@@ -56,11 +57,11 @@ export async function chatSave(scope: string, msgs: ChatMsg[]): Promise<void> {
   const client = await getPool().connect();
   try {
     await client.query("begin");
-    await client.query(`delete from chat_messages where scope = $1 and owner_user_id = $2`, [scope, OWNER]);
+    await client.query(`delete from chat_messages where scope = $1 and owner_user_id = $2`, [scope, curOwner()]);
     for (const m of keep) {
       await client.query(
         `insert into chat_messages (scope, role, content, at, owner_user_id) values ($1,$2,$3,$4,$5)`,
-        [scope, m.role, m.content, m.at, OWNER],
+        [scope, m.role, m.content, m.at, curOwner()],
       );
     }
     await client.query("commit");
@@ -75,7 +76,7 @@ export async function chatSave(scope: string, msgs: ChatMsg[]): Promise<void> {
 /** Clear a scope's chat history. */
 export async function chatClear(scope: string): Promise<void> {
   if (!pgConfigured()) return;
-  await q(`delete from chat_messages where scope = $1 and owner_user_id = $2`, [scope, OWNER]);
+  await q(`delete from chat_messages where scope = $1 and owner_user_id = $2`, [scope, curOwner()]);
 }
 
 export interface AttendanceRow {
@@ -149,7 +150,7 @@ export async function leftClear(): Promise<void> {
 /** deadlines-meta.json → { docs: { '<course>/<relPath>': { m, s } } }. */
 export async function metaLoad(): Promise<{ docs: Record<string, { m: number; s: number }> }> {
   if (!pgConfigured()) return { docs: {} };
-  const r = await q(`select doc_key, mtime, size from deadlines_meta where owner_user_id = $1`, [OWNER]);
+  const r = await q(`select doc_key, mtime, size from deadlines_meta where owner_user_id = $1`, [curOwner()]);
   const docs: Record<string, { m: number; s: number }> = {};
   for (const row of r.rows) docs[row.doc_key] = { m: Number(row.mtime), s: Number(row.size) };
   return { docs };
@@ -161,11 +162,11 @@ export async function metaReplace(docs: Record<string, { m: number; s: number; c
   const client = await getPool().connect();
   try {
     await client.query("begin");
-    await client.query(`delete from deadlines_meta where owner_user_id = $1`, [OWNER]);
+    await client.query(`delete from deadlines_meta where owner_user_id = $1`, [curOwner()]);
     for (const [k, v] of Object.entries(docs)) {
       await client.query(
         `insert into deadlines_meta (doc_key, mtime, size, course, owner_user_id) values ($1,$2,$3,$4,$5)`,
-        [k, v.m, v.s, v.course, OWNER],
+        [k, v.m, v.s, v.course, curOwner()],
       );
     }
     await client.query("commit");
