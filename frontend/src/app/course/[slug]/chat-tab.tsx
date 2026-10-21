@@ -490,9 +490,12 @@ export default function ChatTab({ slug, initialPrompt }: { slug?: string; initia
           {busy && (gathered.length > 0 || draft) && (
             <div className="muted" style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: "0.8125rem", margin: "4px 0 0 10px" }}>
               {gathered.map((g, i) => (
-                <p key={i} style={{ margin: 0, opacity: 0.5, borderLeft: "2px solid currentColor", paddingLeft: 8, whiteSpace: "pre-wrap" }}>
-                  {g.length > 160 ? `${g.slice(0, 160)}…` : g}
-                </p>
+                <details key={i} style={{ margin: 0, opacity: 0.6, borderLeft: "2px solid currentColor", paddingLeft: 8 }}>
+                  <summary style={{ cursor: "pointer", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                    discarded draft ({g.length.toLocaleString()} chars){g.length > 160 ? ` — ${g.slice(0, 160)}…` : ""}
+                  </summary>
+                  <p style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>{g}</p>
+                </details>
               ))}
               {draft && (
                 <p style={{ margin: 0, opacity: 0.75, borderLeft: "2px solid currentColor", paddingLeft: 8, whiteSpace: "pre-wrap" }}>

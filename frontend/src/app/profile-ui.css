@@ -16,7 +16,7 @@
 }
 
 .profile-avatar {
-  position: relative; /* hosts the Gap 4b pencil-edit affordance */
+  position: relative; /* hosts the Gap 4 pencil-edit affordance (NOT clipped — see img) */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -27,15 +27,22 @@
   color: var(--on-primary-container);
   font-size: 24px;
   font-weight: 700;
-  overflow: hidden;
+  /* no overflow:hidden — it would crop the pencil badge; the img rounds itself */
 }
-.profile-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.profile-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: var(--radius-full); /* circular crop lives on the image, not the container */
+}
 
-/* Gap 4b: replace affordance overlaid on the avatar circle */
+/* Gap 4: replace affordance — corner badge riding the avatar rim, above the crop */
 .profile-avatar-edit {
   position: absolute;
-  right: -3px;
-  bottom: -3px;
+  right: -4px;
+  bottom: -4px;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;

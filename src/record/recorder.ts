@@ -20,6 +20,12 @@ function stemOf(title: string): string {
   return liveStem ?? `${title.replace(/ /g, "_")}__${new Date().toISOString().slice(0, 19).replace(/[:.]/g, "-")}`;
 }
 let liveStem: string | null = null;
+/** per-page segment handler registry. Playwright bindings (exposeFunction)
+ *  survive navigation, can't be removed, and re-exposing throws — so `__seg`
+ *  is a thin dispatcher through this map and each startRecording just swaps
+ *  the handler. Makes a recording session survivable on a REUSED tab
+ *  (early-drop rejoin handed the recorder the stale /meet/ page). */
+const segHandlers = new WeakMap<object, (idx: number, b64: string, title: string) => void>();
 import { SEGMENTS_DIR, outPath } from "../paths.ts";
 import { pushEvent, setDetail, getSettings } from "../status.ts";
 
@@ -123,7 +129,7 @@ export async function startRecording(page: Page, meetingTitle: string, joinUrl?:
     if (pending.length >= batchSize()) flush();
   };
 
-  await page.exposeFunction("__seg", (idx: number, b64: string, title: string) => {
+  segHandlers.set(page, (idx: number, b64: string, title: string) => {
     if (!files[idx]) {
       files[idx] = `${(title ?? meetingTitle).replace(/[^\w -]/g, "").slice(0, 40).trim().replace(/ /g, "_") || "meeting"}__${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}__${String(idx).padStart(3, "0")}.webm`;
       state.segments.push(files[idx]);
@@ -146,8 +152,27 @@ export async function startRecording(page: Page, meetingTitle: string, joinUrl?:
       state.bytes += buf.length;
     }
   });
+  try {
+    await page.exposeFunction("__seg", (idx: number, b64: string, title: string) =>
+      segHandlers.get(page)?.(idx, b64, title));
+  } catch (e) {
+    // binding already exists from an earlier session on this same tab — it
+    // routes through the same dispatcher, so the fresh handler above is live
+    if (!/already (been )?registered/i.test(String(e))) throw e;
+    console.log("[rec] __seg binding already present on this tab — reusing (stale /meet/ page rejoin)");
+  }
 
-  await page.evaluate(([segMs, fps]: [number, number]) => {
+  try { await page.evaluate(([segMs, fps]: [number, number]) => {
+    // takeover: this tab may still host the PREVIOUS session's recorder
+    // (rejoin landed on the stale /meet/ page) — stop it first, or two
+    // MediaRecorders fight over one capture stream
+    const prev = (window as any).__rec;
+    if (prev) {
+      prev.stopped = true;
+      clearInterval(prev.timer);
+      try { if (prev.cur && prev.cur.state !== "inactive") prev.cur.stop(); } catch { /* already dead */ }
+    }
+    (window as any).__recStream?.getTracks().forEach((t: MediaStreamTrack) => { try { t.stop(); } catch { /* dead */ } });
     (window as any).__rec = { idx: 0, stopped: false };
     (async () => {
       // CURRENT-TAB-ONLY capture: preferCurrentTab + browser surface. Audio: tab audio.
@@ -213,9 +238,12 @@ export async function startRecording(page: Page, meetingTitle: string, joinUrl?:
         r.cur.stop();
       }, segMs);
     })().catch((e) => { (window as any).__recError = String(e); });
-  }, [SEGMENT_MS, REC_FPS] as [number, number]);
+  }, [SEGMENT_MS, REC_FPS] as [number, number]); } catch (e) { audioRec.kill("SIGKILL"); throw e; }
 
-  page.on("console", (m) => { if (m.text().includes("auto-school") || m.text().startsWith("[rec]")) console.log(`[rec:page] ${m.text()}`); });
+  if (!(page as any).__recConsole) {
+    (page as any).__recConsole = true; // re-used tab: attach the log tap once
+    page.on("console", (m) => { if (m.text().includes("auto-school") || m.text().startsWith("[rec]")) console.log(`[rec:page] ${m.text()}`); });
+  }
   await page.evaluate((title: string) => {
     if ((window as any).__rec) (window as any).__rec.title = title;
     else (window as any).__recTitle = title;

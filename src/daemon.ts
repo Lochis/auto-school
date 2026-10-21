@@ -627,9 +627,9 @@ async function streamChatLoop(
       if (stopped()) break; // cancelled — stop burning model calls
       const final = step === opts.maxSteps - 1;
       if (step === half)
-        convo.push({ role: "user", content: "Tool budget is half used. If you already have the key facts, answer now — at most two more tool rounds for critical gaps." });
+        convo.push({ role: "user", content: "Tool budget is half used. If you already have the key facts, answer now — at most two more tool rounds for critical gaps. Your answer must be COMPLETE and self-contained: anything you streamed in earlier rounds was discarded and the student never saw it." });
       if (final)
-        convo.push({ role: "user", content: "FINAL ROUND — tool budget is exhausted. Answer now with what you already have; say what you could not verify." });
+        convo.push({ role: "user", content: "FINAL ROUND — tool budget is exhausted. Answer now with what you already have; say what you could not verify. Your answer must be COMPLETE and self-contained: anything you streamed in earlier rounds was discarded and the student never saw it." });
       partial = "";
       const msg = await glmChatStream(convo, final ? undefined : opts.tools, (t) => { partial += t; event({ type: "delta", text: t }); }, ac.signal);
       if (msg.tool_calls?.length) {
@@ -655,12 +655,16 @@ async function streamChatLoop(
       // text-only round — GLM sometimes narrates its next step ("let me check
       // X…") without emitting a tool call; accepting that as the answer
       // truncates the investigation. Push it back once or twice while
-      // budget remains, then accept whatever comes.
-      if (step < half && nudges < 2) {
+      // budget remains, then accept whatever comes. LENGTH HEURISTIC: a short
+      // no-tool reply is narration, but a LONG one is a complete deliverable
+      // ("write me a playbook" with no lookup needed) — resetting that wiped
+      // whole answers the user watched stream, while the model still saw them
+      // in convo and kept claiming it had already delivered them.
+      if (step < half && nudges < 2 && msg.content.trim().length < 600) {
         nudges++;
         event({ type: "reset" }); // client discards the narration text
         convo.push({ role: "assistant", content: msg.content || "(no reply)" });
-        convo.push({ role: "user", content: `You still have ${opts.maxSteps - step - 1} tool rounds. If you need more information, call the tools NOW in this round. Otherwise reply with your FINAL answer to the student.` });
+        convo.push({ role: "user", content: `That text was NOT shown to the student. You still have ${opts.maxSteps - step - 1} tool rounds. If you need more information, call the tools NOW in this round. Otherwise reply with your COMPLETE final answer — the student sees only that reply.` });
         continue;
       }
       reply = msg.content;
