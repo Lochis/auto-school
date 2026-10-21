@@ -2,14 +2,15 @@
 import { NextResponse } from "next/server";
 import { dbReads } from "@/lib/backend";
 import * as db from "@/lib/db";
+import { daemonUserHeaders, ownerId } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET() {
-  if (dbReads()) return NextResponse.json(await db.deadlinesFeed());
+  if (dbReads()) return NextResponse.json(await db.deadlinesFeed(await ownerId()));
   try {
-    const res = await fetch(`${BASE}/deadlines`, { signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${BASE}/deadlines`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const body = await res.text();
     return new NextResponse(body, { status: res.status, headers: { "Content-Type": "application/json" } });
   } catch {
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(`${BASE}/deadlines`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify(prompt ?? {}),
       signal: AbortSignal.timeout(600_000), // the LLM reads real documents — minutes
     });
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
 
 export async function DELETE() {
   try {
-    const res = await fetch(`${BASE}/deadlines`, { method: "DELETE", signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${BASE}/deadlines`, { method: "DELETE", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const body = await res.json().catch(() => ({}));
     return NextResponse.json(body, { status: res.status });
   } catch {

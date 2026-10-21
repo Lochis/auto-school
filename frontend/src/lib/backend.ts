@@ -10,6 +10,7 @@ import * as fsData from "./data";
 import * as fsDeadlines from "./deadlines";
 import * as fsMapping from "./mapping";
 import * as db from "./db";
+import { ownerId } from "./owner";
 import type { Session } from "./data";
 import type { DeadEntry } from "./deadlines";
 
@@ -38,7 +39,8 @@ export async function semesterStartOf(slug: string): Promise<string | null> {
 }
 
 export async function listSessions(course: string): Promise<Session[]> {
-  if (dbReads()) return db.sessions(course);
+  const owner = await ownerId();
+  if (dbReads()) return db.sessions(course, owner);
   const fsList = fsData.sessions(course);
   if (!pgAvailable()) return fsList;
   // PG is configured: merge in artifact-derived notes/transcript/timeline and
@@ -46,7 +48,7 @@ export async function listSessions(course: string): Promise<Session[]> {
   // longer discover — the pipeline no longer writes those files to disk. The
   // fs list still contributes recordings and fills fields PG lacks (import
   // pending / pre-PG sessions), so nothing regresses while tables fill.
-  const pgList = await db.sessions(course);
+  const pgList = await db.sessions(course, owner);
   if (!pgList.length) return fsList;
   const overlay = (pg: Session, fs: Session): Session => {
     const m = { ...fs };
@@ -76,7 +78,7 @@ export async function notesMarkdown(
   stem: string,
   kind: "notes" | "running" | "transcript",
 ): Promise<string | null> {
-  if (dbReads()) return db.notesMarkdown(course, stem, kind);
+  if (dbReads()) return db.notesMarkdown(course, stem, kind, await ownerId());
   const file = (f: string): string | null => {
     try { return readFileSync(join(fsData.DATA_DIR, "notes", course, f), "utf8"); } catch { return null; }
   };
@@ -88,7 +90,7 @@ export async function notesMarkdown(
 // ── timeline entries for the session detail page ──────────────────────────
 
 export async function timelineEntries(course: string, stem: string, rel?: string): Promise<db.TimelineEntry[]> {
-  if (dbReads()) return db.timelineEntries(course, stem);
+  if (dbReads()) return db.timelineEntries(course, stem, await ownerId());
   if (!rel) return [];
   try {
     const j = JSON.parse(readFileSync(join(fsData.DATA_DIR, rel), "utf8"));
@@ -103,7 +105,7 @@ export async function timelineEntries(course: string, stem: string, rel?: string
 export async function deadlinesList(): Promise<DeadEntry[]> {
   // user-data/deadlines.json has no writer anymore — when PG is configured
   // the deadlines table is the only live copy.
-  if (dbReads() || pgAvailable()) return db.readDeadlines();
+  if (dbReads() || pgAvailable()) return db.readDeadlines(await ownerId());
   return fsDeadlines.readDeadlines();
 }
 

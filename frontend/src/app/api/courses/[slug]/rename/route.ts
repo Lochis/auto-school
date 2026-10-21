@@ -1,5 +1,6 @@
 /** Rename a course — backend moves folders + updates meeting mappings. */
 import { NextResponse } from "next/server";
+import { daemonUserHeaders } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
@@ -10,7 +11,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
   try {
     const res = await fetch(`${BASE}/courses/${encodeURIComponent(slug)}/rename`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify({ to }),
       signal: AbortSignal.timeout(10_000),
     });

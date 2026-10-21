@@ -57,26 +57,26 @@ export async function semesterStartOf(slug: string): Promise<string | null> {
 
 // ── sessions — delegate to src/db/queries/sessions.ts ─────────────────────
 
-export async function sessions(course: string): Promise<Session[]> {
-  return listSessions(course);
+export async function sessions(course: string, owner: string | undefined): Promise<Session[]> {
+  return listSessions(course, owner);
 }
 
 // ── artifact text — delegate to src/db/queries/notes.ts ───────────────────
 
-export async function timelineToMd(course: string, stem: string): Promise<string | null> {
-  return pgTimelineToMd(course, stem);
+export async function timelineToMd(course: string, stem: string, owner: string | undefined): Promise<string | null> {
+  return pgTimelineToMd(course, stem, owner);
 }
 
-export async function notesMarkdown(course: string, stem: string, kind: "notes" | "running" | "transcript"): Promise<string | null> {
-  return pgNotesMarkdown(course, stem, kind);
+export async function notesMarkdown(course: string, stem: string, kind: "notes" | "running" | "transcript", owner: string | undefined): Promise<string | null> {
+  return pgNotesMarkdown(course, stem, kind, owner);
 }
 
 // ── timeline entries for the session detail page (transcript-timeline.tsx) ─
 
 export type { TimelineEntry };
 
-export async function timelineEntries(course: string, stem: string): Promise<TimelineEntry[]> {
-  return pgTimelineEntries(course, stem);
+export async function timelineEntries(course: string, stem: string, owner: string | undefined): Promise<TimelineEntry[]> {
+  return pgTimelineEntries(course, stem, owner);
 }
 
 // ── deadlines (+ parts) — lib/deadlines.ts + daemon /deadlines GET shapes ─
@@ -109,7 +109,7 @@ interface DlRow {
 const legacyId = (r: Pick<DlRow, "legacy_id" | "course" | "title">): string =>
   r.legacy_id ?? dlId(r.course, r.title);
 
-export async function readDeadlines(): Promise<DbDeadline[]> {
+export async function readDeadlines(owner: string | undefined): Promise<DbDeadline[]> {
   const rows = await q<DlRow>(
     `SELECT d.id::text, d.legacy_id, c.slug AS course, d.title, d.due::text AS due, d.due_manual,
             d.kind, d.spread, d.start_by::text AS start_by, d.note, d.source, d.confidence,
@@ -119,7 +119,9 @@ export async function readDeadlines(): Promise<DbDeadline[]> {
        -- ^ same fold-tombstone filter as the daemon's readDl(): folded children
        -- are not standalone deadlines; without this the UI lists them as
        -- toggleable items whose ids the daemon rejects (404 "no such id")
+       ${owner ? "AND d.owner_user_id = $1" : ""}
      ORDER BY c.slug, d.due NULLS LAST, d.title`,
+    owner ? [owner] : [],
   );
   if (!rows.length) return [];
   const parts = await q<{ deadline_id: string; title: string; due: string | null; note: string; done: boolean }>(
@@ -172,12 +174,12 @@ export async function readDeadlines(): Promise<DbDeadline[]> {
 }
 
 /** daemon /deadlines GET merged shape: { deadlines, suggestions, foldedChildren } */
-export async function deadlinesFeed(): Promise<{
+export async function deadlinesFeed(owner: string | undefined): Promise<{
   deadlines: DbDeadline[];
   suggestions: { parentId: string; parentTitle: string; childId: string; childTitle: string; childDue: string | null }[];
   foldedChildren: { key: string; parentId: string; parentTitle: string; title: string; due: string | null; done: boolean; at: number }[];
 }> {
-  const deadlines = await readDeadlines();
+  const deadlines = await readDeadlines(owner);
   const ids = new Set(deadlines.map((d) => d.id));
   const sug = await q<{ parent_id: string; p_legacy: string | null; p_course: string; p_title: string; child_id: string; c_legacy: string | null; c_course: string; c_title: string; c_due: string | null }>(
     `SELECT f.parent_id::text AS parent_id, p.legacy_id AS p_legacy, pc.slug AS p_course, p.title AS p_title,
@@ -227,14 +229,16 @@ export async function deadlinesFeed(): Promise<{
 export interface ChecklistItem { id: string; text: string; done: boolean; doneAt: number | null; manual?: boolean }
 export interface Checklist { deadlineId: string; course: string; title: string; items: ChecklistItem[]; updatedAt: number }
 
-export async function checklists(): Promise<Checklist[]> {
+export async function checklists(owner: string | undefined): Promise<Checklist[]> {
   const rows = await q<{ deadline_id: string; legacy_id: string | null; course: string; title: string; legacy_key: string; text: string; done: boolean; done_at: Date | null; manual: boolean; position: number; updated_at: Date }>(
     `SELECT ci.deadline_id::text AS deadline_id, d.legacy_id, c.slug AS course, d.title,
             ci.legacy_key, ci.text, ci.done, ci.done_at, ci.manual, ci.position, ci.updated_at
      FROM checklist_items ci
      JOIN deadlines d ON d.id = ci.deadline_id
      JOIN courses c ON c.id = d.course_id
+     ${owner ? "WHERE d.owner_user_id = $1" : ""}
      ORDER BY d.id, ci.position, ci.id`,
+    owner ? [owner] : [],
   );
   const byDl = new Map<string, Checklist>();
   for (const r of rows) {

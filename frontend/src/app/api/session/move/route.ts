@@ -1,5 +1,6 @@
 /** Session move API — POST refile a session to a different course. */
 import { NextResponse } from "next/server";
+import { daemonUserHeaders } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
@@ -9,7 +10,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(`${BASE}/session/move`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     });

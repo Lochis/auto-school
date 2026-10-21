@@ -1,5 +1,6 @@
 /** Proxy: purge a session (mp4 + notes + timeline) on the backend. */
 import { NextResponse } from "next/server";
+import { daemonUserHeaders } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
@@ -11,6 +12,7 @@ export async function DELETE(req: Request) {
   try {
     const res = await fetch(`${BASE}/session?course=${encodeURIComponent(course)}&stem=${encodeURIComponent(stem)}`, {
       method: "DELETE",
+      headers: await daemonUserHeaders(),
       signal: AbortSignal.timeout(5000),
     });
     return NextResponse.json(await res.json(), { status: res.status });

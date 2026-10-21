@@ -6,6 +6,7 @@
  *  DELETE ?title= → remove one mapping */
 import { NextResponse } from "next/server";
 import { mappingSnap } from "@/lib/backend";
+import { daemonUserHeaders } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(`${BASE}/mapping`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify({ title, folder }),
       signal: AbortSignal.timeout(5000),
     });
@@ -37,7 +38,7 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const title = new URL(req.url).searchParams.get("title");
   try {
-    const res = await fetch(`${BASE}/mapping?title=${encodeURIComponent(title ?? "")}`, { method: "DELETE", signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${BASE}/mapping?title=${encodeURIComponent(title ?? "")}`, { method: "DELETE", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(5000) });
     const body = await res.json().catch(() => ({ error: "empty response" }));
     if (!res.ok) return NextResponse.json(body, { status: res.status });
     const snap = await mappingSnap();

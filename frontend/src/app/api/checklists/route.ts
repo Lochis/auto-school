@@ -3,14 +3,15 @@
 import { NextResponse } from "next/server";
 import { dbReads } from "@/lib/backend";
 import * as db from "@/lib/db";
+import { daemonUserHeaders, ownerId } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET() {
-  if (dbReads()) return NextResponse.json({ checklists: await db.checklists() });
+  if (dbReads()) return NextResponse.json({ checklists: await db.checklists(await ownerId()) });
   try {
-    const res = await fetch(`${BASE}/checklists`, { signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${BASE}/checklists`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const body = await res.text();
     return new NextResponse(body, { status: res.status, headers: { "Content-Type": "application/json" } });
   } catch {
@@ -24,7 +25,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(`${BASE}/checklists`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify(body ?? {}),
       signal: AbortSignal.timeout(isGenerate ? 600_000 : 15_000), // generation reads real documents — minutes
     });
@@ -38,7 +39,7 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const id = new URL(req.url).searchParams.get("deadlineId");
   try {
-    const res = await fetch(`${BASE}/checklists${id ? `?deadlineId=${encodeURIComponent(id)}` : ""}`, { method: "DELETE", signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${BASE}/checklists${id ? `?deadlineId=${encodeURIComponent(id)}` : ""}`, { method: "DELETE", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const json = await res.json().catch(() => ({}));
     return NextResponse.json(json, { status: res.status });
   } catch {

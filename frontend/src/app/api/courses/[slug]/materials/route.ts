@@ -1,5 +1,6 @@
 /** Proxy: course materials (upload, rename/move, delete) on the backend. */
 import { NextResponse } from "next/server";
+import { daemonUserHeaders } from "@/lib/owner";
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 const base = (slug: string) => `${BASE}/courses/${encodeURIComponent(slug)}/materials`;
@@ -10,7 +11,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
   const q = new URL(req.url).searchParams;
   const flag = q.get("indexed") === "1" ? "?indexed=1" : "";
   try {
-    const res = await fetch(base(slug) + flag, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(base(slug) + flag, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(5000) });
     return NextResponse.json(await res.json());
   } catch { return NextResponse.json({ materials: [] }); }
 }
@@ -20,7 +21,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
   try {
     const res = await fetch(base(slug), {
       method: "POST",
-      headers: { "Content-Type": req.headers.get("Content-Type") ?? "" },
+      headers: { "Content-Type": req.headers.get("Content-Type") ?? "", ...(await daemonUserHeaders()) },
       body: req.body, duplex: "half",
       signal: AbortSignal.timeout(10 * 60_000),
     } as RequestInit);
@@ -33,7 +34,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ slug: 
   try {
     const res = await fetch(base(slug), {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: await req.text(),
       signal: AbortSignal.timeout(10_000),
     });
@@ -46,7 +47,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ slug:
   const path = new URL(req.url).searchParams.get("path");
   if (!path) return NextResponse.json({ error: "path required" }, { status: 400 });
   try {
-    const res = await fetch(`${base(slug)}?path=${encodeURIComponent(path)}`, { method: "DELETE", signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${base(slug)}?path=${encodeURIComponent(path)}`, { method: "DELETE", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     return NextResponse.json(await res.json(), { status: res.status });
   } catch { return NextResponse.json({ error: "backend unreachable" }, { status: 502 }); }
 }

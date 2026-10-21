@@ -1,5 +1,6 @@
 /** Proxy: extracted text of a material (document bundle) for the previewer. */
 import { NextResponse } from "next/server";
+import { daemonUserHeaders } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
@@ -11,7 +12,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ slug: string }>
   const q = new URLSearchParams({ path });
   if (page) q.set("page", page);
   try {
-    const res = await fetch(`${BASE}/courses/${encodeURIComponent(slug)}/doc?${q}`);
+    const res = await fetch(`${BASE}/courses/${encodeURIComponent(slug)}/doc?${q}`, { headers: await daemonUserHeaders() });
     return NextResponse.json(await res.json(), { status: res.status });
   } catch {
     return NextResponse.json({ error: "backend unreachable" }, { status: 502 });

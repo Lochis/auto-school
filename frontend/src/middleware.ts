@@ -25,7 +25,7 @@ export function middleware(req: NextRequest) {
   let stripped = false;
   const h = new Headers(req.headers);
   for (const key of [...h.keys()]) {
-    if (/^x-authentik/i.test(key)) {
+    if (/^x-authentik/i.test(key) || /^x-auto-school-user/i.test(key)) {
       h.delete(key);
       stripped = true;
     }

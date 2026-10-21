@@ -5,6 +5,7 @@
  *                 authGraph starts the one-time Graph device-code approval;
  *                 paused toggles auto-join suppression (absence mode). */
 import { NextResponse } from "next/server";
+import { daemonUserHeaders } from "@/lib/owner";
 import { listCourses, listSessions } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +37,7 @@ function canonicalizeSession(s: Record<string, unknown>, canon: Map<string, stri
 
 export async function GET() {
   try {
-    const res = await fetch(`${BASE}/status`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${BASE}/status`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
     const body = await res.json();
     if (body?.sessions && Array.isArray(body.sessions) && body.sessions.length) {
       const canon = new Map<string, string>();
@@ -59,24 +60,24 @@ export async function POST(req: Request) {
     if (typeof body.paused === "boolean") {
       const res = await fetch(`${BASE}/pause`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
         body: JSON.stringify({ paused: body.paused }),
         signal: AbortSignal.timeout(3000),
       });
       return NextResponse.json(await res.json());
     }
     if (body.authGraph) {
-      const res = await fetch(`${BASE}/auth/graph`, { method: "POST", signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`${BASE}/auth/graph`, { method: "POST", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
       return NextResponse.json(await res.json(), { status: res.status });
     }
     if (body.leave) {
-      const res = await fetch(`${BASE}/leave`, { method: "POST", signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`${BASE}/leave`, { method: "POST", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
       return NextResponse.json(await res.json());
     }
     if (body.join) {
       const res = await fetch(`${BASE}/join`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
         body: JSON.stringify({ title: body.join }),
         signal: AbortSignal.timeout(5000),
       });
@@ -84,6 +85,7 @@ export async function POST(req: Request) {
     }
     const res = await fetch(`${BASE}/scan${body.reset ? "?reset=1" : ""}`, {
       method: "POST",
+      headers: await daemonUserHeaders(),
       signal: AbortSignal.timeout(3000),
     });
     return NextResponse.json(await res.json());
