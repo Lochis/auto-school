@@ -855,7 +855,9 @@ async function readFolds(): Promise<FoldsFile> {
      from deadline_folds f
      join deadlines p on p.id = f.parent_id join courses pc on pc.id = p.course_id
      left join deadlines ch on ch.id = f.child_id left join courses cc on cc.id = ch.course_id
+     where p.owner_user_id = $1
      order by f.id`,
+    [curOwner()],
   )).rows as Record<string, unknown>[];
   const verdicts: Record<string, Verdict> = {};
   const pending: FoldSug[] = [];
@@ -946,8 +948,8 @@ async function writeFolds(f: FoldsFile): Promise<void> {
     );
     seen.push(Number((ins.rows[0] as { id: number | string }).id));
   }
-  if (seen.length) await q(`delete from deadline_folds where not (id = any($1::bigint[]))`, [seen]);
-  else await q(`delete from deadline_folds`);
+  if (seen.length) await q(`delete from deadline_folds where parent_id in (select id from deadlines where owner_user_id = $2) and not (id = any($1::bigint[]))`, [seen, curOwner()]);
+  else await q(`delete from deadline_folds where parent_id in (select id from deadlines where owner_user_id = $1)`, [curOwner()]);
 }
 
 async function readCk(): Promise<Ck[]> {
@@ -955,7 +957,9 @@ async function readCk(): Promise<Ck[]> {
     `select ci.deadline_id::text as did, d.legacy_id, c.slug as course, d.title,
             ci.legacy_key, ci.text, ci.done, ci.done_at, ci.manual, ci.position, ci.updated_at
      from checklist_items ci join deadlines d on d.id = ci.deadline_id join courses c on c.id = d.course_id
+     where d.owner_user_id = $1
      order by ci.deadline_id, ci.position, ci.id`,
+    [curOwner()],
   )).rows as Record<string, unknown>[];
   const byDl = new Map<string, Ck>();
   for (const r of rows) {

@@ -15,19 +15,25 @@
  *
  *  Never throws: DB-down degrades to undefined (unfiltered) / still-forwarded
  *  header (daemon 401s an unresolvable sub rather than miswriting as OWNER). */
-import { getAuthUser } from "./auth";
+import { getAuthUser, trustAuthentikHeaders } from "./auth";
 import { ensureUserRow } from "./avatar";
 
-/** users.id for the authenticated user, or undefined when there is none.
- *  undefined is the "system owner / unfiltered" path — the query layer's
- *  `owner?: string` omits its predicate on undefined (legacy parity). */
+/** The seed system owner (src/db/writes.ts OWNER) — the fallback id the
+ *  daemon uses when a request carries no X-Auto-School-User header. */
+export const SYSTEM_OWNER = "00000000-0000-0000-0000-000000000001";
+
+/** users.id for the authenticated user. undefined (unfiltered) is ONLY ever
+ *  returned when auth headers are untrusted (local dev) — pre-Phase-1 parity.
+ *  When auth IS trusted but no uid resolved (unauthenticated prod request, or
+ *  DB down mid-resolution), degrade to the seed SYSTEM_OWNER — never the
+ *  unfiltered all-users view (mirrors the daemon's no-header → OWNER). */
 export async function ownerId(): Promise<string | undefined> {
   const u = await getAuthUser();
-  if (!u) return undefined;
+  if (!u) return trustAuthentikHeaders() ? SYSTEM_OWNER : undefined;
   try {
-    return (await ensureUserRow(u)) ?? undefined;
+    return (await ensureUserRow(u)) ?? SYSTEM_OWNER;
   } catch {
-    return undefined; // DB down → degrade to unfiltered (system view)
+    return SYSTEM_OWNER; // DB down → system view, not every user's data
   }
 }
 

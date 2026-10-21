@@ -187,7 +187,8 @@ export async function deadlinesFeed(owner: string | undefined): Promise<{
      FROM deadline_folds f
      JOIN deadlines p ON p.id = f.parent_id JOIN courses pc ON pc.id = p.course_id
      JOIN deadlines ch ON ch.id = f.child_id JOIN courses cc ON cc.id = ch.course_id
-     WHERE f.status = 'pending'`,
+     WHERE f.status = 'pending'${owner ? " AND p.owner_user_id = $1" : ""}`,
+    owner ? [owner] : [],
   );
   const suggestions = sug
     .map((r) => ({
@@ -205,7 +206,8 @@ export async function deadlinesFeed(owner: string | undefined): Promise<{
      FROM deadline_folds f
      JOIN deadlines p ON p.id = f.parent_id JOIN courses pc ON pc.id = p.course_id
      LEFT JOIN deadlines ch ON ch.id = f.child_id LEFT JOIN courses cc ON cc.id = ch.course_id
-     WHERE f.status = 'accepted'`,
+     WHERE f.status = 'accepted'${owner ? " AND p.owner_user_id = $1" : ""}`,
+    owner ? [owner] : [],
   );
   const foldedChildren = folds.map((r) => {
     const snap = r.child_snapshot ?? {};
