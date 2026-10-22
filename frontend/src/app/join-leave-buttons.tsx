@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { MicroButton, PrimaryButton } from "@/components/ui";
+import { useRecorder } from "@/lib/use-recorder";
 
 /** Ask the daemon to manually join+record a meeting by title (UI "Join"
  *  button), or to leave the current one. */
@@ -10,6 +11,11 @@ export default function JoinLeaveButtons({ title, joined, compact = false }: { t
   const [busy, setBusy] = useState<"join" | "leave" | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const router = useRouter();
+  const { attached } = useRecorder();
+
+  // daemon-less: no recorder to join/leave with — hide the controls
+  if (attached !== true) return null;
+
 
   const act = async (kind: "join" | "leave") => {
     setBusy(kind); setMsg(null);

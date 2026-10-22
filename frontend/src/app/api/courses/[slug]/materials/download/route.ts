@@ -2,8 +2,8 @@
  *  from the backend — never buffers the body. */
 import { NextResponse } from "next/server";
 import { daemonUserHeaders } from "@/lib/owner";
+import { daemonBaseOrThrow } from "@/lib/backend";
 export const dynamic = "force-dynamic";
-const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
@@ -11,7 +11,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
   if (!ps.length) return NextResponse.json({ error: "p required" }, { status: 400 });
   const qs = ps.map((p) => `p=${encodeURIComponent(p)}`).join("&");
   try {
-    const res = await fetch(`${BASE}/courses/${encodeURIComponent(slug)}/materials/download?${qs}`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10 * 60_000) });
+    const res = await fetch(`${await daemonBaseOrThrow()}/courses/${encodeURIComponent(slug)}/materials/download?${qs}`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10 * 60_000) });
     if (!res.ok || !res.body) return NextResponse.json({ error: `backend ${res.status}` }, { status: res.status });
     return new NextResponse(res.body, {
       headers: {

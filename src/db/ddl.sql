@@ -317,3 +317,17 @@ BEGIN
   END IF;
 END
 $$;
+
+-- ── recorder registry (recorder-split.md §3) ─────────────────────────────
+-- Per-owner recorder heartbeat rows. 'inbound' = platform→svc URL (personal
+-- pod); 'poll' = Electron behind NAT (commands pulled later). Only 'inbound'
+-- is implemented this phase.
+CREATE TABLE IF NOT EXISTS recorders (
+  owner_user_id uuid NOT NULL REFERENCES users(id),
+  name          text NOT NULL DEFAULT 'personal',
+  mode          text NOT NULL DEFAULT 'inbound',
+  endpoint      text,
+  last_seen     timestamptz,
+  capabilities  jsonb NOT NULL DEFAULT '{}',
+  PRIMARY KEY (owner_user_id, name)
+);

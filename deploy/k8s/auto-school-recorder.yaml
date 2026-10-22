@@ -1,0 +1,113 @@
+# auto-school-recorder — the personal recording daemon as its own Deployment
+# (recorder-split.md §5 step 3). PREPARED, NOT APPLIED — part of the 5a
+# manifest split. Until it is applied, deploy/k8s/auto-school.yaml remains the
+# live single-pod manifest.
+#
+# Today's daemon container spec VERBATIM (Xvfb/PulseAudio/Chromium/ffmpeg,
+# :7800 controller), plus three recorder-registry additions:
+#   PLATFORM_URL       where the frontend lives (the platform Service below)
+#   RECORDER_TOKEN     bearer token for POST /api/recorder/heartbeat
+#   RECORDER_ENDPOINT  this pod's controller base, registered as the endpoint
+# It keeps the RWO Longhorn PVC (recordings/notes/user-data stay here) and the
+# k3s-worker-02 node pin. The Service is cluster-internal ONLY — never an
+# Ingress route; the frontend proxies recorder traffic to it.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: auto-school
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: auto-school-data
+  namespace: auto-school
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 60Gi # live PVC capacity 2026-10 — keep in sync
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auto-school-recorder
+  namespace: auto-school
+  labels:
+    app: auto-school-recorder
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # RWO PVC + profile lock — never two pods
+  selector:
+    matchLabels:
+      app: auto-school-recorder
+  template:
+    metadata:
+      labels:
+        app: auto-school-recorder
+    spec:
+      terminationGracePeriodSeconds: 300 # stop recorder + consolidate on the way out
+      nodeSelector: { kubernetes.io/hostname: k3s-worker-02 } # image ~2.9GB; cache accumulates here
+      imagePullSecrets:
+        - name: reg-credentials-ghcr
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        # ── recording daemon: Teams bot + ffmpeg pipeline + controller :7800 ──
+        - name: auto-school
+          image: ghcr.io/lochis/auto-school:latest
+          imagePullPolicy: Always
+          env:
+            - { name: TZ, value: America/Toronto }
+            - { name: REBUILD_AT, value: "07:00,19:00" }
+            - { name: PGHOST, value: auto-school-pg }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: autoschool }
+            - { name: SMOKE_OWNER_UUID, value: "00000000-0000-4000-8000-000000000002" }
+            # recorder registry (recorder-split.md §3): where to heartbeat + self endpoint
+            - { name: PLATFORM_URL, value: "http://auto-school:80" } # platform Service (port 80 → frontend http)
+            - { name: RECORDER_ENDPOINT, value: "http://auto-school-recorder:7800" }
+            - name: RECORDER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: RECORDER_TOKEN, optional: true }
+          envFrom:
+            - secretRef: { name: auto-school-env }
+            - secretRef: { name: auto-school-pg }
+          ports:
+            - { containerPort: 7800, name: ctrl }
+          livenessProbe: # entrypoint clears stale Xvfb/Pulse locks, so a hung
+            httpGet: { path: /healthz, port: ctrl } # daemon is the only real failure
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet: { path: /healthz, port: ctrl }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: auto-school-data }
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-school-recorder
+  namespace: auto-school
+spec:
+  selector: { app: auto-school-recorder }
+  ports:
+    - { name: ctrl, port: 7800, targetPort: ctrl }

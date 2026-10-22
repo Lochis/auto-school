@@ -48,6 +48,7 @@ import { OWNER, courseId, upsertMapping, deleteMapping, listMappings, sessionId,
 import { ownerALS, curOwner } from "./db/owner.ts";
 import { getUserIdBySub } from "./db/avatar.ts";
 import { chatList, chatSave, chatClear, attendanceLoad, attendanceUpsert, metaLoad, metaReplace } from "./db/state.ts";
+import { startRecorderHeartbeat } from "./recorder-heartbeat.ts";
 
 const POLL_MS = (Number(process.env.POLL_MINUTES ?? 2) || 2) * 60_000;
 const DISCOVERY_MS = (Number(process.env.DISCOVERY_SECONDS ?? 60) || 60) * 1_000; // Graph poll cadence
@@ -2841,6 +2842,9 @@ export async function daemon(): Promise<void> {
   await hydrateSettings();
   await hydrateCourseConfigs().catch(() => { /* DB down → fs configs answer */ });
   startController();
+  // recorder registry heartbeat (recorder-split.md §3): register this personal
+  // pod every 30s so the platform can resolve the owner's recorder endpoint.
+  startRecorderHeartbeat();
   // fresh volume guarantee: the whole dir skeleton exists before anything writes
   // (k8s PVCs start empty — compose had these pre-created by the seed volume)
   for (const d of [OUT_DIR, SEGMENTS_DIR, NOTES_DIR, RECORDINGS_DIR]) mkdirSync(d, { recursive: true });

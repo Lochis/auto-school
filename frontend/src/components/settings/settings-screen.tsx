@@ -16,6 +16,7 @@ import {
   TrashIcon,
 } from "@heroicons/react/24/outline";
 import { Badge, Eyebrow, LiveDot, MicroButton, Panel, PrimaryButton, Stepper, Toggle } from "@/components/ui";
+import { useRecorder } from "@/lib/use-recorder";
 import "../../app/settings-ui.css";
 
 /** Settings & Automation Engine — every knob persisted by the backend in
@@ -93,6 +94,8 @@ export default function SettingsScreen() {
   const [keyDrafts, setKeyDrafts] = useState<{ gemini: string; glm: string; glmBase: string }>({ gemini: "", glm: "", glmBase: "" });
   const [keyDirty, setKeyDirty] = useState<{ gemini: boolean; glm: boolean; glmBase: boolean }>({ gemini: false, glm: false, glmBase: false });
   const [quotas, setQuotas] = useState<ModelQuota[] | null>(null);
+  const { attached } = useRecorder();
+
 
   useEffect(() => {
     fetch("/api/settings")
@@ -210,6 +213,19 @@ export default function SettingsScreen() {
       <Panel title="Settings" subtitle="loading…" />
     );
   }
+
+  // daemon-less: no recorder attached — recorder knobs are unavailable
+  if (attached === false) {
+    return (
+      <Panel title="Settings" subtitle="No recorder attached">
+        <p className="muted">
+          Recorder controls — transcription, retention, model fallback and API keys — are
+          unavailable until a recorder attaches to your account.
+        </p>
+      </Panel>
+    );
+  }
+
 
   const offline = !!s.offline;
 

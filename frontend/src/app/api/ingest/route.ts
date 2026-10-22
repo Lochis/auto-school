@@ -1,15 +1,15 @@
 /** Proxy: ingest a Teams recording + optional transcript into a course folder. */
 import { NextResponse } from "next/server";
 import { daemonUserHeaders } from "@/lib/owner";
+import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
-const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function POST(req: Request) {
   try {
     // stream the multipart body through UNTOUCHED — buffering it via
     // arrayBuffer() OOMs the 512Mi frontend container on lecture-sized videos
-    const res = await fetch(`${BASE}/ingest`, {
+    const res = await fetch(`${await daemonBaseOrThrow()}/ingest`, {
       method: "POST",
       headers: { "Content-Type": req.headers.get("Content-Type") ?? "", ...(await daemonUserHeaders()) },
       body: req.body,

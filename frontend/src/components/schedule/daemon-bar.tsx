@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
  *  this is the dashboard-side mirror, not a replacement. */
 import { useRouter } from "next/navigation";
 import { useStatus, tick, type Status } from "@/lib/use-status";
+import { useRecorder } from "@/lib/use-recorder";
 import { clock } from "@/lib/format";
 import type { CalEvent } from "@/lib/calendar-shared";
 import { GhostButton, LiveDot, PrimaryButton } from "@/components/ui";
@@ -41,6 +42,7 @@ export function nextUp(s: SchedStatus | null, events: CalEvent[], now: Date): { 
 
 export default function DaemonBar({ events }: { events: CalEvent[] }) {
   const status = useStatus() as SchedStatus | null;
+  const { attached } = useRecorder();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [now, setNow] = useState(() => new Date());
@@ -51,6 +53,9 @@ export default function DaemonBar({ events }: { events: CalEvent[] }) {
     const t = setInterval(() => setNow(new Date()), 15_000);
     return () => clearInterval(t);
   }, []);
+
+  // daemon-less: no recorder attached — hide the daemon hero bar
+  if (attached !== true) return null;
 
   const online = status?.online !== false;
   const state = online ? (status?.activity ?? status?.state ?? "idle") : "offline";

@@ -1,4 +1,8 @@
 # auto-school — k3s / Traefik / Longhorn / lochis-tls
+#
+# SUPERSEDED at 5a-final by deploy/k8s/auto-school-platform.yaml +
+# deploy/k8s/auto-school-recorder.yaml (recorder-split.md §5 step 3). KEEP this
+# file as the transitional single-pod manifest until the split is applied.
 # Single-file manifest in the firecrawl.yaml style (see ~/Projects/firecrawl-k8s).
 # One pod, two containers: the recording daemon (Xvfb+PulseAudio+Chromium+ffmpeg
 # in its image) and the Next.js frontend. Same pod because the Longhorn PVC is

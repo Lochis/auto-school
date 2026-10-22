@@ -6,11 +6,10 @@
  *                 paused toggles auto-join suppression (absence mode). */
 import { NextResponse } from "next/server";
 import { daemonUserHeaders } from "@/lib/owner";
-import { listCourses, listSessions } from "@/lib/backend";
+import { listCourses, listSessions, daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
-const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 /** The daemon's course strings (and mp4 path prefixes) don't always match
  *  the folder names under the data root that the frontend's /course/<slug>
@@ -37,7 +36,7 @@ function canonicalizeSession(s: Record<string, unknown>, canon: Map<string, stri
 
 export async function GET() {
   try {
-    const res = await fetch(`${BASE}/status`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${await daemonBaseOrThrow()}/status`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
     const body = await res.json();
     if (body?.sessions && Array.isArray(body.sessions) && body.sessions.length) {
       const canon = new Map<string, string>();
@@ -58,7 +57,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { reset?: boolean; leave?: boolean; join?: string; authGraph?: boolean; paused?: boolean };
   try {
     if (typeof body.paused === "boolean") {
-      const res = await fetch(`${BASE}/pause`, {
+      const res = await fetch(`${await daemonBaseOrThrow()}/pause`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
         body: JSON.stringify({ paused: body.paused }),
@@ -67,15 +66,15 @@ export async function POST(req: Request) {
       return NextResponse.json(await res.json());
     }
     if (body.authGraph) {
-      const res = await fetch(`${BASE}/auth/graph`, { method: "POST", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`${await daemonBaseOrThrow()}/auth/graph`, { method: "POST", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
       return NextResponse.json(await res.json(), { status: res.status });
     }
     if (body.leave) {
-      const res = await fetch(`${BASE}/leave`, { method: "POST", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`${await daemonBaseOrThrow()}/leave`, { method: "POST", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
       return NextResponse.json(await res.json());
     }
     if (body.join) {
-      const res = await fetch(`${BASE}/join`, {
+      const res = await fetch(`${await daemonBaseOrThrow()}/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
         body: JSON.stringify({ title: body.join }),
@@ -83,7 +82,7 @@ export async function POST(req: Request) {
       });
       return NextResponse.json(await res.json(), { status: res.status });
     }
-    const res = await fetch(`${BASE}/scan${body.reset ? "?reset=1" : ""}`, {
+    const res = await fetch(`${await daemonBaseOrThrow()}/scan${body.reset ? "?reset=1" : ""}`, {
       method: "POST",
       headers: await daemonUserHeaders(),
       signal: AbortSignal.timeout(3000),

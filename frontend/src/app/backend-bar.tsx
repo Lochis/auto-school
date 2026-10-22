@@ -3,6 +3,7 @@
 import { useState, type ComponentType, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useStatus, tick, type Status } from "@/lib/use-status";
+import { useRecorder } from "@/lib/use-recorder";
 import { clock } from "@/lib/format";
 import { MicroButton } from "@/components/ui";
 import {
@@ -51,9 +52,14 @@ function upNext(s: Status | null): string[] {
 
 export default function BackendBar() {
   const status = useStatus();
+  const { attached } = useRecorder();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const router = useRouter();
+
+  // daemon-less: no recorder attached — hide the status board entirely
+  if (attached !== true) return null;
+
 
   const refresh = () => tick();
 

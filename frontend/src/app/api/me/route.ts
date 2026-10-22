@@ -1,5 +1,7 @@
 import { getAuthUser, trustAuthentikHeaders } from "@/lib/auth";
 import { avatarEpoch } from "@/lib/avatar";
+import { resolveRecorder } from "@/lib/backend";
+import { ownerId } from "@/lib/owner";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -12,9 +14,13 @@ export async function GET() {
   // the ?v= cache-buster. Failure → plain /api/me/avatar → FaceHash identicon.
   const v = user ? await avatarEpoch(user) : null;
   const out = user ? { ...user, avatarUrl: `/api/me/avatar${v ? `?v=${v}` : ""}` } : user;
+  // Recorder attachment (recorder-split.md §4): attached = a fresh registry
+  // endpoint OR the transitional BACKEND_URL fallback resolved for this owner.
+  const rec = await resolveRecorder(await ownerId());
   return NextResponse.json({
     authenticated: user !== null,
     headerTrustEnabled: trustAuthentikHeaders(),
     user: out,
+    recorder: { attached: rec.base !== null, mode: rec.mode },
   });
 }

@@ -1,17 +1,16 @@
 /** Checklists API — GET list, POST generate/toggle/add/remove (generation is a
  *  slow LLM sweep over course documents), DELETE clear one/all. */
 import { NextResponse } from "next/server";
-import { dbReads } from "@/lib/backend";
+import { dbReads, daemonBaseOrThrow } from "@/lib/backend";
 import * as db from "@/lib/db";
 import { daemonUserHeaders, ownerId } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
-const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET() {
   if (dbReads()) return NextResponse.json({ checklists: await db.checklists(await ownerId()) });
   try {
-    const res = await fetch(`${BASE}/checklists`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${await daemonBaseOrThrow()}/checklists`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const body = await res.text();
     return new NextResponse(body, { status: res.status, headers: { "Content-Type": "application/json" } });
   } catch {
@@ -23,7 +22,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const isGenerate = typeof body.deadlineId === "string" && body.itemId === undefined && body.add === undefined && body.removeItemId === undefined;
   try {
-    const res = await fetch(`${BASE}/checklists`, {
+    const res = await fetch(`${await daemonBaseOrThrow()}/checklists`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify(body ?? {}),
@@ -39,7 +38,7 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const id = new URL(req.url).searchParams.get("deadlineId");
   try {
-    const res = await fetch(`${BASE}/checklists${id ? `?deadlineId=${encodeURIComponent(id)}` : ""}`, { method: "DELETE", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${await daemonBaseOrThrow()}/checklists${id ? `?deadlineId=${encodeURIComponent(id)}` : ""}`, { method: "DELETE", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const json = await res.json().catch(() => ({}));
     return NextResponse.json(json, { status: res.status });
   } catch {

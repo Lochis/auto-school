@@ -1,0 +1,141 @@
+# auto-school-platform — the Next.js frontend (+ Postgres via auto-school-pg)
+# as its own Deployment (recorder-split.md §5 step 3). PREPARED, NOT APPLIED —
+# part of the 5a manifest split. Until applied, deploy/k8s/auto-school.yaml
+# remains the live single-pod manifest.
+#
+# TRANSITIONAL (5a): this pod still carries the daemon container + the ro /data
+# mount so the old BACKEND_URL=localhost:7800 path keeps working alongside the
+# new recorder registry. Both-pods-works state.
+#
+# 5a-FINAL (drop these when the registry/heartbeat is proven):
+#   * remove the daemon container below entirely
+#   * remove the ro /data volumeMount + the `data` volume + nodeSelector
+#     (platform is schedulable anywhere; nothing here touches the PVC)
+#   * remove BACKEND_URL from the frontend env — the frontend then resolves the
+#     owner's recorder via the registry only (resolveRecorderBase)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: auto-school
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auto-school-platform
+  namespace: auto-school
+  labels:
+    app: auto-school
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # transitional — the daemon container still shares the RWO PVC
+  selector:
+    matchLabels:
+      app: auto-school
+  template:
+    metadata:
+      labels:
+        app: auto-school
+    spec:
+      terminationGracePeriodSeconds: 300
+      # 5a-final: DROP this pin — the platform needs no PVC affinity once the
+      # daemon container and /data mount are gone.
+      nodeSelector: { kubernetes.io/hostname: k3s-worker-02 }
+      imagePullSecrets:
+        - name: reg-credentials-ghcr
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        # ── recording daemon — 5a-final: DROP this container ────────────────
+        - name: auto-school
+          image: ghcr.io/lochis/auto-school:latest
+          imagePullPolicy: Always
+          env:
+            - { name: TZ, value: America/Toronto }
+            - { name: REBUILD_AT, value: "07:00,19:00" }
+            - { name: PGHOST, value: auto-school-pg }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: autoschool }
+            - { name: SMOKE_OWNER_UUID, value: "00000000-0000-4000-8000-000000000002" }
+          envFrom:
+            - secretRef: { name: auto-school-env }
+            - secretRef: { name: auto-school-pg }
+          ports:
+            - { containerPort: 7800, name: ctrl }
+          livenessProbe:
+            httpGet: { path: /healthz, port: ctrl }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet: { path: /healthz, port: ctrl }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: shm, mountPath: /dev/shm }
+        # ── frontend: serves every user; resolves the owner's recorder via the
+        #    registry (BACKEND_URL is the transitional fallback until 5a-final)
+        - name: frontend
+          image: ghcr.io/lochis/auto-school-frontend:latest
+          imagePullPolicy: Always
+          env:
+            - { name: AUTO_SCHOOL_DATA, value: /data }
+            # 5a-final: DROP BACKEND_URL — registry-only resolution
+            - { name: BACKEND_URL, value: "http://localhost:7800" }
+            - { name: TZ, value: America/Toronto }
+            - { name: TRUST_AUTHENTIK_HEADERS, value: "1" }
+            - { name: AUTHENTIK_ADMIN_GROUP, value: auto-school-admins }
+            - name: EDGE_SECRET
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: EDGE_SECRET, optional: true }
+            # recorder registry auth: the platform verifies daemon heartbeats
+            # with this token (same key as the recorder pod's env)
+            - name: RECORDER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: RECORDER_TOKEN, optional: true }
+            - { name: DB_READS, value: "1" }
+            - { name: PGHOST, value: auto-school-pg }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: autoschool }
+          envFrom:
+            - secretRef: { name: auto-school-pg }
+          ports:
+            - { containerPort: 3000, name: http }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            # 5a-final: DROP the ro /data mount
+            - { name: data, mountPath: /data, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: auto-school-data } # 5a-final: DROP this volume
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-school
+  namespace: auto-school
+spec:
+  selector: { app: auto-school }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+# IngressRoute + basicAuth Middleware live in auto-school-ingress.yaml (unchanged):
+# it routes Host(school.vanderloch.com) → Service auto-school:80.

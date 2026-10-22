@@ -2,14 +2,14 @@
  *  materials + ingest recordings/transcripts by hand. */
 import { NextResponse } from "next/server";
 import { daemonUserHeaders } from "@/lib/owner";
+import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
-const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function POST(req: Request) {
   const { slug, semesterStart } = (await req.json().catch(() => ({}))) as { slug?: string; semesterStart?: string };
   try {
-    const res = await fetch(`${BASE}/courses/create`, {
+    const res = await fetch(`${await daemonBaseOrThrow()}/courses/create`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify({ slug, semesterStart }),

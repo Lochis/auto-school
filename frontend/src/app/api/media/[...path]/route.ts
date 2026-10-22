@@ -1,9 +1,14 @@
-/** Stream media files (mp4/webm/wav) from the data dir with HTTP Range
- *  support — required for <audio>/<video> seeking and scrubbing. */
+/** Stream media files (mp4/webm/wav) — recorder-split.md §5 step 3 flip:
+ *  when the owner has a fresh recorder with the mediaServe capability, proxy
+ *  the stream from that recorder's endpoint; otherwise fall back to the
+ *  mounted /data dir (same-pod transitional phase — still mounted this
+ *  phase). HTTP Range support is preserved for <audio>/<video> seeking. */
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { Readable } from "node:stream";
 import { DATA_DIR } from "@/lib/data";
+import { ownerId } from "@/lib/owner";
+import { getActiveRecorder } from "../../../../../../src/db/recorders.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,12 +34,54 @@ const MIME: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+/** Proxy the stream from the recorder endpoint (no buffering). Forwards
+ *  status + content-type/length/range so seeking keeps working. Unreachable
+ *  recorder → clean 404; mid-stream failures terminate the pass-through body. */
+async function proxyRecorderMedia(endpoint: string, req: Request, path: string[]): Promise<Response | null> {
+  const url = `${endpoint.replace(/\/+$/, "")}/${path.map(encodeURIComponent).join("/")}`;
+  const range = req.headers.get("range");
+  try {
+    const upstream = await fetch(url, {
+      headers: range ? { Range: range } : {},
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!upstream.ok || !upstream.body) return null;
+    const headers: Record<string, string> = {
+      "Accept-Ranges": "bytes",
+    };
+    const ct = upstream.headers.get("content-type");
+    if (ct) headers["Content-Type"] = ct;
+    const cl = upstream.headers.get("content-length");
+    if (cl) headers["Content-Length"] = cl;
+    const cr = upstream.headers.get("content-range");
+    if (cr) headers["Content-Range"] = cr;
+    return new Response(upstream.body, { status: upstream.status, headers });
+  } catch {
+    return null; // recorder unreachable — fall through to fs
+  }
+}
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   const { path } = await params;
   const rel = normalize(path.join("/"));
+
+  // recorder-proxy flip: only when this owner has a fresh mediaServe recorder
+  const owner = await ownerId();
+  if (owner) {
+    try {
+      const rec = await getActiveRecorder(owner);
+      if (rec?.endpoint && rec.capabilities?.mediaServe === true) {
+        const proxied = await proxyRecorderMedia(rec.endpoint, req, path);
+        if (proxied) return proxied;
+      }
+    } catch {
+      // DB down — fall through to the mounted fs (transitional)
+    }
+  }
+
   const file = join(DATA_DIR, rel);
   // traversal guard: resolved path must stay under DATA_DIR
   if (rel.startsWith("..") || !file.startsWith(DATA_DIR + sep) || !existsSync(file) || !statSync(file).isFile()) {

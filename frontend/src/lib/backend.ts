@@ -11,6 +11,7 @@ import * as fsDeadlines from "./deadlines";
 import * as fsMapping from "./mapping";
 import * as db from "./db";
 import { ownerId } from "./owner";
+import { getActiveRecorder } from "../../../src/db/recorders.ts";
 import type { Session } from "./data";
 import type { DeadEntry } from "./deadlines";
 
@@ -21,6 +22,50 @@ export const dbReads = (): boolean => process.env.DB_READS === "1";
  *  stop fs-mode readers from returning files nothing writes anymore. */
 export const pgAvailable = (): boolean =>
   Boolean(process.env.DATABASE_URL || process.env.PGHOST);
+
+/** Resolve the daemon base URL for a request (recorder-split.md §5 step 2).
+ *  Registry-first: a fresh heartbeat row for this owner → its endpoint;
+ *  otherwise the transitional BACKEND_URL; null = daemon-less (no recorder
+ *  attached — callers return their existing offline/502 shape). */
+export interface ResolvedRecorder {
+  base: string | null;
+  mode: string | null;
+}
+
+export async function resolveRecorder(
+  ownerId: string | undefined,
+): Promise<ResolvedRecorder> {
+  if (ownerId) {
+    try {
+      const rec = await getActiveRecorder(ownerId);
+      if (rec?.endpoint) return { base: rec.endpoint, mode: rec.mode };
+    } catch {
+      // DB down — fall through to BACKEND_URL, do not fail the request
+    }
+  }
+  const fallback = process.env.BACKEND_URL ?? null;
+  return { base: fallback, mode: fallback ? "inbound" : null };
+}
+
+export async function resolveRecorderBase(
+  ownerId: string | undefined,
+): Promise<string | null> {
+  return (await resolveRecorder(ownerId)).base;
+}
+
+/** Per-request base for the current authenticated owner (ownerId() degrades
+ *  to the seed/system owner when auth is untrusted, matching Phase 1). */
+export async function daemonBase(): Promise<string | null> {
+  return resolveRecorderBase(await ownerId());
+}
+
+/** daemonBase() that throws when no recorder is attached — lets proxy routes
+ *  reuse their existing catch blocks as the daemon-less degradation shape. */
+export async function daemonBaseOrThrow(): Promise<string> {
+  const base = await daemonBase();
+  if (!base) throw new Error("no recorder attached");
+  return base;
+}
 
 export const weekOf = fsData.weekOf; // pure fn, no io
 

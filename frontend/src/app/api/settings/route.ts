@@ -1,13 +1,13 @@
 /** Proxy to the daemon's settings (settings.json on the data volume). */
 import { NextResponse } from "next/server";
 import { daemonUserHeaders } from "@/lib/owner";
+import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
-const BASE = process.env.BACKEND_URL ?? "http://127.0.0.1:7800";
 
 export async function GET() {
   try {
-    const res = await fetch(`${BASE}/settings`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${await daemonBaseOrThrow()}/settings`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
     return NextResponse.json(await res.json());
   } catch {
     // full shape so the panel renders sensibly while offline
@@ -18,7 +18,7 @@ export async function GET() {
 
 export async function PUT(req: Request) {
   try {
-    const res = await fetch(`${BASE}/settings`, {
+    const res = await fetch(`${await daemonBaseOrThrow()}/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) },
       body: JSON.stringify(await req.json()),

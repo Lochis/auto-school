@@ -5,7 +5,7 @@
 import { sql } from "drizzle-orm";
 import {
   pgTable, text, uuid, integer, bigint, bigserial, boolean, date, time, timestamp,
-  numeric, jsonb, index, unique, check, customType,
+  numeric, jsonb, index, unique, check, customType, primaryKey,
 } from "drizzle-orm/pg-core";
 
 /** pgvector column — drizzle-orm has no native vector type (as of 0.45.x).
@@ -321,4 +321,16 @@ export const deadlinesMeta = pgTable("deadlines_meta", {
   createdAt: tstz("created_at").notNull().defaultNow(),
 }, (t) => [
   unique("deadlines_meta_owner_doc_key_key").on(t.ownerUserId, t.docKey),
+]);
+
+// ── recorder registry (recorder-split.md §3) ─────────────────────────────
+export const recorders = pgTable("recorders", {
+  ownerUserId: uuid("owner_user_id").notNull().references(() => users.id),
+  name: text("name").notNull().default("personal"),
+  mode: text("mode").notNull().default("inbound"),
+  endpoint: text("endpoint"),
+  lastSeen: tstz("last_seen"),
+  capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default({}),
+}, (t) => [
+  primaryKey({ columns: [t.ownerUserId, t.name] }),
 ]);
