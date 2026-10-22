@@ -79,6 +79,18 @@ seam the Electron shell reuses — "recorder attached" becomes "recorder is me, 
 
 ## 5. Migration order (each step deploys independently)
 
+> **Deploy prerequisites (verified in review, 2026-10-21):** before cutover, apply the
+> `recorders` DDL to Postgres (else heartbeats 500 and the registry silently never
+> populates — masked by daemon-less fallback) and set `RECORDER_TOKEN` in the
+> `auto-school-env` secret (else heartbeats 401 forever). The manifest switch itself is
+> ATOMIC: apply platform + recorder manifests together, delete the single-pod manifest in
+> the same change — never both (two daemons on one RWO PVC).
+>
+> **Known follow-ups for 5b:** deadline/checklist *mutations* still proxy to the daemon
+> (toggles, date edits — not just generate/rebuild), now visibly gated in the UI; moving
+> them platform-side is 5b work alongside the ingestion API. `mediaServe` stays false
+> until the daemon grows its media route (5a-final step 3).
+
 1. **Registry + heartbeat** (additive; daemon posts it; frontend ignores it) — zero risk.
 2. **Frontend proxy indirection**: `lib/backend.ts` resolveRecorder() with `BACKEND_URL`
    fallback; degradation UI behind `recorder.attached`. Still same pod. Deploy, verify parity.

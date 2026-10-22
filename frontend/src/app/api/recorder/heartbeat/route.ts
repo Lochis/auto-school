@@ -36,6 +36,18 @@ export async function POST(req: Request) {
   if (typeof body.owner !== "string" || !body.owner) {
     return NextResponse.json({ error: "owner required" }, { status: 400 });
   }
+  // 5a ships inbound only — a poll row would be proxied by 23 routes into
+  // 502s instead of clean daemon-less degradation (review 2026-10-21).
+  if (body.mode && body.mode !== "inbound") {
+    return NextResponse.json({ error: `mode '${body.mode}' not accepted yet` }, { status: 400 });
+  }
+  // The endpoint becomes a fetch base for proxying (SSRF surface if the
+  // token leaks) — http(s) only, sane length.
+  if (body.endpoint !== undefined) {
+    if (typeof body.endpoint !== "string" || body.endpoint.length > 512 || !/^https?:\/\//i.test(body.endpoint)) {
+      return NextResponse.json({ error: "endpoint must be an http(s) URL" }, { status: 400 });
+    }
+  }
 
   try {
     const ownerUserId = await getUserIdBySub(body.owner);
@@ -46,10 +58,13 @@ export async function POST(req: Request) {
     await upsertRecorderHeartbeat({
       ownerUserId,
       name: typeof body.name === "string" && body.name ? body.name : "personal",
-      mode: body.mode === "poll" ? "poll" : "inbound",
+      mode: "inbound",
       endpoint: typeof body.endpoint === "string" ? body.endpoint : null,
       capabilities:
-        body.capabilities && typeof body.capabilities === "object" ? body.capabilities : {},
+        body.capabilities && typeof body.capabilities === "object" &&
+        JSON.stringify(body.capabilities).length <= 4096
+          ? body.capabilities
+          : {},
     });
     return NextResponse.json({ ok: true });
   } catch (e) {

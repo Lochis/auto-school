@@ -1,18 +1,20 @@
-# auto-school-platform — the Next.js frontend (+ Postgres via auto-school-pg)
-# as its own Deployment (recorder-split.md §5 step 3). PREPARED, NOT APPLIED —
-# part of the 5a manifest split. Until applied, deploy/k8s/auto-school.yaml
-# remains the live single-pod manifest.
+# auto-school-platform — the Next.js frontend (+ Postgres via auto-school-pg).
+# 5a-FINAL state (recorder-split.md §5): daemon-less by default. The recording
+# daemon lives in deploy/k8s/auto-school-recorder.yaml; this pod has NO daemon
+# container, NO /data mount, NO node pin — it resolves the owner's recorder via
+# the registry (lib/backend.ts resolveRecorder) and degrades cleanly when none
+# is attached.
 #
-# TRANSITIONAL (5a): this pod still carries the daemon container + the ro /data
-# mount so the old BACKEND_URL=localhost:7800 path keeps working alongside the
-# new recorder registry. Both-pods-works state.
-#
-# 5a-FINAL (drop these when the registry/heartbeat is proven):
-#   * remove the daemon container below entirely
-#   * remove the ro /data volumeMount + the `data` volume + nodeSelector
-#     (platform is schedulable anywhere; nothing here touches the PVC)
-#   * remove BACKEND_URL from the frontend env — the frontend then resolves the
-#     owner's recorder via the registry only (resolveRecorderBase)
+# APPLY ATOMICALLY WITH auto-school-recorder.yaml (never one without the other —
+# running both the recorder pod AND the old single-pod manifest would run two
+# daemons on the same RWO PVC). At cutover:
+#   1. kubectl apply -f auto-school-recorder.yaml -f auto-school-platform.yaml
+#   2. kubectl delete -f deploy/k8s/auto-school.yaml   # retire the single-pod manifest
+# Prerequisites (once, before cutover):
+#   * apply src/db/ddl.sql to Postgres (recorders table) — else heartbeats 500
+#     and the registry never populates (silently masked by daemon-less mode)
+#   * kubectl create secret ... auto-school-env with RECORDER_TOKEN (both pods
+#     read it; without it heartbeats 401 and the platform stays daemon-less)
 ---
 apiVersion: v1
 kind: Namespace
@@ -28,7 +30,7 @@ metadata:
     app: auto-school
 spec:
   replicas: 1
-  strategy: { type: Recreate } # transitional — the daemon container still shares the RWO PVC
+  strategy: { type: RollingUpdate } # no PVC coupling — platform rolls freely
   selector:
     matchLabels:
       app: auto-school
@@ -38,9 +40,6 @@ spec:
         app: auto-school
     spec:
       terminationGracePeriodSeconds: 300
-      # 5a-final: DROP this pin — the platform needs no PVC affinity once the
-      # daemon container and /data mount are gone.
-      nodeSelector: { kubernetes.io/hostname: k3s-worker-02 }
       imagePullSecrets:
         - name: reg-credentials-ghcr
       securityContext:
@@ -49,48 +48,13 @@ spec:
         fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
       containers:
-        # ── recording daemon — 5a-final: DROP this container ────────────────
-        - name: auto-school
-          image: ghcr.io/lochis/auto-school:latest
-          imagePullPolicy: Always
-          env:
-            - { name: TZ, value: America/Toronto }
-            - { name: REBUILD_AT, value: "07:00,19:00" }
-            - { name: PGHOST, value: auto-school-pg }
-            - { name: PGPORT, value: "5432" }
-            - { name: PGDATABASE, value: autoschool }
-            - { name: SMOKE_OWNER_UUID, value: "00000000-0000-4000-8000-000000000002" }
-          envFrom:
-            - secretRef: { name: auto-school-env }
-            - secretRef: { name: auto-school-pg }
-          ports:
-            - { containerPort: 7800, name: ctrl }
-          livenessProbe:
-            httpGet: { path: /healthz, port: ctrl }
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 5
-          readinessProbe:
-            httpGet: { path: /healthz, port: ctrl }
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-          resources:
-            requests: { cpu: 500m, memory: 1Gi }
-            limits: { cpu: "4", memory: 4Gi }
-          volumeMounts:
-            - { name: data, mountPath: /data }
-            - { name: shm, mountPath: /dev/shm }
         # ── frontend: serves every user; resolves the owner's recorder via the
-        #    registry (BACKEND_URL is the transitional fallback until 5a-final)
+        #    registry only (no BACKEND_URL — daemon-less resolution by default)
         - name: frontend
           image: ghcr.io/lochis/auto-school-frontend:latest
           imagePullPolicy: Always
           env:
-            - { name: AUTO_SCHOOL_DATA, value: /data }
-            # 5a-final: DROP BACKEND_URL — registry-only resolution
-            - { name: BACKEND_URL, value: "http://localhost:7800" }
+            - { name: AUTO_SCHOOL_DATA, value: /data } # legacy path prefix for fs fallback constants only — no mount
             - { name: TZ, value: America/Toronto }
             - { name: TRUST_AUTHENTIK_HEADERS, value: "1" }
             - { name: AUTHENTIK_ADMIN_GROUP, value: auto-school-admins }
@@ -119,14 +83,6 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 500m, memory: 512Mi }
-          volumeMounts:
-            # 5a-final: DROP the ro /data mount
-            - { name: data, mountPath: /data, readOnly: true }
-      volumes:
-        - name: data
-          persistentVolumeClaim: { claimName: auto-school-data } # 5a-final: DROP this volume
-        - name: shm
-          emptyDir: { medium: Memory, sizeLimit: 1Gi }
 ---
 apiVersion: v1
 kind: Service

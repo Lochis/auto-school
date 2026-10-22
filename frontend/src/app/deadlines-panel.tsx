@@ -18,6 +18,7 @@ import {
   QuestionMarkCircleIcon, SparklesIcon, UserGroupIcon, XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { Badge, Chip, CodeChip, MicroButton, Panel, SearchInput, SegmentedTabs } from "@/components/ui";
+import { useRecorder } from "@/lib/use-recorder";
 
 export interface DeadEntry {
   id: string;
@@ -134,6 +135,9 @@ function weightOf(it: DeadEntry): number | null {
 
 export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyChange, onCounts }: DeadlinesPanelProps) {
   const router = useRouter();
+  // recorder-gated affordances: checklist generate/re-sweep/delete proxy to the
+  // daemon (LLM reads materials there) — without an attached recorder they 502
+  const { attached } = useRecorder();
   const [busy, setBusy] = useState<"" | "update" | "full">("");
   const [msg, setMsg] = useState("");
   const [toast, setToast] = useState<{ added: { course: string; title: string; due: string | null }[]; updated: { course: string; title: string; due: string | null; was: string | null }[]; text: string } | null>(null);
@@ -398,7 +402,7 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
     if (!c) {
       return (
         <div className="cdl-ck" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button onClick={() => void genCk(it)} disabled={!!genBusy[it.id]}>
+          <button onClick={() => void genCk(it)} disabled={!!genBusy[it.id] || !attached} title={attached ? undefined : "requires an attached recorder"}>
             {genBusy[it.id] ? "building… (reads the task sheet — can take a minute)" : "Generate checklist with AI"}
           </button>
           {ckMsg[it.id] && <span className="muted" style={{ fontSize: 12, color: "var(--error)" }}>{ckMsg[it.id]}</span>}
@@ -417,7 +421,7 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
             <div style={{ width: `${pct}%`, height: "100%", background: doneN === c.items.length ? "var(--primary-container)" : "var(--secondary)" }} />
           </div>
           <button
-            onClick={() => void genCk(it)} disabled={!!genBusy[it.id]} title="re-sweep the materials; checked steps stay checked"
+            onClick={() => void genCk(it)} disabled={!!genBusy[it.id] || !attached} title={attached ? "re-sweep the materials; checked steps stay checked" : "requires an attached recorder"}
             style={{ fontSize: 11, padding: "1px 7px" }}
           >
             {genBusy[it.id] ? "rebuilding…" : <><ArrowPathIcon className="heroicon" /> Regenerate</>}
@@ -524,9 +528,9 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
               <SparklesIcon className="heroicon" /> Ask AI
             </Link>
             <MicroButton
-              onClick={() => { if (ck) setExpanded(expanded === it.id ? null : it.id); else { setExpanded(it.id); void genCk(it); } }}
-              disabled={!!genBusy[it.id]}
-              title={ck ? "show checklist" : "AI-generate an execution checklist for this task"}
+              onClick={() => { if (ck) setExpanded(expanded === it.id ? null : it.id); else if (attached) { setExpanded(it.id); void genCk(it); } else setExpanded(it.id); }}
+              disabled={!!genBusy[it.id] || (!ck && !attached)}
+              title={ck ? "show checklist" : attached ? "AI-generate an execution checklist for this task" : "requires an attached recorder"}
             >
               {genBusy[it.id] ? "building…" : ck ? <><CheckIcon className="heroicon" /> {doneN}/{ck.items.length}{expanded === it.id ? <ChevronUpIcon className="heroicon" /> : <ChevronDownIcon className="heroicon" />}</> : <><PlusIcon className="heroicon" /> Checklist</>}
             </MicroButton>
@@ -655,9 +659,9 @@ export default function DeadlinesPanel({ items, setItems, rebuildSignal, onBusyC
               <SparklesIcon className="heroicon" /> Study Plan
             </Link>
             <MicroButton
-              onClick={() => { if (ck) setExpanded(expanded === it.id ? null : it.id); else { setExpanded(it.id); void genCk(it); } }}
-              disabled={!!genBusy[it.id]}
-              title={ck ? "show checklist" : "AI-generate an execution checklist"}
+              onClick={() => { if (ck) setExpanded(expanded === it.id ? null : it.id); else if (attached) { setExpanded(it.id); void genCk(it); } else setExpanded(it.id); }}
+              disabled={!!genBusy[it.id] || (!ck && !attached)}
+              title={ck ? "show checklist" : attached ? "AI-generate an execution checklist" : "requires an attached recorder"}
             >
               {genBusy[it.id] ? "building…" : ck ? <><CheckIcon className="heroicon" /> {doneN}/{ck.items.length}</> : <><PlusIcon className="heroicon" /> Checklist</>}
             </MicroButton>

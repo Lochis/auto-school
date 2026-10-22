@@ -33,7 +33,11 @@ export async function upsertRecorderHeartbeat(p: RecorderHeartbeat): Promise<voi
   );
 }
 
-/** Latest fresh row for an owner (null when absent or stale past maxAgeMs). */
+/** Latest fresh INBOUND row for an owner (null when absent/stale/other mode).
+ *  mode='inbound' filter is belt-and-braces: poll recorders are never
+ *  proxy targets (their endpoints are unreachable by design — NAT), so a
+ *  fresh poll row must read as daemon-less, not as a 502-storm base
+ *  (review 2026-10-21). */
 export async function getActiveRecorder(
   ownerUserId: string,
   maxAgeMs = 60_000,
@@ -41,7 +45,8 @@ export async function getActiveRecorder(
   const r = await getPool().query(
     `select name, mode, endpoint, last_seen, capabilities
      from recorders
-     where owner_user_id = $1 and last_seen > now() - ($2 || ' milliseconds')::interval
+     where owner_user_id = $1 and mode = 'inbound'
+       and last_seen > now() - ($2 || ' milliseconds')::interval
      order by last_seen desc
      limit 1`,
     [ownerUserId, String(maxAgeMs)],

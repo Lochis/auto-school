@@ -7,6 +7,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { Readable } from "node:stream";
 import { DATA_DIR } from "@/lib/data";
+import { getAuthUser } from "@/lib/auth";
 import { ownerId } from "@/lib/owner";
 import { getActiveRecorder } from "../../../../../../src/db/recorders.ts";
 
@@ -36,14 +37,28 @@ const MIME: Record<string, string> = {
 
 /** Proxy the stream from the recorder endpoint (no buffering). Forwards
  *  status + content-type/length/range so seeking keeps working. Unreachable
- *  recorder → clean 404; mid-stream failures terminate the pass-through body. */
-async function proxyRecorderMedia(endpoint: string, req: Request, path: string[]): Promise<Response | null> {
+ *  recorder → clean 404; mid-stream failures terminate the pass-through body.
+ *  The abort deadline covers CONNECT/HEADERS only — never the body read
+ *  (a body-spanning timeout killed streams longer than the timeout — review
+ *  blocker, 2026-10-21). Threads the owner header for the future daemon-side
+ *  media route (review: identity was missing on this hop). */
+async function proxyRecorderMedia(
+  endpoint: string,
+  req: Request,
+  path: string[],
+  ownerUid?: string,
+): Promise<Response | null> {
   const url = `${endpoint.replace(/\/+$/, "")}/${path.map(encodeURIComponent).join("/")}`;
   const range = req.headers.get("range");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10_000);
   try {
     const upstream = await fetch(url, {
-      headers: range ? { Range: range } : {},
-      signal: AbortSignal.timeout(15_000),
+      headers: {
+        ...(range ? { Range: range } : {}),
+        ...(ownerUid ? { "X-Auto-School-User": ownerUid } : {}),
+      },
+      signal: ctrl.signal,
     });
     if (!upstream.ok || !upstream.body) return null;
     const headers: Record<string, string> = {
@@ -55,9 +70,12 @@ async function proxyRecorderMedia(endpoint: string, req: Request, path: string[]
     if (cl) headers["Content-Length"] = cl;
     const cr = upstream.headers.get("content-range");
     if (cr) headers["Content-Range"] = cr;
+    clearTimeout(timer); // headers in — the body may stream arbitrarily long
     return new Response(upstream.body, { status: upstream.status, headers });
   } catch {
     return null; // recorder unreachable — fall through to fs
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -74,7 +92,8 @@ export async function GET(
     try {
       const rec = await getActiveRecorder(owner);
       if (rec?.endpoint && rec.capabilities?.mediaServe === true) {
-        const proxied = await proxyRecorderMedia(rec.endpoint, req, path);
+        const ownerUid = (await getAuthUser())?.uid;
+        const proxied = await proxyRecorderMedia(rec.endpoint, req, path, ownerUid);
         if (proxied) return proxied;
       }
     } catch {

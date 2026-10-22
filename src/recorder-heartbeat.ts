@@ -58,7 +58,11 @@ async function beat(): Promise<void> {
         name: "personal",
         mode: "inbound",
         endpoint: process.env.RECORDER_ENDPOINT ?? "http://localhost:7800",
-        capabilities: { liveStatus: true, joinControl: true, mediaServe: true },
+        // mediaServe stays FALSE until the daemon grows a media route to
+        // proxy to (:7800 has no static /recordings handler — the proxy
+        // would 404 every request; review 2026-10-21). Flip at 5a-final
+        // step 3 together with the daemon-side route.
+        capabilities: { liveStatus: true, joinControl: true, mediaServe: false },
       }),
       signal: AbortSignal.timeout(5000),
     });

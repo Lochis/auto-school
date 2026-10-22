@@ -11,7 +11,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
   if (!ps.length) return NextResponse.json({ error: "p required" }, { status: 400 });
   const qs = ps.map((p) => `p=${encodeURIComponent(p)}`).join("&");
   try {
-    const res = await fetch(`${await daemonBaseOrThrow()}/courses/${encodeURIComponent(slug)}/materials/download?${qs}`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10 * 60_000) });
+    // abort deadline covers CONNECT/HEADERS only — a body-spanning timeout
+    // would kill large zip streams mid-flight (review 2026-10-21)
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30_000);
+    let res: Response;
+    try {
+      res = await fetch(`${await daemonBaseOrThrow()}/courses/${encodeURIComponent(slug)}/materials/download?${qs}`, { headers: await daemonUserHeaders(), signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok || !res.body) return NextResponse.json({ error: `backend ${res.status}` }, { status: res.status });
     return new NextResponse(res.body, {
       headers: {

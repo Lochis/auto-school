@@ -3,6 +3,11 @@
 # SUPERSEDED at 5a-final by deploy/k8s/auto-school-platform.yaml +
 # deploy/k8s/auto-school-recorder.yaml (recorder-split.md §5 step 3). KEEP this
 # file as the transitional single-pod manifest until the split is applied.
+# CUTOVER IS ATOMIC: apply BOTH new manifests together, then `kubectl delete -f`
+# this one in the same change — never run this manifest alongside the recorder
+# Deployment (two daemons on one RWO PVC: double joins, profile lock fights).
+# Prerequisites: ddl.sql recorders table applied + RECORDER_TOKEN in
+# auto-school-env (see the platform manifest header).
 # Single-file manifest in the firecrawl.yaml style (see ~/Projects/firecrawl-k8s).
 # One pod, two containers: the recording daemon (Xvfb+PulseAudio+Chromium+ffmpeg
 # in its image) and the Next.js frontend. Same pod because the Longhorn PVC is
