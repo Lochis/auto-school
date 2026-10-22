@@ -103,10 +103,10 @@ export async function upsertCourseConfig(
 export async function updateSession(courseId: number, stem: string, patch: Record<string, unknown>): Promise<void> {
   const cols = Object.keys(patch);
   if (!cols.length) return;
-  const sets = cols.map((c, i) => `${c} = $${i + 3}`).join(", ");
+  const sets = cols.map((c, i) => `${c} = $${i + 4}`).join(", ");
   await q(
-    `update sessions set ${sets}, updated_at = now() where course_id = $1 and stem = $2`,
-    [courseId, stem, ...cols.map((c) => patch[c])],
+    `update sessions set ${sets}, updated_at = now() where course_id = $1 and stem = $2 and owner_user_id = $3`,
+    [courseId, stem, curOwner(), ...cols.map((c) => patch[c])],
   );
 }
 
