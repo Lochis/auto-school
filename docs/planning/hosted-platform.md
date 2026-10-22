@@ -24,6 +24,23 @@ Two components sharing one codebase:
 client half (record → transcribe → submit), talking to a co-located DB instead of the
 ingestion API.
 
+## 1.5 Recorder taxonomy + schedule distribution (ICS)
+
+One contract, two variants (`recorder-split.md` registry `mode` column):
+
+| | inbound (personal pod) | poll (hosted, Electron) |
+| --- | --- | --- |
+| Schedule | Graph/Teams bot (personal-only, auto-attend) | subscribes to the platform's per-user ICS feed |
+| Capture | browser-joined recording (daemon) | desktop/tab audio (`desktopCapturer`/`getDisplayMedia`) + ffmpeg segments; **started by a present human** (banner + one click) — no unattended capture for non-owner users |
+| Storage | PVC (never syncs) | on-device default; optional segment sync to the user's own cloud (§4) |
+| Ingest | direct PG (trusted pod) | ingestion API (§3) |
+
+ICS flows: **platform → recorder** (`/api/calendar/<feed-id>.ics`, authenticated): the web
+app's calendar UI becomes a timetable editor for hosted users; the feed arms record windows.
+**user → platform** (import): one-time ICS/Outlook URL import populates the timetable — user's
+own calendar data, no scraping, no borrowed client IDs. Same feed mechanism gives a
+deadlines-ICS (platform → phone calendar) as a user feature.
+
 ## 2. Tier decision (open, gates the ingestion API)
 
 COMMERCIALIZATION-PLAN.md drew the line at "no hosted storage of recordings/transcripts";
