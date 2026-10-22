@@ -89,7 +89,7 @@ export const sessions = pgTable("sessions", {
 }, (t) => [
   check("sessions_stage_check",
     sql`${t.stage} IN ('recording','remuxing','transcribing','noting','consolidating','done','failed')`),
-  unique("sessions_course_id_stem_key").on(t.courseId, t.stem),
+  unique("sessions_course_stem_owner_key").on(t.courseId, t.stem, t.ownerUserId),
   index("sessions_course_date_idx")
     .on(t.courseId, sql`${t.sessionDate} DESC`, sql`${t.startTime} DESC NULLS LAST`),
 ]);
@@ -261,10 +261,14 @@ export const activityEvents = pgTable("activity_events", {
 ]);
 
 export const appSettings = pgTable("app_settings", {
-  key: text("key").primaryKey(),
+  key: text("key").notNull(),
+  ownerUserId: uuid("owner_user_id").notNull()
+    .default("00000000-0000-0000-0000-000000000001").references(() => users.id),
   value: jsonb("value").$type<unknown>().notNull(),
   updatedAt: tstz("updated_at").notNull().defaultNow(),
-});
+}, (t) => [
+  unique("app_settings_key_owner_key").on(t.key, t.ownerUserId),
+]);
 
 // ── chat / attendance / left-meetings / deadlines-meta (Phase 4 completion) ──
 export const chatMessages = pgTable("chat_messages", {

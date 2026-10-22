@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
   owner_user_id uuid NOT NULL REFERENCES users(id),
-  UNIQUE (course_id, stem)                      -- natural key for idempotent upserts
+  CONSTRAINT sessions_course_stem_owner_key UNIQUE (course_id, stem, owner_user_id)
+                                               -- two owners may hold the same stem (hosted multi-tenant)
 );
 CREATE INDEX IF NOT EXISTS sessions_course_date_idx ON sessions (course_id, session_date DESC, start_time DESC NULLS LAST);
 
@@ -220,9 +221,11 @@ CREATE TABLE IF NOT EXISTS activity_events (    -- replaces out/events.jsonl (st
 CREATE INDEX IF NOT EXISTS activity_events_ts_idx ON activity_events (ts DESC);
 
 CREATE TABLE IF NOT EXISTS app_settings (       -- optional: replaces settings.json (status.ts:8-25)
-  key    text PRIMARY KEY,                      -- 'recordRetentionDays', 'geminiModels', …
+  key    text NOT NULL,                          -- 'recordRetentionDays', 'geminiModels', …
+  owner_user_id uuid NOT NULL REFERENCES users(id) DEFAULT '00000000-0000-0000-0000-000000000001',  -- system row = seed owner; user rows overlay it (state.ts settingsLoad merge)
   value  jsonb NOT NULL,
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT app_settings_key_owner_key UNIQUE (key, owner_user_id)
 );
 
 -- ── chat history (replaces user-data/chat.json + user-data/courses/<slug>/chat.json) ──
@@ -281,3 +284,36 @@ CREATE TABLE IF NOT EXISTS deadlines_meta (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar          bytea;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_mime     text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_synced_at timestamptz;
+
+-- ── multi-tenant hardening (authentik Phase 2, hosted-platform.md §5 item 4) ──
+-- Re-runnable wholesale like the blocks above: fresh DBs already carry the
+-- named constraints from the CREATE blocks above; deployed DBs converge here.
+
+-- sessions: two owners may hold the same course+stem, so the natural key
+-- gains owner_user_id. Drop the old unnamed two-column unique if present,
+-- then add the named composite constraint if absent (PG has no
+-- ADD CONSTRAINT IF NOT EXISTS; the pg_constraint probe keeps it idempotent).
+ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_course_id_stem_key;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sessions_course_stem_owner_key') THEN
+    ALTER TABLE sessions ADD CONSTRAINT sessions_course_stem_owner_key
+      UNIQUE (course_id, stem, owner_user_id);
+  END IF;
+END
+$$;
+
+-- app_settings: per-user overlay. owner_user_id backfills to the seed owner
+-- (DEFAULT covers existing rows — no explicit backfill needed), then the
+-- key-only primary key gives way to the (key, owner_user_id) natural key.
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS owner_user_id uuid NOT NULL
+  REFERENCES users(id) DEFAULT '00000000-0000-0000-0000-000000000001';
+ALTER TABLE app_settings DROP CONSTRAINT IF EXISTS app_settings_pkey;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_settings_key_owner_key') THEN
+    ALTER TABLE app_settings ADD CONSTRAINT app_settings_key_owner_key
+      UNIQUE (key, owner_user_id);
+  END IF;
+END
+$$;

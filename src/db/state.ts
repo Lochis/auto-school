@@ -13,23 +13,47 @@ import { pgConfigured } from "./reader.ts";
 const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
 
 // ── app_settings (settings.json → single jsonb row, key 'settings') ───────
+// Knob semantics (Phase 2, hosted-platform.md §5 item 4): the SYSTEM row
+// (seed owner) carries recorder/pipeline knobs — ASR model chain, batch
+// segments, retention, join-early/browser channel — owned by the pod. USER
+// rows are per-user overlays of user-facing overrides; a hosted user may
+// only write their own overlay (settingsSave targets curOwner()), never the
+// system row. Reads shallow-merge system + user — user keys win — so the
+// personal pod (daemon-origin requests = system OWNER) behaves exactly as
+// before: one row, merge is a no-op.
 
-/** The stored Settings object, or null when the row is absent (first boot —
- *  caller seed-migrates from the fs file). */
+/** The effective Settings object — system row overlaid by the requesting
+ *  user's row, or null when both are absent (first boot — caller
+ *  seed-migrates from the fs file). */
 export async function settingsLoad(): Promise<unknown | null> {
   if (!pgConfigured()) return null;
-  const r = await q(`select value from app_settings where key = 'settings'`);
-  return r.rows[0]?.value ?? null;
+  const user = curOwner();
+  if (user === OWNER) {
+    const r = await q(`select value from app_settings where key = 'settings' and owner_user_id = $1`, [OWNER]);
+    return r.rows[0]?.value ?? null;
+  }
+  // hosted user: fetch both rows in one round trip, merge app-side (shallow —
+  // user overlay wins key-by-key)
+  const r = await q(
+    `select owner_user_id, value from app_settings
+     where key = 'settings' and owner_user_id = any($1::uuid[])`,
+    [[OWNER, user]],
+  );
+  const system = r.rows.find((x) => x.owner_user_id === OWNER)?.value as Record<string, unknown> | undefined;
+  const overlay = r.rows.find((x) => x.owner_user_id === user)?.value as Record<string, unknown> | undefined;
+  return system || overlay ? { ...system, ...overlay } : null;
 }
 
-/** Upsert the full Settings object (DB is the primary store; the fs
- *  settings.json stays as a Phase-4-removable mirror). */
+/** Upsert the full Settings object to the REQUEST OWNER's row (system row
+ *  when daemon-origin — the personal pod keeps today's behavior; the hosted
+ *  user's overlay otherwise). The fs settings.json stays as a
+ *  Phase-4-removable mirror. */
 export async function settingsSave(value: unknown): Promise<void> {
   if (!pgConfigured()) return;
   await q(
-    `insert into app_settings (key, value) values ('settings', $1::jsonb)
-     on conflict (key) do update set value = excluded.value, updated_at = now()`,
-    [JSON.stringify(value)],
+    `insert into app_settings (key, value, owner_user_id) values ('settings', $1::jsonb, $2)
+     on conflict (key, owner_user_id) do update set value = excluded.value, updated_at = now()`,
+    [JSON.stringify(value), curOwner()],
   );
 }
 

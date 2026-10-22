@@ -6,6 +6,7 @@
  *  recording guard) are served from an in-memory mirror because they are all
  *  sync call sites and describe process-local live state anyway. */
 import { getPool } from "../db/client.ts";
+import { curOwner } from "../db/owner.ts";
 import { courseId, sessionId } from "../db/writes.ts";
 import { sessionPaths } from "./courses.ts";
 import { readdirSync, statSync } from "node:fs";
@@ -68,9 +69,12 @@ export async function resolveSession(
   const slug = opts.slug ?? paths.course.slug;
   const stem = opts.stem ?? paths.stem;
   const cid = await courseId(slug, opts.name);
+  // owner-scoped like the sessionId upsert below (Phase 2: two owners may
+  // hold the same stem; pipeline jobs run under system OWNER, manual
+  // /transcribe + /ingest under the clicking user via curOwner())
   const found = await getPool().query(
-    `select id from sessions where course_id = $1 and stem = $2`,
-    [cid, stem],
+    `select id from sessions where course_id = $1 and stem = $2 and owner_user_id = $3`,
+    [cid, stem, curOwner()],
   );
   let sid = found.rows[0] ? Number(found.rows[0].id) : null;
   if (sid == null) {
@@ -90,7 +94,7 @@ export async function updateSession(stem: string, patch: Partial<Omit<SessionSta
   // real capture start: explicit patch (mtime) > stem's __ISO suffix > now()
   const t = stemTimes(stem);
 
-  // durable upsert on (course_id, stem); coalesce semantics match partial patches
+  // durable upsert on (course_id, stem, owner_user_id); coalesce semantics match partial patches
   try {
     const cid = await courseId(paths.course.slug);
     await sessionId(cid, canonicalStem, {

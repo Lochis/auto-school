@@ -48,12 +48,12 @@ export interface SessionInit {
   startedAt?: number | null;           // epoch-ms real capture start (stem __ISO / file mtime); absent → now()
 }
 
-/** Upsert a session by natural key (course_id, stem); return its id. */
+/** Upsert a session by natural key (course_id, stem, owner_user_id); return its id. */
 export async function sessionId(courseId: number, stem: string, init: SessionInit = { sessionDate: stem.slice(0, 10) }): Promise<number> {
   const r = await q(
     `insert into sessions (course_id, stem, session_date, start_time, title, join_url, stage, stage_note, seg_count, duration_sec, size_mb, started_at, owner_user_id)
      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,coalesce($12::timestamptz, now()),$13)
-     on conflict (course_id, stem) do update set
+     on conflict (course_id, stem, owner_user_id) do update set
        session_date = excluded.session_date,
        start_time = coalesce(excluded.start_time, sessions.start_time),
        title = coalesce(nullif(excluded.title,''), sessions.title),
