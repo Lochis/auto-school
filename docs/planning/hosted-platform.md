@@ -69,12 +69,11 @@ Original scope was per-user blob storage incl. recordings on platform infra. New
 1. ✅ Authentik Phase 0 — edge identity
 2. ✅ Postgres migration — all 4 cutover phases
 3. ✅ Authentik Phase 1 — per-request owner binding (`feat/authentik-phase1`)
-4. **Multi-tenant schema hardening ("Phase 2")** — REQUIRED before any second real user:
-   - `sessions UNIQUE(course_id, stem)` → include `owner_user_id` (two owners may hold the
-     same stem); update the `on conflict (course_id, stem)` upsert (`writes.ts:56`).
-   - `app_settings` per-user: owner column + system-row/user-override merge (knob split:
-     recorder/system knobs stay global; user-facing prefs per-user).
-   - fs blob ACL stays deferred (§4 covers the hosted world; personal pod is single-user).
+4. **Multi-tenant schema hardening ("Phase 2")** — ✅ DONE (`feat/authentik-phase2`, 2026-10-21):
+   sessions `UNIQUE(course_id, stem, owner_user_id)` + owner-scoped upsert/resolve/update;
+   app_settings per-user overlay (system row = recorder knobs, user rows = overrides,
+   shallow merge, personal-pod behavior byte-identical). fs blob ACL stays deferred (§4
+   covers the hosted world; personal pod is single-user).
 5. **Platform split** — ingestion API + token auth (§3); frontend must fully work with no
    daemon attached (status board/autopilot surfaces degrade gracefully — local-dev mode
    already proves most of this).

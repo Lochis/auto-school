@@ -16,8 +16,10 @@
 2. **Postgres migration** — ✅ DONE (all 4 cutover phases; fs metadata tree is backup-only).
 3. **Authentik Phase 1** — ✅ DONE (`feat/authentik-phase1`): per-request owner binding
    end-to-end; courses/mappings/documents/settings deliberately system-global.
-4. **Multi-tenant schema hardening ("Phase 2")** — sessions UNIQUE gains owner_user_id;
-   app_settings per-user with system-row merge. Required before any second real user.
+4. **Multi-tenant schema hardening ("Phase 2")** — ✅ DONE (`feat/authentik-phase2`, 2026-10-21,
+   verifier-approved): sessions unique + upsert + resolveSession/updateSession owner-scoped;
+   app_settings per-user overlay (system+user shallow merge, writes to request owner).
+   Deploy note: run the appended ddl.sql Phase-2 migration block on prod before rollout.
    (Pod-per-user workers were step 4 — DEAD 2026-10-20, daemon is personal-only.)
 5. **Platform split** — ingestion API + token auth; frontend works daemon-less.
 6. **Electron packaging** — web app shell + capture engine + sync client.
