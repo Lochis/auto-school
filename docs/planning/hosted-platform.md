@@ -74,7 +74,11 @@ Original scope was per-user blob storage incl. recordings on platform infra. New
    app_settings per-user overlay (system row = recorder knobs, user rows = overrides,
    shallow merge, personal-pod behavior byte-identical). fs blob ACL stays deferred (§4
    covers the hosted world; personal pod is single-user).
-5. **Platform split** — ingestion API + token auth (§3); frontend must fully work with no
+5. **Platform split** — two halves:
+   a. **Recorder split** (`recorder-split.md`) — frontend daemon-less by default, personal
+      recorder = own Deployment + per-owner registry (heartbeat, inbound mode).
+   b. **Ingestion API + token auth** (§3) for external Electron clients (poll-mode
+      recorders); can follow without touching (a). Frontend must fully work with no
    daemon attached (status board/autopilot surfaces degrade gracefully — local-dev mode
    already proves most of this).
 6. **Electron packaging** — web app shell + capture engine + sync client; code signing,
