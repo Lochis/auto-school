@@ -424,3 +424,186 @@ roll contract back if the old keys are provably still unique.
 - **EXPAND** applied + verified 2026-10-21 (4 constraints coexisted, `recorders` live, 5 app_settings rows backfilled to seed). Tag `deploy-expand-applied-2026-10-21`.
 - **DEPLOY** images built+pushed (ghcr auth refreshed), rollout restart, pod 2/2. Verified: `/api/me` authenticated, `recorder.attached=true` (BACKEND_URL fallback), avatar serves user's real upload (16KB PNG, no provider sync), all 3 `ON CONFLICT` arbiters resolve via transactional probe.
 - **CONTRACT** applied + verified 2026-10-21 (old `sessions_course_id_stem_key` + `app_settings_pkey` dropped; new composite uniques sole arbiters; post-contract probe `post-contract-ok`). Daemon login self-healed after restart (cold-start transient, not a regression).
+
+---
+
+## 8. PLAN 2026-10-29 — owner-scoped `deadlines` uniqueness (5b-2 cross-owner fix)
+
+Status: **PLAN ONLY — nothing below has been applied to prod.** Fixes
+`docs/planning/ingestion-api.md` §3b.1 (HIGH: cross-owner deadline corruption).
+
+What changed in code (`main` @ `6b8a156` + this section's commit):
+
+| | arbiter | conflict target |
+|---|---|---|
+| old code | `deadlines_course_id_title_legacy_id_key` `UNIQUE (course_id, title, legacy_id)` | `on conflict (course_id, title, legacy_id)` — `src/db/deadlines.ts:113`, `:602` |
+| new code | `deadlines_course_title_legacy_owner_key` `UNIQUE (course_id, title, legacy_id, owner_user_id)` | `on conflict (course_id, title, legacy_id, owner_user_id)` |
+
+Pre-fix behaviour (why this is a migration, not a code tweak): owner B inserting the same
+course+title as owner A hit A's row, the `do update` rewrote A's `due`/`parts`, and B never
+got a row of their own (`upsertIngestDeadlines` also reported `{upserted:1, updated:1}` for it).
+
+**Constraint name discovery (the thing to get right).** The pre-fix `src/db/ddl.sql` declared
+the constraint *inline* (`UNIQUE (course_id, title, legacy_id)`), so Postgres auto-named it
+**`deadlines_course_id_title_legacy_id_key`** — verified on `postgres:18-alpine`: default
+form is `<table>_<cols…>_key`, 44 chars, so no 63-byte truncation. **Confirm on prod before
+dropping** — a convention is not a guarantee, and a hand-created/dump-restored DB may differ:
+
+```sql
+\d deadlines
+-- or, from SQL:
+SELECT conname, pg_get_constraintdef(oid)
+  FROM pg_constraint
+ WHERE conrelid = 'deadlines'::regclass AND contype = 'u';
+-- pre-contract expectation: exactly deadlines_course_id_title_legacy_id_key,
+--                           UNIQUE (course_id, title, legacy_id)
+```
+
+Use whatever name that returns in the `DROP CONSTRAINT` below.
+
+Naming note: the new DDL declares the constraint **explicitly** as
+`CONSTRAINT deadlines_course_title_legacy_owner_key UNIQUE (…)`, and expand below creates the
+index under that same name — so a fresh DB and a migrated prod DB end up with the *identical*
+index name (`deadlines_course_title_legacy_owner_key`). Only the *kind* differs, harmlessly:
+fresh = a `pg_constraint` row backed by an index of that name; migrated = a bare unique
+index. `on conflict (course_id, title, legacy_id, owner_user_id)` works with both; a
+`pg_constraint`-only probe will show **zero rows** for `contype='u'` on the migrated DB, so
+query `pg_index` too (`select indexrelid::regclass, indisvalid from pg_index where indrelid
+= 'deadlines'::regclass and indisunique;`).
+
+### 8.1 EXPAND (apply FIRST; safe while old code runs)
+
+Additive and idempotent: the new 4-column unique is created **before** the old 3-column one
+is dropped, so old code keeps its arbiter and new code never starts on a DB missing its own.
+
+`CREATE UNIQUE INDEX CONCURRENTLY` cannot run inside a transaction block → run it **outside**
+`BEGIN`. Prod is single-owner (all rows seed-owned `00000000-0000-0000-0000-000000000001`),
+so a 4-column index **cannot** collide on existing data — no dedup step, no pre-check
+needed. A `23505` here would mean a second owner already exists: abort and investigate
+rather than delete rows.
+
+```sql
+-- expand.sql  (no BEGIN — CONCURRENTLY)
+-- 1) new owner-scoped arbiter; additive, old code unaffected
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS deadlines_course_title_legacy_owner_key
+  ON deadlines (course_id, title, legacy_id, owner_user_id);
+
+-- 2) prove step 1 is valid BEFORE anything else runs
+SELECT indexrelid::regclass AS index, indisvalid
+  FROM pg_index WHERE indexrelid = 'deadlines_course_title_legacy_owner_key'::regclass;
+-- expected: indisvalid = t
+```
+
+Caveat: a failed `CONCURRENTLY` build leaves an **INVALID** index that `IF NOT EXISTS`
+then hides. If step 2 shows `indisvalid = f`:
+`DROP INDEX CONCURRENTLY deadlines_course_title_legacy_owner_key;` and retry. Do **not**
+proceed to §8.3 with an invalid index.
+
+The `DROP CONSTRAINT` that finishes the swap is **§8.3 (contract)** — deliberately *not* part
+of expand. Ordering rule: **new index exists → code deploy → old constraint drops.** Dropping
+the 3-column constraint before the new code is live makes every old-code deadline write fail
+(*"there is no unique or exclusion constraint matching the ON CONFLICT specification"*), which
+is exactly the mistake §0 exists to prevent.
+
+Expand rollback (before §8.3): `DROP INDEX CONCURRENTLY deadlines_course_title_legacy_owner_key;`
+— nothing else changed, old code untouched.
+
+### 8.2 CODE DEPLOY (**must** land between expand and contract)
+
+`on conflict (<cols>)` needs a live unique index on *exactly* those columns, so this fix has
+three ordered steps — **EXPAND → DEPLOY → CONTRACT** — and the outer two cannot be skipped
+or swapped:
+
+1. **Expand** (§8.1): additive only. Old code's 3-column constraint is still there, so the
+   live daemon keeps working. Nothing breaks yet.
+2. **Deploy** the image carrying the owner-scoped conflict targets (`upsertDeadlineRow` +
+   `upsertIngestDeadlines` in `src/db/deadlines.ts`). This must follow expand
+   *immediately*: §8.1 step 3 already dropped the 3-column arbiter, so from that moment
+   **every old-code deadline write fails** with *"there is no unique or exclusion constraint
+   matching the ON CONFLICT specification"*. Build/push the image *before* starting §8.1,
+   then `kubectl set image … && kubectl rollout status`.
+3. **Contract** (§8.3): drops the 3-column constraint, closing the window below.
+
+Residual risk between deploy and contract (same shape as §0): the old 3-column constraint
+still exists, so a *second* owner inserting a course+title owner #1 already owns is still
+rejected by it (`23505`) instead of landing as a fresh row — the bug is no longer *corrupting*,
+but it is not yet fixed end-to-end. Single-owner prod is unaffected: **do not onboard a
+second user before contract.**
+
+Verify between deploy and contract: pods Ready, `/api/me` authenticated, one deadline write
+round-trips in the UI, and
+`kubectl logs deploy/auto-school --since=10m | grep -Ei "on conflict|23505|no unique or exclusion"`
+returns nothing.
+
+### 8.3 CONTRACT (apply ONLY after the new code is deployed + health-verified)
+
+```sql
+-- contract.sql
+-- 3) drop the non-owner-scoped arbiter — name CONFIRMED via \d deadlines (see above)
+ALTER TABLE deadlines DROP CONSTRAINT deadlines_course_id_title_legacy_id_key;
+COMMIT;                -- only if you wrapped these in BEGIN; ANALYZE below is outside it
+ANALYZE deadlines;
+```
+
+Do **not** run it before the new image is live (see §8.2). Precondition check:
+
+```sql
+-- must return exactly one row: the owner-scoped unique index, indisvalid = t
+SELECT indexrelid::regclass, indisvalid FROM pg_index
+ WHERE indexrelid IN ('deadlines_course_title_legacy_owner_key'::regclass,
+                      'deadlines_course_id_title_legacy_id_key'::regclass);
+```
+
+No data loss possible: the 4-column unique is strictly weaker than the 3-column one, so the
+drop can never introduce a duplicate. Post-contract, `deadlines` has exactly one unique
+arbiter (the owner-scoped one) plus its PK.
+
+### 8.4 Fresh installs / CI / any already-provisioned DB
+
+No migration needed for a **fresh** DB: `src/db/ddl.sql` now creates
+`CONSTRAINT deadlines_course_title_legacy_owner_key UNIQUE (course_id, title, legacy_id,
+owner_user_id)` directly. This section exists only for DBs whose `deadlines` table was created
+from the older DDL — prod, and *also* any long-lived dev/CI database, since
+`CREATE TABLE IF NOT EXISTS` will not touch an existing table. Check before assuming:
+
+```sql
+SELECT pg_get_constraintdef(oid) FROM pg_constraint
+ WHERE conrelid = 'deadlines'::regclass AND contype = 'u';
+-- 3-column def ⇒ that DB still needs §8.1 + §8.3 (no code deploy involved for dev)
+```
+
+### 8.5 Known follow-up triggered by this change (do not silently skip)
+
+`scripts/import-fs-to-pg.ts:412` and `:448` still target `on conflict (course_id, title,
+legacy_id)`. On a DB migrated by 8.1 (or a fresh one) that target no longer exists, so the
+one-shot fs→pg importer raises *"no unique or exclusion constraint matching the ON CONFLICT
+specification"*. Always add `owner_user_id` to those two conflict targets (they already
+insert `OWNER`) before re-running the importer. Out of scope for this commit; tracked here
+so the next person running a restore does not hit it blind.
+
+Same rot already exists for the 2026-10-21 migration: `:228` still targets `on conflict
+(course_id, stem)` and `:388` `(course_id, kind, rel_path)`, i.e. the importer predates both
+contracts and is not safe to run against a post-migration DB as-is. Treat it as a retired
+one-shot: if a restore is ever needed, port its conflict targets first (sessions → `(course_id,
+stem, owner_user_id)`, deadlines → the 4-column target above).
+
+### 8.6 APPLIED LOG
+
+- **PLAN** written 2026-10-29 (not applied; no prod access from this session). Constraint name
+  confirmed, expand/contract SQL above ready to run.
+- **DRY-RUN (throwaway `postgres:18-alpine`, no prod)** — both paths proved, twice:
+  1. *fresh*: updated `ddl.sql` loaded (pgvector stripped) ⇒ `deadlines` has exactly one unique
+     arbiter, `deadlines_course_title_legacy_owner_key UNIQUE (course_id, title, legacy_id,
+     owner_user_id)`.
+  2. *migrated*: pre-fix `ddl.sql` (`6b8a156`) loaded ⇒ §8.1 expand (`indisvalid = t`) ⇒ §8.3
+     contract ⇒ same single arbiter, old `deadlines_course_id_title_legacy_id_key` gone.
+  Against **both** schemas, the real `src/db/deadlines.ts` functions behave correctly:
+  owner A `upsertDeadlineRow("Shared", 2026-12-12)` then owner B same course+title
+  `2027-02-02` ⇒ 2 rows, A's due and parts untouched, B reads their own row;
+  `upsertIngestDeadlines` for A then B ⇒ `{added:2, updated:0, skipped:2}` each (no collision);
+  same-owner repeat/case-variant ⇒ `{added:0, updated:1}` with no duplicate row; a same-owner
+  same-`(course,title,legacy_id)` raw insert raises `23505` on the new arbiter while the
+  cross-owner one succeeds.
+- **EXPAND** — pending.
+- **DEPLOY** — pending (must land between expand and contract, §8.2).
+- **CONTRACT** — pending.

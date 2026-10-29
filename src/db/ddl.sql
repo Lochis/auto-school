@@ -173,7 +173,11 @@ CREATE TABLE IF NOT EXISTS deadlines (
   owner_user_id uuid NOT NULL REFERENCES users(id),
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (course_id, title, legacy_id)         -- dlKey() + legacy id: fs can hold ~1 re-extraction twins;
+  -- dlKey() + legacy id: fs can hold ~1 re-extraction twins. owner_user_id is part of the key so two
+  -- owners' same-course/same-title rows never collide (pre-5b-2 this was cross-owner UPDATE corruption).
+  -- Named explicitly so a fresh DB and a prod DB migrated per
+  -- docs/planning/deploy-runbook-2026-10-21.md §8 carry the SAME constraint/index name.
+  CONSTRAINT deadlines_course_title_legacy_owner_key UNIQUE (course_id, title, legacy_id, owner_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS deadline_parts (     -- Dl.parts[] for not-yet-generated checklists

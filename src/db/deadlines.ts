@@ -110,7 +110,7 @@ export async function upsertDeadlineRow(x: Dl, owner: string = curOwner()): Prom
     `insert into deadlines (legacy_id, course_id, title, due, due_manual, kind, spread, start_by,
         note, source, confidence, done, done_at, user_note, stale, owner_user_id)
      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-     on conflict (course_id, title, legacy_id) do update set
+     on conflict (course_id, title, legacy_id, owner_user_id) do update set
        due=excluded.due, due_manual=excluded.due_manual, kind=excluded.kind, spread=excluded.spread,
        start_by=excluded.start_by, note=excluded.note, source=excluded.source,
        confidence=excluded.confidence, done=excluded.done, done_at=excluded.done_at,
@@ -557,7 +557,8 @@ const INGEST_CAP = 200;
 
 /** Upsert a batch of ingested deadlines for one owner (one transaction).
  *  Natural key: course + case-insensitive title (+ legacy_id for the unique
- *  index). Never throws: a bad batch rolls back and reports `error`, so it can
+ *  index, which is owner-scoped — another owner's same-title row is a separate
+ *  row, never a conflict target). Never throws: a bad batch rolls back and reports `error`, so it can
  *  never take a committed session/transcript ingest down with it. */
 export async function upsertIngestDeadlines(ownerUserId: string, deadlines: IngestDeadline[]): Promise<IngestDeadlinesResult> {
   const out: IngestDeadlinesResult = { upserted: 0, added: 0, updated: 0, skipped: 0 };
@@ -598,23 +599,26 @@ export async function upsertIngestDeadlines(ownerUserId: string, deadlines: Inge
       const ins = await client.query(
         `insert into deadlines (legacy_id, course_id, title, due, due_manual, start_by, owner_user_id)
          values ($1,$2,$3,$4,false,$5,$6)
-         on conflict (course_id, title, legacy_id) do nothing
+         on conflict (course_id, title, legacy_id, owner_user_id) do nothing
          returning id`,
         [dlId(course, title), cid, title, hasDue ? due : null, hasStartBy ? startBy : null, ownerUserId],
       );
       if (ins.rows[0]) { out.added++; out.upserted++; continue; }
-      // lost a race with a concurrent insert → update it instead
-      await client.query(
+      // Lost a race with a concurrent insert by THIS owner → update that row instead.
+      // Owner-scoped on purpose: the pre-update above already filtered on it, so a
+      // conflict here can only be our own row (never another owner's).
+      const race = await client.query(
         `update deadlines set
            due = case when $4::boolean and not due_manual then $5::date else due end,
            start_by = case when $6::boolean then $7::date else start_by end,
            updated_at = now()
          where course_id = $1 and owner_user_id = $2 and lower(trim(title)) = lower(trim($3))
-           and legacy_id = $8`,
+           and legacy_id = $8
+         returning id`,
         [cid, ownerUserId, title, hasDue, hasDue ? due : null, hasStartBy, hasStartBy ? startBy : null, dlId(course, title)],
       );
-      out.updated++;
-      out.upserted++;
+      if (race.rows[0]) { out.updated++; out.upserted++; continue; }
+      out.skipped++; // row vanished mid-flight (concurrent delete) — never double-count
     }
     await client.query("commit");
     return out;
