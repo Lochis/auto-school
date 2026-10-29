@@ -15,12 +15,23 @@ import { getUserIdBySub } from "../../../../../../src/db/avatar.ts";
 import { listSessions } from "../../../../../../src/db/queries/sessions.ts";
 import { courseId, sessionId, upsertArtifact } from "../../../../../../src/db/writes.ts";
 import { ownerALS } from "../../../../../../src/db/owner.ts";
+import { embedPendingSessions } from "../../../../../../src/db/ingest-embed.ts";
 
 export const dynamic = "force-dynamic";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** mirrors the daemon's accepted stem alphabet (`YYYY-MM-DD__course__HHMMSS`) */
 const STEM_RE = /^[\w\-.\s:]+$/;
+/** Request-body ceiling. Derived text for one class is a few hundred KB at
+ *  most (transcript + notes + timeline); 8 MiB is generous, and anything
+ *  larger is refused before JSON.parse so a bad/looping client cannot pin the
+ *  single pod's heap. */
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
+/** Stages that mean a capture is in flight for that stem. The recording
+ *  artifact is only written at consolidation, so such a row has no `audio`
+ *  and would otherwise look "ingest-created" to the same-day stem reuse
+ *  lookup — an ingest during a live class would adopt the recording's stem. */
+const IN_FLIGHT_STAGES = new Set(["recording", "remuxing", "transcribing", "noting", "consolidating"]);
 
 function tokenOk(header: string | null): boolean {
   const expected = process.env.INGEST_TOKEN;
@@ -51,13 +62,32 @@ function deriveStem(course: string, date: string): string {
   return `${date}__${course}__${String(torontoSeq()).padStart(6, "0")}`;
 }
 
+/** Parse the JSON body under MAX_BODY_BYTES. Null → 400 (missing/malformed);
+ *  the TOO_LARGE sentinel → 413. */
+const TOO_LARGE = Symbol("body-too-large");
+async function readJsonBody(req: Request): Promise<unknown | null | typeof TOO_LARGE> {
+  const declared = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return TOO_LARGE;
+  const raw = await req.text().catch(() => "");
+  if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) return TOO_LARGE; // chunked / understated content-length
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   try {
     if (!tokenOk(req.headers.get("authorization"))) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
 
-    const body = (await req.json().catch(() => null)) as {
+    const rawBody = await readJsonBody(req);
+    if (rawBody === TOO_LARGE) {
+      return NextResponse.json({ ok: false, error: "payload too large" }, { status: 413 });
+    }
+    const body = rawBody as {
       owner?: unknown;
       course?: unknown;
       name?: unknown;
@@ -67,7 +97,6 @@ export async function POST(req: Request) {
       notes?: unknown;
       timeline?: unknown;
     } | null;
-
     if (!body || typeof body !== "object") {
       return NextResponse.json({ ok: false, error: "json body required" }, { status: 400 });
     }
@@ -120,11 +149,12 @@ export async function POST(req: Request) {
     if (!stem) {
       // No explicit stem: resubmitting the same day's derived text must update,
       // not duplicate. Reuse the newest same-day *ingest-created* session
-      // (no recording artifact — recorded sessions are never hijacked), else
-      // mint a daemon-style stem.
+      // (no recording artifact AND no in-flight stage — a live recording only
+      // gets its artifact at consolidation, so `!s.audio` alone would adopt
+      // its stem), else mint a daemon-style stem.
       const prefix = `${date}__${course}__`;
       const existing = (await listSessions(course, ownerUserId)).find(
-        (s) => !s.audio && s.stem.startsWith(prefix),
+        (s) => !s.audio && !IN_FLIGHT_STAGES.has(s.stage ?? "") && s.stem.startsWith(prefix),
       );
       stem = existing?.stem ?? deriveStem(course, date);
     }
@@ -138,6 +168,11 @@ export async function POST(req: Request) {
       const cid = await courseId(course);
       const id = await sessionId(cid, finalStem, {
         sessionDate: date,
+        // ingested text is a finished session, not a capture: without this the
+        // writes.ts default 'recording' left the row mid-flight, and the
+        // daemon's boot heal (pipeline/sessions.ts hydrateSessions) then failed
+        // it as "interrupted by restart".
+        stage: "done",
         ...(name ? { title: name } : {}),
       });
 
@@ -161,6 +196,12 @@ export async function POST(req: Request) {
       }
       return id;
     });
+
+    // Make the ingested text semantically searchable without waiting for the
+    // daemon's 6h sweep (the daemon need not be running when a client posts
+    // here). Fire-and-forget: an embedding/API-key failure must never fail an
+    // ingest that already committed.
+    void embedPendingSessions().catch(() => { });
 
     return NextResponse.json({ ok: true, sessionId: sid, stem: finalStem });
   } catch (e) {

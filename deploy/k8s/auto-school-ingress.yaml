@@ -18,6 +18,22 @@ spec:
         - name: ak-outpost-authentik-embedded-outpost.authentik.svc.cluster.local
           port: 9000
           scheme: http
+    # Machine-to-machine routes: NO forwardAuth. An external recorder/client
+    # authenticates with `Authorization: Bearer $INGEST_TOKEN` /
+    # `$RECORDER_TOKEN` (constant-time compared in the route handlers), which
+    # forwardAuth would never let through — the request was 302'd to the
+    # authentik login before the app saw it. Both routes are POST-only and
+    # fail closed (401) when their token env is unset, so this is not a
+    # bypass of the app's auth. Traefik ranks by rule length, so these
+    # PathPrefix rules win over the plain Host() catch-all below; `priority`
+    # makes that explicit rather than incidental.
+    - kind: Rule
+      priority: 100
+      match: Host(`school.vanderloch.com`) && (PathPrefix(`/api/ingest/session`) || PathPrefix(`/api/recorder/heartbeat`))
+      services:
+        - name: auto-school
+          port: 80
+          scheme: http
     - kind: Rule
       match: Host(`school.vanderloch.com`)
       middlewares:

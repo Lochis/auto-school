@@ -62,8 +62,10 @@ async function beat(): Promise<void> {
         // DATA_DIR by relative path (recordings/, out/,
         // courses/<slug>/materials/) with HTTP Range support, mounted at the
         // root exactly as the platform's /api/media proxy requests it
-        // (`${endpoint}/<rel>`, no prefix). Platform falls back to its mounted
-        // fs whenever this endpoint is unreachable or 404s.
+        // (`${endpoint}/<rel>`, no prefix). The platform pod mounts no data
+        // volume after the recorder split, so this endpoint is the only media
+        // source; an unreachable recorder or a 404 surfaces as a clean 404
+        // (there is no fs fallback to fall back to).
         capabilities: { liveStatus: true, joinControl: true, mediaServe: true },
       }),
       signal: AbortSignal.timeout(5000),

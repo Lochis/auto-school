@@ -34,6 +34,10 @@ export interface SessionSummary {
   joinUrl?: string;
   /** user-given display name (ingest "Title" — see notes below) */
   title?: string;
+  /** pipeline stage (sessions.stage) — 'recording' means the capture is still
+   *  in flight (the recording artifact only lands at consolidation), so an
+   *  ingest must not adopt such a stem. */
+  stage?: string;
 }
 
 /** NOTE on `title`: data.ts surfaces it ONLY when notes/<course>/<stem>__title.txt
@@ -47,6 +51,7 @@ export interface SessionRow {
   start_time: string | null;
   title: string | null;
   join_url: string | null;
+  stage: string | null;
   seg_count: number | null;
   seg_rows: number;
   recording_path: string | null;
@@ -58,7 +63,7 @@ export interface SessionRow {
 
 const SELECT_SESSIONS = `
   select s.id::int as id, s.stem, s.session_date::text as session_date,
-         s.start_time::text as start_time, s.title, s.join_url,
+         s.start_time::text as start_time, s.title, s.join_url, s.stage,
          s.seg_count,
          (select count(*)::int from transcript_segments ts where ts.session_id = s.id) as seg_rows,
          (select a.rel_path from session_artifacts a
@@ -103,6 +108,7 @@ function toSummary(r: SessionRow): SessionSummary {
   if (r.start_time) s.time = r.start_time.slice(0, 5); // HH:MM:SS → HH:MM
   if (r.join_url) s.joinUrl = r.join_url;
   if (r.title && r.title.trim()) s.title = r.title.slice(0, 80);
+  if (r.stage) s.stage = r.stage;
   return s;
 }
 

@@ -160,7 +160,13 @@ function consolidatedFor(slug: string, stem: string): { rel: string; sizeMB: num
  *  (recording/consolidating/…) are failed ONLY when no consolidated
  *  recording exists on disk; when one does, the row is healed to done (the
  *  fs→PG importer seeded past sessions as 'recording', which used to be
- *  blanket-failed as "interrupted by restart"). */
+ *  blanket-failed as "interrupted by restart").
+ *
+ *  Owner-scoped: both the board select and the two heals below are limited to
+ *  curOwner() (the system owner at boot — the daemon's jobs run as system), so
+ *  a restart never rewrites another owner's rows and the personal board never
+ *  lists another owner's ingested sessions. In particular an ingested session
+ *  (stage='done') must not be swept into 'failed' by the mid-flight heal. */
 export async function hydrateSessions(): Promise<void> {
   try {
     const rows = (await getPool().query(
@@ -168,7 +174,9 @@ export async function hydrateSessions(): Promise<void> {
               s.duration_sec, s.size_mb, extract(epoch from s.started_at)::bigint * 1000 as started_ms,
               extract(epoch from s.updated_at)::bigint * 1000 as updated_ms
        from sessions s join courses c on c.id = s.course_id
+       where s.owner_user_id = $1
        order by s.updated_at desc limit 50`,
+      [curOwner()],
     )).rows as Record<string, unknown>[];
     const healed: { slug: string; stem: string; sizeMB: number }[] = [];
     sessions = rows.map((r) => {
@@ -227,8 +235,8 @@ export async function hydrateSessions(): Promise<void> {
     for (const h of healed) {
       await getPool().query(
         `update sessions s set stage = 'done', stage_note = null, size_mb = coalesce(s.size_mb, $3)
-         from courses c where c.id = s.course_id and c.slug = $1 and s.stem = $2`,
-        [h.slug, h.stem, h.sizeMB],
+         from courses c where c.id = s.course_id and c.slug = $1 and s.stem = $2 and s.owner_user_id = $4`,
+        [h.slug, h.stem, h.sizeMB, curOwner()],
       );
     }
     if (healed.length) console.log(`[sessions] hydrate healed ${healed.length} mislabeled session(s) → done (consolidated recording present)`);
@@ -238,7 +246,9 @@ export async function hydrateSessions(): Promise<void> {
     // untouched: the restart time is not the session's time.
     await getPool().query(
       `update sessions set stage = 'failed', stage_note = 'interrupted by restart'
-       where stage in ('recording','remuxing','transcribing','noting','consolidating')`,
+       where stage in ('recording','remuxing','transcribing','noting','consolidating')
+         and owner_user_id = $1`,
+      [curOwner()],
     );
   } catch (e) {
     console.warn(`[sessions] board rehydrate skipped: ${String(e).slice(0, 120)}`);

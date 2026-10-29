@@ -2,7 +2,11 @@
  *  when the owner has a fresh recorder with the mediaServe capability, proxy
  *  the stream from that recorder's endpoint; otherwise fall back to the
  *  mounted /data dir (same-pod transitional phase — still mounted this
- *  phase). HTTP Range support is preserved for <audio>/<video> seeking. */
+ *  phase). HTTP Range support is preserved for <audio>/<video> seeking.
+ *
+ *  The fs fallback is restricted to the same three prefixes the daemon
+ *  serves (recordings/out/courses) — settings.json and user-data/ must never
+ *  be reachable through this public route. */
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { Readable } from "node:stream";
@@ -84,7 +88,7 @@ export async function GET(
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   const { path } = await params;
-  const rel = normalize(path.join("/"));
+  const rel = normalize(path.join("/")).replace(/^\/+/, "");
 
   // recorder-proxy flip: only when this owner has a fresh mediaServe recorder
   const owner = await ownerId();
@@ -99,6 +103,16 @@ export async function GET(
     } catch {
       // DB down — fall through to the mounted fs (transitional)
     }
+  }
+
+  // served-set allowlist (parity with the daemon's media route, daemon.ts
+  // MEDIA_RE): only the three advertised prefixes. Without it the fs fallback
+  // handed out DATA_DIR wholesale — /api/media/settings.json (plaintext
+  // geminiApiKey) and /api/media/user-data/* were reachable in the
+  // single-pod phase. `..` collapses before this check, so /out/../settings.json
+  // normalizes to settings.json and is rejected here.
+  if (!/^(?:recordings|out|courses)(?:\/|$)/.test(rel)) {
+    return new Response("not found", { status: 404 });
   }
 
   const file = join(DATA_DIR, rel);
@@ -140,3 +154,7 @@ export async function GET(
     },
   });
 }
+
+/** The daemon's media route answers GET *and* HEAD; without this alias the
+ *  platform 405s HEAD (players + link checkers probe with HEAD first). */
+export const HEAD = GET;

@@ -109,6 +109,7 @@ export async function timelineEntries(course: string, stem: string, owner?: stri
   if (!sid) return [];
   const segs = await segments(sid);
   const meetingTitle = stem.split("__")[1]?.replace(/_/g, " ").trim() ?? "";
+  if (!segs.length) return timelineFromArtifact(course, stem, owner, meetingTitle);
   return segs.map((r) => ({
     meeting: r.file ?? meetingTitle, // fs timeline.json "file" per segment
     offsetSec: r.offset_sec,
@@ -118,6 +119,50 @@ export async function timelineEntries(course: string, stem: string, owner?: stri
       return { t: `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`, note: v.note };
     }),
   }));
+}
+
+/** Fallback for sessions whose transcript_segments were never written — the
+ *  ingestion API (frontend /api/ingest/session) stores the client's timeline as
+ *  a kind='timeline' artifact with inline content and writes no segments, so
+ *  the segment-only reader above rendered an empty timeline. The artifact's
+ *  JSON is the same `{ file?, offsetSec, transcript, visualNotes }` array as
+ *  the legacy timeline.json, so it maps straight onto TimelineEntry (visual-note
+ *  timestamps normalized through the same parseMs). Malformed / missing
+ *  content → empty (never a throw — this is a display path). */
+async function timelineFromArtifact(
+  course: string,
+  stem: string,
+  owner: string | undefined,
+  meetingTitle: string,
+): Promise<TimelineEntry[]> {
+  const raw = await artifactContent(course, stem, "timeline", owner);
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: TimelineEntry[] = [];
+  for (const e of parsed as Array<Record<string, unknown>>) {
+    if (!e || typeof e !== "object") continue;
+    const offset = typeof e.offsetSec === "number" ? e.offsetSec : Number(e.offsetSec);
+    if (!Number.isFinite(offset)) continue;
+    const vn = Array.isArray(e.visualNotes) ? (e.visualNotes as Array<Record<string, unknown>>) : [];
+    out.push({
+      meeting: typeof e.file === "string" && e.file ? e.file : meetingTitle,
+      offsetSec: offset,
+      transcript: typeof e.transcript === "string" ? e.transcript : "",
+      visualNotes: vn
+        .filter((v) => v && typeof v.note === "string")
+        .map((v) => {
+          const sec = typeof v.t === "number" ? v.t : parseMs(String(v.t ?? ""));
+          return { t: `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`, note: String(v.note) };
+        }),
+    });
+  }
+  return out;
 }
 
 /** "m:ss" (or bare seconds) → seconds; unparseable → 0. */
