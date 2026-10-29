@@ -58,11 +58,13 @@ async function beat(): Promise<void> {
         name: "personal",
         mode: "inbound",
         endpoint: process.env.RECORDER_ENDPOINT ?? "http://localhost:7800",
-        // mediaServe stays FALSE until the daemon grows a media route to
-        // proxy to (:7800 has no static /recordings handler — the proxy
-        // would 404 every request; review 2026-10-21). Flip at 5a-final
-        // step 3 together with the daemon-side route.
-        capabilities: { liveStatus: true, joinControl: true, mediaServe: false },
+        // mediaServe TRUE since 5b-1: the daemon now streams any file under
+        // DATA_DIR by relative path (recordings/, out/,
+        // courses/<slug>/materials/) with HTTP Range support, mounted at the
+        // root exactly as the platform's /api/media proxy requests it
+        // (`${endpoint}/<rel>`, no prefix). Platform falls back to its mounted
+        // fs whenever this endpoint is unreachable or 404s.
+        capabilities: { liveStatus: true, joinControl: true, mediaServe: true },
       }),
       signal: AbortSignal.timeout(5000),
     });

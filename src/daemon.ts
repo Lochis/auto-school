@@ -15,7 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Readable } from "node:stream";
 import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import archiver from "archiver";
-import { join, dirname } from "node:path";
+import { join, dirname, extname, normalize, resolve, sep } from "node:path";
 import { TEAMS_URL } from "./login/teams-login.ts";
 import { getBrowser, invalidateBrowser, closeBrowser, authAlive, isSharedPage, lastLoginFailedAt, lastLoginFailDetail } from "./meetings/browser.ts";
 import { listMeetings } from "./meetings/list.ts";
@@ -55,6 +55,30 @@ const DISCOVERY_MS = (Number(process.env.DISCOVERY_SECONDS ?? 60) || 60) * 1_000
 // join this long before start — re-read at use so Settings applies without restart
 const joinEarlyMs = () => Math.max(0, getSettings().joinEarlyMinutes) * 60_000;
 const PORT = Number(process.env.CONTROLLER_PORT ?? 7800) || 7800;
+/** Content types for the raw media route (kept in sync with the platform
+ *  media route's table — the proxy forwards our Content-Type verbatim). */
+const MEDIA_MIME: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".m4a": "audio/mp4",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".mp3": "audio/mpeg",
+  ".txt": "text/plain; charset=utf-8",
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".csv": "text/csv",
+  ".zip": "application/zip",
+  ".json": "application/json",
+  ".md": "text/markdown; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
 // chat tool-calling rounds — deep transcript forensics (workshops, long Q&A)
 // need more than a handful of search/read rounds; env-tunable per deployment
 const CHAT_STEPS = Math.max(4, Number(process.env.CHAT_STEPS ?? 16) || 16);
@@ -2823,6 +2847,67 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
       } catch (e) {
         return send(500, { error: `course delete failed: ${String(e).slice(0, 120)}` });
       }
+    }
+    // ── raw media / file streaming (5b-1 recorder media route) ───────────
+    // Serves any file under DATA_DIR by relative path so the platform's
+    // /api/media/[...path] proxy can stream straight from this recorder
+    // instead of a shared volume. It requests `${RECORDER_ENDPOINT}/<rel>`
+    // with rel like `recordings/<COURSE>/<file>.webm`, `out/<file>.png`, or
+    // `courses/<slug>/materials/<file>`.
+    //
+    // ROUTE SHAPE — root-mounted, no `/media` prefix: the platform proxy's
+    // URL build already has no prefix, so this needs zero frontend change.
+    // It lives LAST in handleRequest, immediately before the 404, so the
+    // more specific routes registered above (`/courses/<slug>/materials`,
+    // `.../materials/download`, `.../materials/generated`, the PATCH/DELETE
+    // forms using `?path=`) always win and this GET/HEAD-only prefix can
+    // never shadow them. Prefixes limited to recordings/ | out/ | courses/.
+    //
+    // Path safety mirrors frontend/src/app/api/media/[...path]/route.ts:
+    // normalize, reject `..`/absolute escape; the resolved path must stay
+    // under DATA_DIR. Streaming + HTTP Range match the material-download
+    // handler above (createReadStream, no buffering).
+    //
+    // X-Auto-School-User is sent on this hop but IGNORED this phase:
+    // per-owner recorder resolution already happened platform-side, and this
+    // daemon is single-owner until the recorder-split lands.
+    const MEDIA_RE = /^\/(?:recordings|out|courses)\/.+/;
+    if ((req.method === "GET" || req.method === "HEAD") && MEDIA_RE.test(url.pathname)) {
+      let rel: string;
+      try { rel = normalize(decodeURIComponent(url.pathname).replace(/^\/+/, "")); } catch { return send(400, { error: "bad path" }); }
+      const root = resolve(DATA_DIR);
+      const abs = resolve(root, rel);
+      if (!rel || rel.startsWith("..") || rel.includes("\0") || (abs !== root && !abs.startsWith(root + sep))) {
+        return send(404, { error: "not found" }); // traversal / absolute escape
+      }
+      let st;
+      try { st = statSync(abs); } catch { return send(404, { error: "not found" }); }
+      if (!st.isFile()) return send(404, { error: "not found" });
+      const size = st.size;
+      const type = MEDIA_MIME[extname(abs).toLowerCase()] ?? "application/octet-stream";
+      const rng = req.headers.range ? /bytes=(\d+)?-(\d+)?/.exec(req.headers.range) : null;
+      if (rng && size > 0) {
+        const start = rng[1] ? parseInt(rng[1], 10) : 0;
+        const end = rng[2] ? Math.min(parseInt(rng[2], 10), size - 1) : size - 1;
+        if (start >= size || start > end) {
+          res.writeHead(416, { "Content-Type": type, "Content-Range": `bytes */${size}` });
+          res.end();
+          return;
+        }
+        res.writeHead(206, {
+          "Content-Type": type,
+          "Content-Length": end - start + 1,
+          "Content-Range": `bytes ${start}-${end}/${size}`,
+          "Accept-Ranges": "bytes",
+        });
+        if (req.method === "HEAD") { res.end(); return; }
+        createReadStream(abs, { start, end }).pipe(res);
+        return;
+      }
+      res.writeHead(200, { "Content-Type": type, "Content-Length": size, "Accept-Ranges": "bytes" });
+      if (req.method === "HEAD") { res.end(); return; }
+      createReadStream(abs).pipe(res);
+      return;
     }
     send(404, { error: "not found" });
   }
