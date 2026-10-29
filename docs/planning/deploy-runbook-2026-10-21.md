@@ -418,3 +418,9 @@ roll contract back if the old keys are provably still unique.
   exist. Do not hand-run `ddl.sql` against prod outside this runbook.
 - Update `docs/planning/postgres-migration.md` with the applied phases + timestamps.
 - Second-user onboarding is gated on contract completion (§0 residual risk).
+
+## 7. APPLIED LOG (2026-10-21)
+
+- **EXPAND** applied + verified 2026-10-21 (4 constraints coexisted, `recorders` live, 5 app_settings rows backfilled to seed). Tag `deploy-expand-applied-2026-10-21`.
+- **DEPLOY** images built+pushed (ghcr auth refreshed), rollout restart, pod 2/2. Verified: `/api/me` authenticated, `recorder.attached=true` (BACKEND_URL fallback), avatar serves user's real upload (16KB PNG, no provider sync), all 3 `ON CONFLICT` arbiters resolve via transactional probe.
+- **CONTRACT** applied + verified 2026-10-21 (old `sessions_course_id_stem_key` + `app_settings_pkey` dropped; new composite uniques sole arbiters; post-contract probe `post-contract-ok`). Daemon login self-healed after restart (cold-start transient, not a regression).
