@@ -1094,7 +1094,7 @@ function startController(): void {
     if (url.pathname === "/mapping") {
       const readMap = async (): Promise<Record<string, string>> => {
         const m: Record<string, string> = {};
-        for (const r of await listMappings()) {
+        for (const r of await listMappings(curOwner())) {
           const slug = (await q(`select slug from courses where id = $1`, [r.courseId])).rows[0]?.slug;
           if (slug) m[r.matchTitle.trim()] = slug;
         }
@@ -1110,7 +1110,7 @@ function startController(): void {
         if (!t || !f) return send(400, { error: "title and folder required" });
         const created = !existsSync(join(NOTES_DIR, f)) && !existsSync(join(RECORDINGS_DIR, f));
         const cid = await courseId(f);
-        try { await upsertMapping(t, normMappingTitle(t), cid); } catch (e) { return send(500, { error: `write failed: ${String(e).slice(0, 80)}` }); }
+        try { await upsertMapping(t, normMappingTitle(t), cid, curOwner()); } catch (e) { return send(500, { error: `write failed: ${String(e).slice(0, 80)}` }); }
         await refreshMappings().catch(() => {});
         try { mkdirSync(join(NOTES_DIR, f), { recursive: true }); } catch { /* next write creates it */ }
         pushEvent(`mapping: "${t}" → ${f}${created ? " (folder created)" : ""}`);
@@ -1121,7 +1121,7 @@ function startController(): void {
         if (!t) return send(400, { error: "title required" });
         const m = await readMap();
         if (!(t in m)) return send(404, { error: "not mapped" });
-        await deleteMapping(t);
+        await deleteMapping(t, curOwner());
         await refreshMappings().catch(() => {});
         return send(200, { ok: true, mapping: await readMap() });
       }
@@ -2007,7 +2007,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         }
         // mapped meeting titles are richer course names ("Data Warehs & …")
         try {
-          for (const r of await listMappings()) {
+          for (const r of await listMappings(curOwner())) {
             const folder = (await q(`select slug from courses where id = $1`, [r.courseId])).rows[0]?.slug;
             if (!folder || !hints[folder]) continue;
             for (const t of r.matchTitle.toLowerCase().split(/[^a-z0-9]+/)) if (t.length >= 5 && !hints[folder]!.includes(t)) hints[folder]!.push(t);

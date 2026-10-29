@@ -549,7 +549,7 @@ async function courseTool(
         const key = await resolveApiKey("GEMINI_API_KEY");
         if (key) {
           const embedding = await embedQuery(query, { apiKey: key });
-          const hits = dedupHits(await vectorSearch({ embedding, kind: "timeline", course: slug, k: 24 }), 8, query);
+          const hits = dedupHits(await vectorSearch({ owner, embedding, kind: "timeline", course: slug, k: 24 }), 8, query);
           if (hits.length) {
             return `Transcript/timeline matches for "${args.query}" (semantic, most similar first):\n${chunkHitLines(hits).join("\n")}`;
           }
@@ -557,8 +557,8 @@ async function courseTool(
       } catch { /* DB/embedding hiccup — keyword below */ }
       try {
         const [tr, tl] = await Promise.all([
-          keywordSearch({ query, kind: "transcript", course: slug, k: 8 }),
-          keywordSearch({ query, kind: "timeline", course: slug, k: 8 }),
+          keywordSearch({ owner, query, kind: "transcript", course: slug, k: 8 }),
+          keywordSearch({ owner, query, kind: "timeline", course: slug, k: 8 }),
         ]);
         const hits = dedupHits([...tr, ...tl].sort((a, b) => b.score - a.score).slice(0, 24), 8, query);
         if (hits.length) return `Transcript/timeline matches for "${args.query}" (keyword, most relevant first):\n${chunkHitLines(hits).join("\n")}`;
@@ -678,7 +678,7 @@ export async function runToolPg(
       if (!key) return "semantic search unavailable — no Gemini API key (settings or GEMINI_API_KEY)";
       try {
         const embedding = await embedQuery(query, { apiKey: key });
-        const hits = dedupHits(await vectorSearch({ embedding, course: slug, k: Math.min(k * 3, 50) }), k, query);
+        const hits = dedupHits(await vectorSearch({ owner: who, embedding, course: slug, k: Math.min(k * 3, 50) }), k, query);
         return hits.length
           ? `Semantic matches for "${query}" (kind · course · source · page, most similar first). Each hit includes up to ~1200 chars of source text — usually enough for pinpoint facts. For synthesis across sources, full sections, or hits marked [trimmed], still read_document/read_notes. CITE material hits inline as [[<full path from source>]] — the path shown includes its folders; cite it verbatim:
 ${chunkHitLines(hits).join("\n")}`

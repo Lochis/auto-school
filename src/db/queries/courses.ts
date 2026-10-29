@@ -20,9 +20,15 @@ export interface CourseMeta {
 /** data.ts courses(): sorted list of course slugs. In the fs layer this is the
  *  union of directories under recordings/ and notes/; in Postgres every such
  *  course self-registered a courses row (importer §2), so a plain slug scan
- *  is the equivalent surface. */
-export async function listCourses(): Promise<string[]> {
-  const rows = await q<{ slug: string }>(`select slug from courses order by slug`);
+ *  is the equivalent surface.
+ *  `owner` (users.id) is REQUIRED: the catalog is owner-scoped
+ *  (courses.owner_user_id), so there is no unscoped "all tenants" listing —
+ *  callers resolve the owner (frontend ownerId() / daemon curOwner()). */
+export async function listCourses(owner: string): Promise<string[]> {
+  const rows = await q<{ slug: string }>(
+    `select slug from courses where owner_user_id = $1 order by slug`,
+    [owner],
+  );
   return rows.map((r) => r.slug);
 }
 

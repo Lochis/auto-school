@@ -110,13 +110,14 @@ export interface AttendanceRow {
   leftAt?: number;                  // epoch-ms; absent while the entry is open
 }
 
-/** Full attendance journal, oldest → newest. */
+/** Full attendance journal, oldest → newest. Owner = curOwner(): the daemon's
+ *  request ALS store, or the system owner outside a request (hydrate/timers). */
 export async function attendanceLoad(): Promise<AttendanceRow[]> {
   if (!pgConfigured()) return [];
   const r = await q(
     `select date, title, joined_at as "joinedAt", left_at as "leftAt" from attendance
      where owner_user_id = $1 order by id`,
-    [OWNER],
+    [curOwner()],
   );
   return r.rows.map((x) => ({
     date: x.date,
@@ -135,7 +136,7 @@ export async function attendanceUpsert(e: AttendanceRow): Promise<void> {
     `insert into attendance (date, title, joined_at, left_at, owner_user_id)
      values ($1,$2,$3,$4,$5)
      on conflict (owner_user_id, date, title, joined_at) do update set left_at = excluded.left_at`,
-    [e.date, e.title, e.joinedAt, e.leftAt ?? null, OWNER],
+    [e.date, e.title, e.joinedAt, e.leftAt ?? null, curOwner()],
   );
 }
 
@@ -144,7 +145,7 @@ export async function leftLoad(day: string): Promise<string[]> {
   if (!pgConfigured()) return [];
   const r = await q(
     `select title from left_meetings where day = $1 and owner_user_id = $2 order by id`,
-    [day, OWNER],
+    [day, curOwner()],
   );
   return r.rows.map((x) => x.title);
 }
@@ -155,20 +156,20 @@ export async function leftAdd(day: string, title: string): Promise<void> {
   await q(
     `insert into left_meetings (day, title, owner_user_id) values ($1,$2,$3)
      on conflict (owner_user_id, day, title) do nothing`,
-    [day, title, OWNER],
+    [day, title, curOwner()],
   );
 }
 
 /** Keep only `day` (prune every other day's entries). */
 export async function leftPruneExcept(day: string): Promise<void> {
   if (!pgConfigured()) return;
-  await q(`delete from left_meetings where day <> $1 and owner_user_id = $2`, [day, OWNER]);
+  await q(`delete from left_meetings where day <> $1 and owner_user_id = $2`, [day, curOwner()]);
 }
 
 /** Clear all left-meetings (used by /scan?reset=1). */
 export async function leftClear(): Promise<void> {
   if (!pgConfigured()) return;
-  await q(`delete from left_meetings where owner_user_id = $1`, [OWNER]);
+  await q(`delete from left_meetings where owner_user_id = $1`, [curOwner()]);
 }
 
 /** deadlines-meta.json → { docs: { '<course>/<relPath>': { m, s } } }. */

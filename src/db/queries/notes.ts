@@ -15,31 +15,32 @@ const q = async <T>(text: string, params: unknown[] = []): Promise<T[]> =>
  *  have content = null and fs-only files that were never imported as
  *  artifacts (e.g. __title.txt — the importer folds it into sessions.title)
  *  return null — that divergence is a known Phase-3 gap, not a crash.
- *  `owner` (users.id) restricts to that user's session's artifacts; undefined
- *  omits the filter (local dev parity — frontend gates null on untrusted
- *  auth headers). */
-export async function readText(rel: string, owner?: string): Promise<string | null> {
+ *  `owner` (users.id) is REQUIRED — it restricts to that user's session's
+ *  artifacts. There is no unfiltered "all tenants" mode: callers resolve the
+ *  owner (daemon curOwner(), frontend ownerId()) before reading. */
+export async function readText(rel: string, owner: string): Promise<string | null> {
   const rows = await q<{ content: string | null }>(
     `select a.content from session_artifacts a
      join sessions s on s.id = a.session_id
-     where a.rel_path = $1 and a.deleted_at is null${owner ? " and s.owner_user_id = $2" : ""}
+     where a.rel_path = $1 and a.deleted_at is null and s.owner_user_id = $2
      order by a.updated_at desc limit 1`,
-    owner ? [rel, owner] : [rel],
+    [rel, owner],
   );
   const c = rows[0]?.content;
   return typeof c === "string" ? c : null;
 }
 
 /** Latest artifact of a kind for a (course, stem) — content column.
- *  `owner` — optional owner filter on the session row. */
-export async function artifactContent(course: string, stem: string, kind: string, owner?: string): Promise<string | null> {
+ *  `owner` — REQUIRED owner filter on the session row. */
+export async function artifactContent(course: string, stem: string, kind: string, owner: string): Promise<string | null> {
   const rows = await q<{ content: string | null }>(
     `select a.content from session_artifacts a
      join sessions s on s.id = a.session_id
      join courses c on c.id = s.course_id
-     where c.slug = $1 and s.stem = $2 and a.kind = $3 and a.deleted_at is null${owner ? " and s.owner_user_id = $4" : ""}
+     where c.slug = $1 and s.stem = $2 and a.kind = $3 and a.deleted_at is null
+       and s.owner_user_id = $4
      order by a.updated_at desc limit 1`,
-    owner ? [course, stem, kind, owner] : [course, stem, kind],
+    [course, stem, kind, owner],
   );
   const c = rows[0]?.content;
   return typeof c === "string" ? c : null;
@@ -51,7 +52,7 @@ export async function notesMarkdown(
   course: string,
   stem: string,
   kind: "notes" | "running" | "transcript",
-  owner?: string,
+  owner: string,
 ): Promise<string | null> {
   if (kind === "notes") return artifactContent(course, stem, "notes", owner);
   if (kind === "running") return artifactContent(course, stem, "running_notes", owner);
@@ -79,7 +80,7 @@ async function segments(sid: number): Promise<SegRow[]> {
  *  instead of the timeline.json file: one "**[m:ss]** text" block per segment,
  *  segments with no speech skipped, "# Transcript" header, null when nothing
  *  renders. Seconds rounding mirrors data.ts exactly (Math.round, pad 2). */
-export async function timelineToMd(course: string, stem: string, owner?: string): Promise<string | null> {
+export async function timelineToMd(course: string, stem: string, owner: string): Promise<string | null> {
   const sid = await sessionRowId(course, stem, owner);
   if (!sid) return null;
   const segs = await segments(sid);
@@ -104,7 +105,7 @@ export interface TimelineEntry {
   visualNotes: { t: string; note: string }[];
 }
 
-export async function timelineEntries(course: string, stem: string, owner?: string): Promise<TimelineEntry[]> {
+export async function timelineEntries(course: string, stem: string, owner: string): Promise<TimelineEntry[]> {
   const sid = await sessionRowId(course, stem, owner);
   if (!sid) return [];
   const segs = await segments(sid);
@@ -132,7 +133,7 @@ export async function timelineEntries(course: string, stem: string, owner?: stri
 async function timelineFromArtifact(
   course: string,
   stem: string,
-  owner: string | undefined,
+  owner: string,
   meetingTitle: string,
 ): Promise<TimelineEntry[]> {
   const raw = await artifactContent(course, stem, "timeline", owner);

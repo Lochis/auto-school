@@ -2,6 +2,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { NOTES_DIR } from "../paths.ts";
 import { listMappings } from "../db/writes.ts";
+import { curOwner } from "../db/owner.ts";
 import { getPool } from "../db/client.ts";
 
 /** Manual title → folder overrides, now backed by meeting_mappings (Postgres).
@@ -15,7 +16,7 @@ let mappingCache: Map<string, string> | null = null;
 
 /** Load meeting_mappings into the cache; DB supplies the rows. */
 export async function refreshMappings(): Promise<void> {
-  const rows = await listMappings();
+  const rows = await listMappings(curOwner());
   const m = new Map<string, string>();
   for (const r of rows) {
     const slug = (await getPool().query(`select slug from courses where id = $1`, [r.courseId])).rows[0]?.slug;

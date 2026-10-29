@@ -43,8 +43,8 @@ const ms = (d: Date | null | undefined): number | null => (d ? d.getTime() : nul
 
 // ── courses — delegate to src/db/queries/courses.ts ───────────────────────
 
-export async function courses(): Promise<string[]> {
-  return listCourses();
+export async function courses(owner: string): Promise<string[]> {
+  return listCourses(owner);
 }
 
 export async function courseIcon(slug: string): Promise<string | null> {
@@ -57,17 +57,17 @@ export async function semesterStartOf(slug: string): Promise<string | null> {
 
 // ── sessions — delegate to src/db/queries/sessions.ts ─────────────────────
 
-export async function sessions(course: string, owner: string | undefined): Promise<Session[]> {
+export async function sessions(course: string, owner: string): Promise<Session[]> {
   return listSessions(course, owner);
 }
 
 // ── artifact text — delegate to src/db/queries/notes.ts ───────────────────
 
-export async function timelineToMd(course: string, stem: string, owner: string | undefined): Promise<string | null> {
+export async function timelineToMd(course: string, stem: string, owner: string): Promise<string | null> {
   return pgTimelineToMd(course, stem, owner);
 }
 
-export async function notesMarkdown(course: string, stem: string, kind: "notes" | "running" | "transcript", owner: string | undefined): Promise<string | null> {
+export async function notesMarkdown(course: string, stem: string, kind: "notes" | "running" | "transcript", owner: string): Promise<string | null> {
   return pgNotesMarkdown(course, stem, kind, owner);
 }
 
@@ -75,7 +75,7 @@ export async function notesMarkdown(course: string, stem: string, kind: "notes" 
 
 export type { TimelineEntry };
 
-export async function timelineEntries(course: string, stem: string, owner: string | undefined): Promise<TimelineEntry[]> {
+export async function timelineEntries(course: string, stem: string, owner: string): Promise<TimelineEntry[]> {
   return pgTimelineEntries(course, stem, owner);
 }
 
@@ -126,7 +126,10 @@ export async function readDeadlines(owner: string | undefined): Promise<DbDeadli
   if (!rows.length) return [];
   const parts = await q<{ deadline_id: string; title: string; due: string | null; note: string; done: boolean }>(
     `SELECT p.deadline_id::text, p.title, p.due::text AS due, p.note, p.done
-     FROM deadline_parts p ORDER BY p.id`,
+     FROM deadline_parts p
+     ${owner ? "WHERE p.deadline_id IN (SELECT id FROM deadlines WHERE owner_user_id = $1)" : ""}
+     ORDER BY p.id`,
+    owner ? [owner] : [],
   );
   const byDl = new Map<string, DbDeadline[]>();
   for (const r of rows) {
@@ -269,11 +272,13 @@ export async function checklists(owner: string | undefined): Promise<Checklist[]
 // (candidates come from out/calendar-events.txt on the fs; there is no DB
 //  table for the raw calendar dump → empty list in db mode.)
 
-export async function mappingSnap(): Promise<{ mapping: Record<string, string>; folders: string[]; candidates: string[] }> {
+export async function mappingSnap(owner: string): Promise<{ mapping: Record<string, string>; folders: string[]; candidates: string[] }> {
   const rows = await q<{ match_title: string; slug: string }>(
-    `SELECT m.match_title, c.slug FROM meeting_mappings m JOIN courses c ON c.id = m.course_id ORDER BY m.match_title`,
+    `SELECT m.match_title, c.slug FROM meeting_mappings m JOIN courses c ON c.id = m.course_id
+     WHERE m.owner_user_id = $1 ORDER BY m.match_title`,
+    [owner],
   );
   const mapping: Record<string, string> = {};
   for (const r of rows) mapping[r.match_title.trim()] = r.slug;
-  return { mapping, folders: await courses(), candidates: [] };
+  return { mapping, folders: await courses(owner), candidates: [] };
 }

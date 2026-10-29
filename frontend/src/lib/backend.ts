@@ -10,7 +10,7 @@ import * as fsData from "./data";
 import * as fsDeadlines from "./deadlines";
 import * as fsMapping from "./mapping";
 import * as db from "./db";
-import { ownerId } from "./owner";
+import { ownerId, SYSTEM_OWNER } from "./owner";
 import { getActiveRecorder } from "../../../src/db/recorders.ts";
 import type { Session } from "./data";
 import type { DeadEntry } from "./deadlines";
@@ -69,10 +69,15 @@ export async function daemonBaseOrThrow(): Promise<string> {
 
 export const weekOf = fsData.weekOf; // pure fn, no io
 
+/** Owner for the mandatory-owner DB reads. ownerId() returns undefined only in
+ *  untrusted-auth local dev; the db layer no longer accepts an unfiltered
+ *  "all tenants" read, so that case degrades to the seed system view. */
+const requireOwner = async (): Promise<string> => (await ownerId()) ?? SYSTEM_OWNER;
+
 // ── courses / sessions (parity with data.ts) ──────────────────────────────
 
 export async function listCourses(): Promise<string[]> {
-  return dbReads() ? db.courses() : fsData.courses();
+  return dbReads() ? db.courses(await requireOwner()) : fsData.courses();
 }
 
 export async function courseIconOf(slug: string): Promise<string | null> {
@@ -84,7 +89,7 @@ export async function semesterStartOf(slug: string): Promise<string | null> {
 }
 
 export async function listSessions(course: string): Promise<Session[]> {
-  const owner = await ownerId();
+  const owner = await requireOwner();
   if (dbReads()) return db.sessions(course, owner);
   const fsList = fsData.sessions(course);
   if (!pgAvailable()) return fsList;
@@ -123,7 +128,7 @@ export async function notesMarkdown(
   stem: string,
   kind: "notes" | "running" | "transcript",
 ): Promise<string | null> {
-  if (dbReads()) return db.notesMarkdown(course, stem, kind, await ownerId());
+  if (dbReads()) return db.notesMarkdown(course, stem, kind, await requireOwner());
   const file = (f: string): string | null => {
     try { return readFileSync(join(fsData.DATA_DIR, "notes", course, f), "utf8"); } catch { return null; }
   };
@@ -135,7 +140,7 @@ export async function notesMarkdown(
 // ── timeline entries for the session detail page ──────────────────────────
 
 export async function timelineEntries(course: string, stem: string, rel?: string): Promise<db.TimelineEntry[]> {
-  if (dbReads()) return db.timelineEntries(course, stem, await ownerId());
+  if (dbReads()) return db.timelineEntries(course, stem, await requireOwner());
   if (!rel) return [];
   try {
     const j = JSON.parse(readFileSync(join(fsData.DATA_DIR, rel), "utf8"));
@@ -155,12 +160,12 @@ export async function deadlinesList(): Promise<DeadEntry[]> {
 }
 
 export async function mappingSnap(): Promise<{ mapping: fsMapping.Mapping; folders: string[]; candidates: string[] }> {
-  if (dbReads()) return db.mappingSnap();
+  if (dbReads()) return db.mappingSnap(await requireOwner());
   if (pgAvailable()) {
     // mapping.json has no writer anymore — meeting_mappings is the source of
     // truth. Keep fs folders (recordings dirs may exist pre-import) and the
     // fs candidate scan (still reads the daemon's calendar/timeline artifacts).
-    const snap = await db.mappingSnap();
+    const snap = await db.mappingSnap(await requireOwner());
     return {
       mapping: snap.mapping,
       folders: [...new Set([...snap.folders, ...fsMapping.folders()])].sort(),

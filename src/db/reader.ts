@@ -22,16 +22,22 @@ export interface ChunkHit {
   score: number;
 }
 
+/** Shared select template. `$owner$` is replaced by the owner placeholder so the
+ *  documents join is owner-scoped as well — a coarse belt-and-braces guard: the
+ *  same predicate also lands in each caller's WHERE (see $owner$ uses below). */
 const SELECT = `
   select d.kind, c.slug, s.stem, d.rel_path, dc.page, dc.chunk_index,
          left(dc.content, 1200) as preview, $score$ as score
   from document_chunks dc
-  join documents d on d.id = dc.document_id
+  join documents d on d.id = dc.document_id and d.owner_user_id = $owner$
   join courses c on c.id = d.course_id
   left join sessions s on s.id = d.session_id`;
 
-/** pgvector cosine-similarity search (plan §3 search path). */
+/** pgvector cosine-similarity search (plan §3 search path).
+ *  `owner` (users.id) is MANDATORY: the shared document corpus is per-owner
+ *  (documents.owner_user_id), so an unscoped search is a cross-tenant read. */
 export async function vectorSearch(opts: {
+  owner: string;
   embedding: readonly number[];
   course?: string;
   kind?: string;
@@ -41,17 +47,22 @@ export async function vectorSearch(opts: {
   const { getPool } = await import("./pg.ts");
   const params: unknown[] = [toVectorLiteral(opts.embedding), opts.model ?? EMBEDDING_MODEL];
   const where = ["dc.embedding is not null", "dc.embedding_model = $2"];
+  params.push(opts.owner);
+  const ownerParam = `$${params.length}`;
+  where.push(`d.owner_user_id = ${ownerParam}`);
   if (opts.course) { params.push(opts.course); where.push(`c.slug = $${params.length}`); }
   if (opts.kind) { params.push(opts.kind); where.push(`d.kind = $${params.length}`); }
   params.push(Math.max(1, Math.min(opts.k ?? 8, 50)));
-  const sql = SELECT.replace("$score$", "1 - (dc.embedding <=> $1)") + `
+  const sql = SELECT.replace("$owner$", () => ownerParam).replace("$score$", "1 - (dc.embedding <=> $1)") + `
     where ${where.join(" and ")} order by dc.embedding <=> $1 limit $${params.length}::int`;
   const { rows } = await getPool().query(sql, params);
   return rows as ChunkHit[];
 }
 
-/** Keyword comparison mode: pg_trgm similarity + ilike substring. */
+/** Keyword comparison mode: pg_trgm similarity + ilike substring.
+ *  `owner` — MANDATORY, same per-owner corpus rule as vectorSearch. */
 export async function keywordSearch(opts: {
+  owner: string;
   query: string;
   course?: string;
   kind?: string;
@@ -63,10 +74,14 @@ export async function keywordSearch(opts: {
   const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
   const score = `similarity(dc.content, ${p(opts.query)})`; // score param first — LIMIT index comes last
   where.push(`(dc.content ilike ${p(`%${opts.query.replace(/[%_]/g, (m) => "\\" + m)}%`)} or ${score} > 0.2)`);
+  // owner predicate applies to both the score subquery (join above) and the
+  // outer WHERE — no chunk of another tenant can enter the ranking
+  const ownerParam = p(opts.owner);
+  where.push(`d.owner_user_id = ${ownerParam}`);
   if (opts.course) where.push(`c.slug = ${p(opts.course)}`);
   if (opts.kind) where.push(`d.kind = ${p(opts.kind)}`);
   params.push(Math.max(1, Math.min(opts.k ?? 8, 50)));
-  const sql = SELECT.replace("$score$", score) + `
+  const sql = SELECT.replace("$owner$", () => ownerParam).replace("$score$", score) + `
     where ${where.join(" and ")} order by score desc limit $${params.length}::int`;
   const { rows } = await getPool().query(sql, params);
   return rows as ChunkHit[];

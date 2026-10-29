@@ -8,6 +8,7 @@
  *
  *  Usage: node scripts/parity-queries.ts [--data-dir ./dev-data]
  *                                       [--database-url URL] [--details N]
+ *                                       [--owner <users.id>]
  *  Env:   AUTO_SCHOOL_DATA, DATABASE_URL (same resolution as verify-parity.ts).
  *  Exit:  0 on full parity, 1 on any mismatch. */
 
@@ -37,6 +38,10 @@ const { listCourses } = await import("../src/db/queries/courses.ts");
 const { listSessions } = await import("../src/db/queries/sessions.ts");
 const { readText: dbReadText, timelineToMd: dbTimelineToMd } = await import("../src/db/queries/notes.ts");
 const { closeDb } = await import("../src/db/client.ts");
+// owner-scoped reads are mandatory now; the parity harness runs as the system
+// owner (one tenant) — pass --owner <users.id> to compare another tenant.
+const { curOwner } = await import("../src/db/owner.ts");
+const owner = flag("owner") ?? curOwner();
 
 let checks = 0;
 let fails = 0;
@@ -59,7 +64,7 @@ console.log(`parity-queries — fs: ${DATA}  db: ${DB_URL.replace(/:[^:@/]+@/, "
 // ── 1. course listing ──────────────────────────────────────────────────────
 section("course listing");
 const fsCourses = fs.courses();
-const dbCourses = await listCourses();
+const dbCourses = await listCourses(owner);
 const fsSet = new Set(fsCourses);
 const dbSet = new Set(dbCourses);
 const onlyFsCourses = fsCourses.filter((c) => !dbSet.has(c));
@@ -75,7 +80,7 @@ const flagMismatches: string[] = [];
 let stemsFlagged = 0;
 for (const course of unionCourses) {
   const fsS = fs.sessions(course);
-  const dbS = await listSessions(course);
+  const dbS = await listSessions(course, owner);
   const fsStems = fsS.map((s) => s.stem);
   const dbStems = dbS.map((s) => s.stem);
   const fsOnly = fsStems.filter((s) => !dbStems.includes(s));
@@ -122,7 +127,7 @@ for (const course of unionCourses) {
       if (!p) continue;
       textChecked++;
       const a = fs.readText(p);
-      const b = await dbReadText(p);
+      const b = await dbReadText(p, owner);
       if (a !== b)
         textMismatched.push(
           `${p}: fs=${a === null ? "null" : `${a.length}ch`} db=${b === null ? "null" : `${b.length}ch`}`,
@@ -142,7 +147,7 @@ for (const course of unionCourses) {
     if (!s.hasTimeline || !s.timeline) continue;
     tlChecked++;
     const fsMd = fs.timelineToMd(s.timeline);
-    const dbMd = await dbTimelineToMd(course, s.stem);
+    const dbMd = await dbTimelineToMd(course, s.stem, owner);
     if (fsMd !== dbMd)
       tlMismatched.push(
         `${course}/${s.stem}: fs=${fsMd === null ? "null" : `${fsMd.length}ch`} db=${dbMd === null ? "null" : `${dbMd.length}ch`}`,
@@ -157,7 +162,7 @@ section("joinUrl mapping (fs fuzzy sessions.json vs sessions.join_url)");
 let urlChecked = 0;
 const urlMismatches: string[] = [];
 for (const course of unionCourses) {
-  const dbMap = new Map((await listSessions(course)).map((s) => [s.stem, s]));
+  const dbMap = new Map((await listSessions(course, owner)).map((s) => [s.stem, s]));
   for (const s of fs.sessions(course)) {
     const d = dbMap.get(s.stem);
     if (!d) continue;

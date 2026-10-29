@@ -28,6 +28,10 @@ const dbUrl = flag("database-url");
 if (dbUrl) process.env.DATABASE_URL = dbUrl;
 
 const { vectorSearch, keywordSearch, chunkCount, closeReader } = await import("../src/db/reader.ts");
+// owner-scoped search is mandatory now; default = system owner (single tenant),
+// pass --owner <users.id> to search another tenant's corpus.
+const { curOwner } = await import("../src/db/owner.ts");
+const owner = flag("owner") ?? curOwner();
 
 try {
   const n = await chunkCount();
@@ -38,13 +42,13 @@ try {
 
   let hits;
   if (args.includes("--keyword")) {
-    hits = await keywordSearch({ query: QUERY, course: flag("course"), kind, k: Number(flag("k")) || 8 });
+    hits = await keywordSearch({ owner, query: QUERY, course: flag("course"), kind, k: Number(flag("k")) || 8 });
   } else {
     const { geminiApiKey, embedQuery } = await import("../src/db/embeddings.ts");
     const apiKey = geminiApiKey(flag("data-dir") ?? process.env.AUTO_SCHOOL_DATA ?? "./dev-data");
     if (!apiKey) { console.error("no Gemini API key — set GEMINI_API_KEY or geminiApiKey in <data-dir>/settings.json"); process.exit(1); }
     const embedding = await embedQuery(QUERY, { apiKey });
-    hits = await vectorSearch({ embedding, course: flag("course"), kind, k: Number(flag("k")) || 8 });
+    hits = await vectorSearch({ owner, embedding, course: flag("course"), kind, k: Number(flag("k")) || 8 });
   }
 
   if (!hits.length) {

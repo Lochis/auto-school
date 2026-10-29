@@ -175,21 +175,30 @@ export async function listEvents(n = 60): Promise<{ ts: string; msg: string }[]>
   return r.rows;
 }
 
-/** Upsert a meeting→course mapping (mapping.json replacement). */
-export async function upsertMapping(matchTitle: string, normTitle: string, courseId: number, source = "manual"): Promise<void> {
+/** Upsert a meeting→course mapping (mapping.json replacement).
+ *  `owner` is REQUIRED — mappings are per-user rows (owner_user_id), never a
+ *  shared cache. NOTE: meeting_mappings.match_title is still globally UNIQUE in
+ *  ddl.sql, so two owners cannot hold the same title; the `where` clause on the
+ *  conflict update keeps an upsert from overwriting another owner's row. */
+export async function upsertMapping(matchTitle: string, normTitle: string, courseId: number, owner: string, source = "manual"): Promise<void> {
   await q(
     `insert into meeting_mappings (match_title, norm_title, course_id, source, owner_user_id)
      values ($1,$2,$3,$4,$5)
-     on conflict (match_title) do update set norm_title = excluded.norm_title, course_id = excluded.course_id, source = excluded.source`,
-    [matchTitle, normTitle, courseId, source, OWNER],
+     on conflict (match_title) do update set norm_title = excluded.norm_title, course_id = excluded.course_id, source = excluded.source
+     where meeting_mappings.owner_user_id = excluded.owner_user_id`,
+    [matchTitle, normTitle, courseId, source, owner],
   );
 }
 
-export async function deleteMapping(matchTitle: string): Promise<void> {
-  await q(`delete from meeting_mappings where match_title = $1`, [matchTitle]);
+export async function deleteMapping(matchTitle: string, owner: string): Promise<void> {
+  await q(`delete from meeting_mappings where match_title = $1 and owner_user_id = $2`, [matchTitle, owner]);
 }
 
-export async function listMappings(): Promise<{ matchTitle: string; normTitle: string; courseId: number; source: string }[]> {
-  const r = await q(`select match_title as "matchTitle", norm_title as "normTitle", course_id as "courseId", source from meeting_mappings order by match_title`);
+export async function listMappings(owner: string): Promise<{ matchTitle: string; normTitle: string; courseId: number; source: string }[]> {
+  const r = await q(
+    `select match_title as "matchTitle", norm_title as "normTitle", course_id as "courseId", source
+     from meeting_mappings where owner_user_id = $1 order by match_title`,
+    [owner],
+  );
   return r.rows;
 }
