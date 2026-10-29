@@ -10,9 +10,12 @@
  *  - Headers are only honored when TRUST_AUTHENTIK_HEADERS=1 (set in the
  *    frontend container env, NOT in local dev) — local `next dev` can't be
  *    spoofed by a stray curl.
- *  - If EDGE_SECRET is configured, src/middleware.ts additionally strips
- *    X-authentik-* from any request that didn't come through the Traefik
- *    edge middleware (e.g. kubectl port-forward hits the pod directly).
+ *  - If EDGE_SECRET is configured (required in the platform manifest),
+ *    src/middleware.ts strips X-authentik-* (and the internal-hop headers)
+ *    from EVERY route that lacks the edge marker — direct pod access cannot
+ *    present an identity the edge did not stamp. `requireUser()`
+ *    (lib/owner.ts) additionally requires EDGE_SECRET before trusting a
+ *    header, so header trust without the marker 401s instead of spoofing.
  */
 import { headers } from "next/headers";
 

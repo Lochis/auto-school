@@ -1,11 +1,12 @@
 /** Proxy to the daemon's settings (settings.json on the data volume). */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/settings`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
     return NextResponse.json(await res.json());
@@ -17,6 +18,7 @@ export async function GET() {
 }
 
 export async function PUT(req: Request) {
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/settings`, {
       method: "PUT",

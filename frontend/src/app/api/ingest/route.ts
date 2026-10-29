@@ -1,11 +1,12 @@
 /** Proxy: ingest a Teams recording + optional transcript into a course folder. */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  if (!(await requireUser())) return unauthorized(); // interactive UI upload, not a token hop
   try {
     // stream the multipart body through UNTOUCHED — buffering it via
     // arrayBuffer() OOMs the 512Mi frontend container on lecture-sized videos

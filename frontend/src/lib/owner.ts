@@ -1,52 +1,125 @@
 /** Per-request owner resolution (Authentik Phase 1) — the single uid→id seam
  *  shared by the direct-PG read paths and the daemon-proxy hop.
  *
- *  Two directions, one resolution chain:
- *  - PG reads (surface a): the query layer takes `owner?: string`
- *    (users.id). `ownerId()` resolves getAuthUser() → ensureUserRow() → id;
- *    undefined means "no authenticated user" and the SQL omits its owner
- *    filter — i.e. the pre-Phase-1 system-owner view (OWNER, src/db/writes.ts)
- *    stays the degradation path (dev / TRUST unset / unauth), never a 401.
- *  - Daemon hop (surface b): `daemonUserHeaders()` forwards the *authentik uid*
- *    (sub) as X-Auto-School-User; the daemon owns sub→id resolution
- *    (src/db/avatar.ts getUserIdBySub). ensureUserRow() JIT-provisions the row
- *    first so a first-ever login resolves on the daemon instead of falling
- *    back to the seed OWNER.
+ *  TWO rules, both fail-closed (docs/planning/security-hardening.md §"Shared
+ *  contract" 1+2 — fix wave A):
+ *  - Identity is never guessed. `requireUser()` returns the authenticated
+ *    owner's users.id or `null`; a route that gets `null` MUST answer 401
+ *    (`unauthorized()`), never the seed owner's rows. `ownerId()` returns
+ *    `undefined` (no owner filter) for the fs/dev read paths — it NEVER
+ *    returns SYSTEM_OWNER.
+ *  - The frontend→daemon hop is authenticated: `daemonUserHeaders()` sets
+ *    X-Auto-School-User: <sub> AND
+ *    X-Internal-Auth: HMAC-SHA256(key=EDGE_SECRET, message=sub) hex. The
+ *    daemon verifies the same HMAC (src/daemon.ts resolveRequestOwner) and
+ *    401s on absent/mismatch. No user / no secret → throw (routes 401 first).
  *
- *  Never throws: DB-down degrades to undefined (unfiltered) / still-forwarded
- *  header (daemon 401s an unresolvable sub rather than miswriting as OWNER). */
+ *  `SYSTEM_OWNER` survives ONLY for a deployment without any Authentik edge
+ *  (localIdentity: neither TRUST_AUTHENTIK_HEADERS nor EDGE_SECRET set —
+ *  `next dev`, the standalone docker-compose install). No user-facing route
+ *  may fall back to it, and an edge-fronted deployment (TRUST=1 + EDGE_SECRET,
+ *  the platform manifest) never reaches it: a request without a resolvable
+ *  edge identity gets 401.
+ *
+ *  Never leaks: DB-down degrades to `undefined`/`null` (caller 401s), not to
+ *  an unfiltered view. */
+import { createHmac } from "node:crypto";
+import { NextResponse } from "next/server";
 import { getAuthUser, trustAuthentikHeaders } from "./auth";
 import { ensureUserRow } from "./avatar";
 
-/** The seed system owner (src/db/writes.ts OWNER) — the fallback id the
- *  daemon uses when a request carries no X-Auto-School-User header. */
+/** The seed system owner (src/db/writes.ts OWNER). Local single-user
+ *  deployments only — never returned by ownerId(), never a route fallback. */
 export const SYSTEM_OWNER = "00000000-0000-0000-0000-000000000001";
 
-/** users.id for the authenticated user. undefined (unfiltered) is ONLY ever
- *  returned when auth headers are untrusted (local dev) — pre-Phase-1 parity.
- *  When auth IS trusted but no uid resolved (unauthenticated prod request, or
- *  DB down mid-resolution), degrade to the seed SYSTEM_OWNER — never the
- *  unfiltered all-users view (mirrors the daemon's no-header → OWNER). */
+/** The one 401 body every user-facing route emits when no owner resolves. */
+export function unauthorized(): NextResponse {
+  return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+}
+
+/** Internal hop proof: hex(HMAC-SHA256(key = EDGE_SECRET, message = sub)).
+ *  Mirrored by the daemon's resolveRequestOwner (src/daemon.ts). */
+export function internalAuthHmac(secret: string, sub: string): string {
+  return createHmac("sha256", secret).update(sub).digest("hex");
+}
+
+/** Single-user identity for a deployment that has NO Authentik edge at all
+ *  (local `next dev`, deploy/docker-compose.yml, the pre-Phase-0 standalone
+ *  image): neither TRUST_AUTHENTIK_HEADERS nor EDGE_SECRET is set there, so
+ *  there is no identity to spoof and the seed owner is the only user —
+ *  exactly the pre-federation behavior. As soon as EDGE_SECRET exists an edge
+ *  is deployed, so a deployment that forgot TRUST_AUTHENTIK_HEADERS=1 is a
+ *  misconfiguration: `undefined` here makes requireUser() fail closed (401)
+ *  rather than silently becoming a single-user install behind a login wall. */
+function localIdentity(): string | undefined {
+  if (trustAuthentikHeaders()) return undefined; // edge deployment — no fallback
+  if (process.env.EDGE_SECRET) return undefined; // edge without header trust → 401
+  return SYSTEM_OWNER;
+}
+
+/** users.id for the authenticated user, or undefined when no identity
+ *  resolves. `undefined` means "no owner filter" — the pre-Phase-1 read shape
+ *  used by the fs/dev readers (lib/backend.ts). Deliberately NOT SYSTEM_OWNER:
+ *  an unauthenticated request must never be scoped to the seed owner. */
 export async function ownerId(): Promise<string | undefined> {
   const u = await getAuthUser();
-  if (!u) return trustAuthentikHeaders() ? SYSTEM_OWNER : undefined;
+  if (!u) return undefined;
   try {
-    return (await ensureUserRow(u)) ?? SYSTEM_OWNER;
+    return (await ensureUserRow(u)) ?? undefined;
   } catch {
-    return SYSTEM_OWNER; // DB down → system view, not every user's data
+    return undefined; // DB down → no owner filter, never a fabricated owner
   }
 }
 
-/** Headers for a daemon hop: X-Auto-School-User = authentik uid (sub), or {}
- *  when unauthenticated (daemon then runs as the system OWNER — dev parity). */
+/** The gate for user-facing routes: the authenticated owner's users.id, or
+ *  null → the caller returns unauthorized() (401). Fails closed on every
+ *  uncertainty of a trusted-edge deployment: missing identity, missing
+ *  EDGE_SECRET (spoofable edge — the marker/secret chain is broken), or a DB
+ *  failure.
+ *
+  *  `SYSTEM_OWNER` is returned ONLY for a deployment with no Authentik edge at
+ *  all (localIdentity). Every other case either resolves a real owner or gets
+ *  401. */
+export async function requireUser(): Promise<string | null> {
+  const local = localIdentity();
+  if (local) return local; // no authentik in this deployment: single account
+  // Header trust without the edge marker is spoofable: no shared secret means
+  // src/middleware.ts cannot prove the X-authentik-* headers came from the
+  // outpost. Fail closed (the platform manifest makes EDGE_SECRET required).
+  if (!process.env.EDGE_SECRET) return null;
+  const u = await getAuthUser();
+  if (!u) return null;
+  try {
+    return (await ensureUserRow(u)) ?? null;
+  } catch {
+    return null; // DB down → 401, not the seed owner's data
+  }
+}
+
+/** Headers for a daemon hop:
+ *    X-Auto-School-User: <authentik sub>
+ *    X-Internal-Auth:    hex(HMAC-SHA256(EDGE_SECRET, sub))
+ *  Throws when the hop cannot be authenticated (no user in a trusted-edge
+ *  build, or EDGE_SECRET unset) — guarded routes 401 before reaching this, so
+ *  a throw here is a misconfiguration, never a silent fallback to the daemon's
+ *  seed OWNER. A deployment with no Authentik edge (TRUST unset) forwards no
+ *  identity and its co-located daemon runs as the system owner, as before. */
 export async function daemonUserHeaders(): Promise<Record<string, string>> {
   const u = await getAuthUser();
-  if (!u) return {};
+  if (!u) {
+    if (!trustAuthentikHeaders()) return {}; // no edge: co-located daemon runs as OWNER
+    throw new Error("unauthorized: no authenticated user for the daemon hop");
+  }
+  const secret = process.env.EDGE_SECRET;
+  if (!secret) throw new Error("unauthorized: EDGE_SECRET unset (daemon hop unprovable)");
   try {
     await ensureUserRow(u); // JIT before the daemon resolves sub→id
   } catch {
     // DB down: still forward the header. The daemon 401s an unresolvable sub
     // (fail closed) instead of silently writing this user's data as OWNER.
   }
-  return { "X-Auto-School-User": u.uid };
+  return {
+    "X-Auto-School-User": u.uid,
+    "X-Internal-Auth": internalAuthHmac(secret, u.uid),
+  };
 }

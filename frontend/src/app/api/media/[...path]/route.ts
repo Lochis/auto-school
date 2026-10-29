@@ -12,7 +12,7 @@ import { extname, join, normalize, sep } from "node:path";
 import { Readable } from "node:stream";
 import { DATA_DIR } from "@/lib/data";
 import { getAuthUser } from "@/lib/auth";
-import { ownerId } from "@/lib/owner";
+import { ownerId, requireUser, unauthorized } from "@/lib/owner";
 import { getActiveRecorder } from "../../../../../../src/db/recorders.ts";
 
 export const runtime = "nodejs";
@@ -90,19 +90,20 @@ export async function GET(
   const { path } = await params;
   const rel = normalize(path.join("/")).replace(/^\/+/, "");
 
+  // every media byte is owner-gated: no identity → 401 (never a shared read)
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
+
   // recorder-proxy flip: only when this owner has a fresh mediaServe recorder
-  const owner = await ownerId();
-  if (owner) {
-    try {
-      const rec = await getActiveRecorder(owner);
-      if (rec?.endpoint && rec.capabilities?.mediaServe === true) {
-        const ownerUid = (await getAuthUser())?.uid;
-        const proxied = await proxyRecorderMedia(rec.endpoint, req, path, ownerUid);
-        if (proxied) return proxied;
-      }
-    } catch {
-      // DB down — fall through to the mounted fs (transitional)
+  try {
+    const rec = await getActiveRecorder(owner);
+    if (rec?.endpoint && rec.capabilities?.mediaServe === true) {
+      const ownerUid = (await getAuthUser())?.uid;
+      const proxied = await proxyRecorderMedia(rec.endpoint, req, path, ownerUid);
+      if (proxied) return proxied;
     }
+  } catch {
+    // DB down — fall through to the mounted fs (transitional)
   }
 
   // served-set allowlist (parity with the daemon's media route, daemon.ts

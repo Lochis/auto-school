@@ -1,7 +1,7 @@
 /** Proxy: stream material downloads (single file, or a zip of the selection)
  *  from the backend — never buffers the body. */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 export const dynamic = "force-dynamic";
 
@@ -9,6 +9,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ slug: st
   const { slug } = await params;
   const ps = new URL(req.url).searchParams.getAll("p");
   if (!ps.length) return NextResponse.json({ error: "p required" }, { status: 400 });
+  if (!(await requireUser())) return unauthorized();
   const qs = ps.map((p) => `p=${encodeURIComponent(p)}`).join("&");
   try {
     // abort deadline covers CONNECT/HEADERS only — a body-spanning timeout

@@ -1,12 +1,13 @@
 /** Proxy: course config (semesterStart) — anchors week derivation. */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/courses/${encodeURIComponent(slug)}/config`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(5000) });
     return NextResponse.json(await res.json());
@@ -17,6 +18,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
 
 export async function PUT(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/courses/${encodeURIComponent(slug)}/config`, {
       method: "PUT",

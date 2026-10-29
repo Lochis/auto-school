@@ -1,12 +1,13 @@
 /** Session move API — POST refile a session to a different course. */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/session/move`, {
       method: "POST",

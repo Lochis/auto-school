@@ -1,13 +1,14 @@
 /** Create a course shell — for courses the bot can't join yet: upload
  *  materials + ingest recordings/transcripts by hand. */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
   const { slug, semesterStart } = (await req.json().catch(() => ({}))) as { slug?: string; semesterStart?: string };
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/courses/create`, {
       method: "POST",

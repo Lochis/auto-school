@@ -5,7 +5,7 @@
  *                 authGraph starts the one-time Graph device-code approval;
  *                 paused toggles auto-join suppression (absence mode). */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { listCourses, listSessions, daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +35,7 @@ function canonicalizeSession(s: Record<string, unknown>, canon: Map<string, stri
 }
 
 export async function GET() {
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/status`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
     const body = await res.json();
@@ -55,6 +56,7 @@ export async function GET() {
 
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { reset?: boolean; leave?: boolean; join?: string; authGraph?: boolean; paused?: boolean };
+  if (!(await requireUser())) return unauthorized();
   try {
     if (typeof body.paused === "boolean") {
       const res = await fetch(`${await daemonBaseOrThrow()}/pause`, {
