@@ -15,7 +15,7 @@ import { getUserIdBySub } from "../../../../../../src/db/avatar.ts";
 import { listSessions } from "../../../../../../src/db/queries/sessions.ts";
 import { courseId, sessionId, upsertArtifact } from "../../../../../../src/db/writes.ts";
 import { ownerALS } from "../../../../../../src/db/owner.ts";
-import { embedPendingSessions } from "../../../../../../src/db/ingest-embed.ts";
+import { embedPendingSessions } from "../../../../../../src/db/embed-sessions.ts";
 import { upsertIngestDeadlines, type IngestDeadline } from "../../../../../../src/db/deadlines.ts";
 
 export const dynamic = "force-dynamic";

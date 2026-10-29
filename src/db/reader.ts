@@ -38,7 +38,7 @@ export async function vectorSearch(opts: {
   k?: number;
   model?: string;
 }): Promise<ChunkHit[]> {
-  const { getPool } = await import("./client.ts");
+  const { getPool } = await import("./pg.ts");
   const params: unknown[] = [toVectorLiteral(opts.embedding), opts.model ?? EMBEDDING_MODEL];
   const where = ["dc.embedding is not null", "dc.embedding_model = $2"];
   if (opts.course) { params.push(opts.course); where.push(`c.slug = $${params.length}`); }
@@ -57,7 +57,7 @@ export async function keywordSearch(opts: {
   kind?: string;
   k?: number;
 }): Promise<ChunkHit[]> {
-  const { getPool } = await import("./client.ts");
+  const { getPool } = await import("./pg.ts");
   const where: string[] = [];
   const params: unknown[] = [];
   const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
@@ -74,13 +74,13 @@ export async function keywordSearch(opts: {
 
 /** Total chunk count (UIs/CLIs use this to detect "nothing embedded yet"). */
 export async function chunkCount(): Promise<number> {
-  const { getPool } = await import("./client.ts");
+  const { getPool } = await import("./pg.ts");
   const { rows } = await getPool().query("select count(*)::int n from document_chunks");
   return rows[0].n as number;
 }
 
 /** Drain the pool before exit (scripts only; safe when never connected). */
 export async function closeReader(): Promise<void> {
-  const { closeDb } = await import("./client.ts");
-  await closeDb();
+  const { closePool } = await import("./pg.ts");
+  await closePool();
 }
