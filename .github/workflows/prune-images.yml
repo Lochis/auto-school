@@ -21,7 +21,11 @@ jobs:
       matrix:
         package: [auto-school, auto-school-frontend]
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # MUST be a personal access token (classic) with `delete:packages` (or
+      # `packages:write`) scope — the default GITHUB_TOKEN is an installation
+      # token and cannot hit /user/packages/... for a user-owned package.
+      # Create one → repo Settings → Secrets → add as PACKAGES_TOKEN.
+      GH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
       KEEP: "20"
     steps:
       - name: Prune old hash builds for ${{ matrix.package }}
