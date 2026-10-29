@@ -436,7 +436,7 @@ What changed in code (`main` @ `6b8a156` + this section's commit):
 
 | | arbiter | conflict target |
 |---|---|---|
-| old code | `deadlines_course_id_title_legacy_id_key` `UNIQUE (course_id, title, legacy_id)` | `on conflict (course_id, title, legacy_id)` — `src/db/deadlines.ts:113`, `:602` |
+| old code | `deadlines_course_id_title_key` `UNIQUE (course_id, title, legacy_id)` | `on conflict (course_id, title, legacy_id)` — `src/db/deadlines.ts:113`, `:602` |
 | new code | `deadlines_course_title_legacy_owner_key` `UNIQUE (course_id, title, legacy_id, owner_user_id)` | `on conflict (course_id, title, legacy_id, owner_user_id)` |
 
 Pre-fix behaviour (why this is a migration, not a code tweak): owner B inserting the same
@@ -444,10 +444,11 @@ course+title as owner A hit A's row, the `do update` rewrote A's `due`/`parts`, 
 got a row of their own (`upsertIngestDeadlines` also reported `{upserted:1, updated:1}` for it).
 
 **Constraint name discovery (the thing to get right).** The pre-fix `src/db/ddl.sql` declared
-the constraint *inline* (`UNIQUE (course_id, title, legacy_id)`), so Postgres auto-named it
-**`deadlines_course_id_title_legacy_id_key`** — verified on `postgres:18-alpine`: default
-form is `<table>_<cols…>_key`, 44 chars, so no 63-byte truncation. **Confirm on prod before
-dropping** — a convention is not a guarantee, and a hand-created/dump-restored DB may differ:
+the constraint *inline* (`UNIQUE (course_id, title, legacy_id)`), so Postgres auto-names it
+`<table>_<cols…>_key` — but the spelling varies by version: a `postgres:18-alpine` smoke produced
+**`deadlines_course_id_title_legacy_id_key`** (44 chars, no truncation), while **prod postgres
+17.11 names it `deadlines_course_id_title_key`** (confirmed live 2026-10-29). **Always confirm
+on prod before dropping** — a convention is not a guarantee:
 
 ```sql
 \d deadlines
@@ -455,8 +456,7 @@ dropping** — a convention is not a guarantee, and a hand-created/dump-restored
 SELECT conname, pg_get_constraintdef(oid)
   FROM pg_constraint
  WHERE conrelid = 'deadlines'::regclass AND contype = 'u';
--- pre-contract expectation: exactly deadlines_course_id_title_legacy_id_key,
---                           UNIQUE (course_id, title, legacy_id)
+-- prod-confirmed 2026-10-29: deadlines_course_id_title_key UNIQUE (course_id, title, legacy_id)
 ```
 
 Use whatever name that returns in the `DROP CONSTRAINT` below.
@@ -539,8 +539,8 @@ returns nothing.
 
 ```sql
 -- contract.sql
--- 3) drop the non-owner-scoped arbiter — name CONFIRMED via \d deadlines (see above)
-ALTER TABLE deadlines DROP CONSTRAINT deadlines_course_id_title_legacy_id_key;
+-- 3) drop the non-owner-scoped arbiter — name PROD-CONFIRMED 2026-10-29: deadlines_course_id_title_key
+ALTER TABLE deadlines DROP CONSTRAINT deadlines_course_id_title_key;
 COMMIT;                -- only if you wrapped these in BEGIN; ANALYZE below is outside it
 ANALYZE deadlines;
 ```
@@ -551,7 +551,7 @@ Do **not** run it before the new image is live (see §8.2). Precondition check:
 -- must return exactly one row: the owner-scoped unique index, indisvalid = t
 SELECT indexrelid::regclass, indisvalid FROM pg_index
  WHERE indexrelid IN ('deadlines_course_title_legacy_owner_key'::regclass,
-                      'deadlines_course_id_title_legacy_id_key'::regclass);
+                      'deadlines_course_id_title_key'::regclass);
 ```
 
 No data loss possible: the 4-column unique is strictly weaker than the 3-column one, so the
@@ -604,6 +604,8 @@ stem, owner_user_id)`, deadlines → the 4-column target above).
   same-owner repeat/case-variant ⇒ `{added:0, updated:1}` with no duplicate row; a same-owner
   same-`(course,title,legacy_id)` raw insert raises `23505` on the new arbiter while the
   cross-owner one succeeds.
-- **EXPAND** — pending.
-- **DEPLOY** — pending (must land between expand and contract, §8.2).
-- **CONTRACT** — pending.
+- **EXPAND** — **APPLIED 2026-10-29** to prod (`auto-school-pg-55676dc46b-nb4lm`, postgres 17.11).
+  `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS deadlines_course_title_legacy_owner_key ON deadlines (course_id, title, legacy_id, owner_user_id);` → `CREATE INDEX`, verified `indisvalid = t`. Pre-expand prod state: 160 deadline rows, 1 distinct owner (single-owner, no dedup needed). Old 3-column constraint still present, so the live (old-image) daemon is unaffected.
+- **NAME CORRECTION (prod-confirmed)**: the old constraint's actual name on prod is **`deadlines_course_id_title_key`** (NOT `deadlines_course_id_title_legacy_id_key` as the postgres:18 smoke predicted — prod is postgres 17 with a truncated/legacy name). §8.3 CONTRACT must drop `deadlines_course_id_title_key`.
+- **DEPLOY** — pending (image NOT yet built/pushed to ghcr; must land between expand and contract, §8.2).
+- **CONTRACT** — pending (`ALTER TABLE deadlines DROP CONSTRAINT deadlines_course_id_title_key;` after deploy + health check).
