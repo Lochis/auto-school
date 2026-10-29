@@ -79,3 +79,18 @@ platform frontend env in `deploy/k8s/auto-school-platform.yaml`; leave the singl
 - deadline/checklist trivial-mutation split (toggle/dates/fold → platform-side PG).
 - platform-side AI generation (transcribe/notes/checklists generation on the platform).
 - full OIDC token verification (v1 uses the shared-secret + owner-uid pattern).
+
+## 4. STATUS — 5b-1 LANDED (2026-10-29, verifier SHIP)
+
+`feat/ingestion-api` merged to main. Verifier built a live harness (traversal/Range/streaming
+probes) and caught+fixed 3 defects: (a) media route now enforces its `recordings|out|courses`
+prefix allowlist — `..` collapse could otherwise reach `DATA_DIR/settings.json` (plaintext
+API keys) through the platform proxy; (b) stream error handler so a mid-stream file deletion
+can't crash the daemon; (c) ingestion writes run inside `ownerALS.run(ownerUserId)` — they had
+filed every session under the system owner, breaking owner-scoped same-day stem reuse.
+
+Deploy note: ingestion API + media route are CODE-ONLY (no schema change). The recorder
+media route only activates for the platform after the 5a manifest cutover; the single-pod
+still serves media from its own /data mount. `INGEST_TOKEN`/`RECORDER_TOKEN` secrets remain
+optional (fail closed) until the cutover. The held cutover (recorder-split §5 step 3) is now
+unblocked: daemon media route exists and mediaServe=true.
