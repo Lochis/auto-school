@@ -142,6 +142,24 @@ export async function writeDl(d: Dl[], owner: string = curOwner()): Promise<void
       and not exists (select 1 from deadline_folds f where f.child_id = deadlines.id and f.status = 'accepted')`, [owner]);
 }
 
+/** Clear-all: RAW owner-scoped delete — byte-identical to the daemon's
+ *  /deadlines DELETE (`src/daemon.ts`: `delete from deadlines where owner_user_id = $1`).
+ *
+ *  NOT `writeDl([], owner)`: that replace-all deliberately preserves ACCEPTED
+ *  fold children (so a rebuild's visible list can't drop a tombstoned child),
+ *  which means clearing the parent list leaves orphans whose parent is gone.
+ *  Their `deadline_folds.parent_id ... ON DELETE CASCADE` (ddl.sql) then removes
+ *  the fold and the preserved child RESURFACES as a visible row. Clear-all must
+ *  therefore nuke every row; the cascade takes folds/parts/checklist_items.
+ *
+ *  Deleting ONE parent (applyDeadlineMutation delete branch → writeDl) still lets
+ *  its folded child resurface — that is intended, shared semantics (the daemon's
+ *  single-delete path uses the same writeDl): deleting a parent does not delete
+ *  the merged child's original row, it un-hides it. */
+export async function clearDeadlines(owner: string = curOwner()): Promise<void> {
+  await q(`delete from deadlines where owner_user_id = $1`, [owner]);
+}
+
 /** legacy_id → deadlines.id (rows self-register via courseId on write). */
 export async function dbIdOf(legacyId: string, owner: string = curOwner()): Promise<number | null> {
   const r = await q(`select id from deadlines where legacy_id = $1 and owner_user_id = $2 order by id limit 1`, [legacyId, owner]);

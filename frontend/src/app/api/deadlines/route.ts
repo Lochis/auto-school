@@ -11,7 +11,7 @@ import { NextResponse } from "next/server";
 import { dbReads, daemonBaseOrThrow } from "@/lib/backend";
 import * as db from "@/lib/db";
 import { daemonUserHeaders, ownerId, SYSTEM_OWNER } from "@/lib/owner";
-import { applyDeadlineMutation, writeDl } from "../../../../../src/db/deadlines.ts";
+import { applyDeadlineMutation, clearDeadlines } from "../../../../../src/db/deadlines.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -60,8 +60,10 @@ export async function POST(req: Request) {
 
 export async function DELETE() {
   if (dbReads()) {
-    // clear-all = replace with empty list; daemon returns { ok: true }
-    await writeDl([], (await ownerId()) ?? SYSTEM_OWNER);
+    // clear-all = the daemon's raw owner-scoped delete (never writeDl([], …):
+    // that preserves accepted fold children, whose parent delete then cascades
+    // the fold and resurfaces them — daemon/platform divergence). Returns { ok: true }.
+    await clearDeadlines((await ownerId()) ?? SYSTEM_OWNER);
     return NextResponse.json({ ok: true });
   }
   try {

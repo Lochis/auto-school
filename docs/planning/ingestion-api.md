@@ -151,15 +151,36 @@ Do NOT lose these:
    (unique index/constraint must become `(course_id, title, legacy_id, owner_user_id)` and the
    conflict-target + re-own logic made owner-aware) — expand/contract on prod, not a code-only
    change. Must land BEFORE any multi-owner rollout.
-2. **(MEDIUM) fold-cascade resurrection.** `deadline_folds.parent_id … ON DELETE CASCADE`
-   (`src/db/ddl.sql:190`): deleting a parent deadline cascades the fold away and the preserved
-   child resurfaces as a visible row, while the daemon's raw clear-all (`delete from deadlines
-   where owner_user_id=$1`) removes it for good. `writeDl([])`/delete-branch thus diverge from
-   daemon clear-all when a folded child's parent dies. Pre-existing writeDl semantics, not a
-   5b-2 regression — but the claimed parity is false; document or fix before rollout.
-3. **(LOW) fold/unfold activity events.** The daemon emits `pushEvent("deadlines: folded/…")` on
-   fold/unfold (`src/daemon.ts:1783,1816`); the platform path emits nothing, so the activity
-   feed silently loses those events in dbReads mode.
+2. **(MEDIUM) fold-cascade resurrection — FIXED (2026-10-30, 5b-2 follow-up).** `deadline_folds.parent_id
+   … ON DELETE CASCADE` (`src/db/ddl.sql:190`) means deleting a parent deadline cascades the fold away
+   and the preserved child resurfaces as a visible row. `writeDl([])` (the platform DELETE) PRESERVED
+   accepted-fold children — so it left orphans whose parent was already gone, the fold cascaded, and
+   the child came back — while the daemon's clear-all is a raw `delete from deadlines where
+   owner_user_id=$1` that removes everything. **Fix:** new `clearDeadlines(owner = curOwner())`
+   (`src/db/deadlines.ts`) issuing exactly the daemon's SQL (`src/daemon.ts` `/deadlines` DELETE), and
+   `frontend/src/app/api/deadlines/route.ts` DELETE (dbReads branch) now calls it instead of
+   `writeDl([], …)`; response unchanged (`{ ok: true }`). `deadlines` cascade-wipes
+   `deadline_folds`/`deadline_parts`/`checklist_items`. Verified on a throwaway PG (ddl.sql @ 90e4988):
+   fold child C into parent P (accepted) → `clearDeadlines(owner)` → **zero** deadline rows (no
+   resurrected child).
+
+   **Single-delete semantics (intended, NOT a divergence).** Deleting ONE parent via
+   `applyDeadlineMutation`'s delete branch → `writeDl` still leaves the folded child's original row in
+   place, so it resurfaces once the cascade drops the fold. The daemon's single-delete path runs the
+   SAME shared `writeDl` (both callers use `src/db/deadlines.ts`), so behaviour is identical: deleting
+   a parent does not delete the merged child — it un-hides it. Only clear-all differs, and it no longer
+   does. Verified on the same throwaway PG: single-delete of P leaves C visible/resurrected.
+3. **(LOW) fold/unfold activity events — RESOLVED as documented (2026-10-30, no code change).** The
+   daemon emits `pushEvent("deadlines: folded/…")` on fold/unfold (`src/daemon.ts:1783,1816`); platform
+   mutations (`applyDeadlineMutation`/`applyChecklistMutation`, `src/db/deadlines.ts`) emit nothing.
+   That is by design: `pushEvent` (`src/status.ts:326`) is the daemon PROCESS's feed — an in-memory
+   `events[]` capped at 60, hydrated at boot from the durable `activity_events` PG tail
+   (`src/db/ddl.sql:219`, `appendEvent`/`listEvents` in `src/db/writes.ts:167-175`) — and the platform
+   route only touches rows, so it has no daemon feed to push to. Platform-side fold/unfold (and every
+   other platform mutation) therefore emit no activity entries in dbReads mode. Making them appear is a
+   separate enhancement (either the platform route also writing `activity_events`, or a PG-backed feed
+   read by `/status`); not required for 5b-2 and deliberately deferred — no event-emitting code was
+   added here.
 
 ## 4. STATUS — 5b-1 LANDED (2026-10-29, verifier SHIP)
 
