@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { dbReads, daemonBaseOrThrow } from "@/lib/backend";
 import * as db from "@/lib/db";
 import { daemonUserHeaders, ownerId, SYSTEM_OWNER } from "@/lib/owner";
-import { applyChecklistMutation } from "../../../../../src/db/deadlines.ts";
+import { applyChecklistMutation, readCk, writeCk } from "../../../../../src/db/deadlines.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     // item toggle / manual add / item remove run on the platform PG; checklist
     // GENERATION needs the LLM + course tools, so it falls through to the daemon.
     const r = await applyChecklistMutation(mut, (await ownerId()) ?? SYSTEM_OWNER);
-    if (r.ok) return NextResponse.json({ checklists: r.checklists });
+    if (r.ok) return NextResponse.json({ ok: true, checklists: r.checklists });
     if (r.code !== "unsupported") return NextResponse.json({ error: r.error }, { status: r.status });
   }
   const isGenerate = typeof mut.deadlineId === "string" && mut.itemId === undefined && mut.add === undefined && mut.removeItemId === undefined;
@@ -46,6 +46,16 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   const id = new URL(req.url).searchParams.get("deadlineId");
+  if (dbReads()) {
+    const owner = (await ownerId()) ?? SYSTEM_OWNER;
+    if (id) {
+      const ck = (await readCk(owner)).filter((c) => c.deadlineId !== id);
+      await writeCk(ck, owner);
+      return NextResponse.json({ ok: true, checklists: ck });
+    }
+    await writeCk([], owner);
+    return NextResponse.json({ ok: true });
+  }
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/checklists${id ? `?deadlineId=${encodeURIComponent(id)}` : ""}`, { method: "DELETE", headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const json = await res.json().catch(() => ({}));

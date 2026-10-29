@@ -72,9 +72,10 @@ DeadlineBatchSummary = { upserted: number, added: number, updated: number, skipp
 - **Precedence**: `due_manual` wins — a date the student set by hand is never clobbered by a
   document date; `start_by` has no manual flag and is updated when supplied.
 - **Cap**: the first 200 items are applied; the remainder are counted in `skipped`.
-- **Per-item skip, never a request error**: non-objects, missing/blank title or course → skipped.
+- **Per-item skip, never a request error**: non-objects are dropped by the route before the batch
+  (so not counted in `skipped`); missing/blank title or course → counted in `skipped`.
   The whole batch is one transaction; a hard DB failure rolls back and reports
-  `error` (logged server-side) with `0` counts.
+  `error` (logged server-side) with `{ upserted: 0, added: 0, updated: 0, skipped: batch.length }`.
 - **Additive response**: `deadlines` is present only when the request carried a `deadlines` key
   (an array, even empty → `{0,0,0,0}`). Clients that never send it see the exact v1 response.
 - **Never fails a committed ingest**: the batch runs AFTER the session/artifact writes commit, in
@@ -135,6 +136,30 @@ Do NOT lose these:
 2. **`future-product-goals.md §D/BYOK` still describes the AEAD "encrypted per-user credential
    blob … in `authentik-federation.md` §5" as the plan** — that design is DEAD (credentials
    live in the user's keychain, hosted-platform.md §6). Reword §D/BYOK to keychain storage.
+
+### 3b. KNOWN ISSUES / FLAGGED FOLLOW-UPS (found 2026-10-29 5b-2 verifier)
+
+Do NOT lose these:
+
+1. **CROSS-OWNER CORRUPTION (HIGH, pre-multi-owner blocker).** `UNIQUE (course_id, title,
+   legacy_id)` (`src/db/ddl.sql:172`) is NOT owner-scoped, and `upsertDeadlineRow`'s
+   `on conflict … do update` (`src/db/deadlines.ts:110-120`) never re-owns. Two owners with the
+   same course+title collide: owner B's write/ingest UPDATEs owner A's row (corrupting A's due
+   date, stealing A's `deadline_parts`), and B sees nothing while `upsertIngestDeadlines` lies
+   with `{upserted:1, updated:1}`. Inherited verbatim from pre-5b-2 `src/daemon.ts:830-841` but
+   now reachable from the multi-owner platform route. **Fix requires a SCHEMA migration**
+   (unique index/constraint must become `(course_id, title, legacy_id, owner_user_id)` and the
+   conflict-target + re-own logic made owner-aware) — expand/contract on prod, not a code-only
+   change. Must land BEFORE any multi-owner rollout.
+2. **(MEDIUM) fold-cascade resurrection.** `deadline_folds.parent_id … ON DELETE CASCADE`
+   (`src/db/ddl.sql:190`): deleting a parent deadline cascades the fold away and the preserved
+   child resurfaces as a visible row, while the daemon's raw clear-all (`delete from deadlines
+   where owner_user_id=$1`) removes it for good. `writeDl([])`/delete-branch thus diverge from
+   daemon clear-all when a folded child's parent dies. Pre-existing writeDl semantics, not a
+   5b-2 regression — but the claimed parity is false; document or fix before rollout.
+3. **(LOW) fold/unfold activity events.** The daemon emits `pushEvent("deadlines: folded/…")` on
+   fold/unfold (`src/daemon.ts:1783,1816`); the platform path emits nothing, so the activity
+   feed silently loses those events in dbReads mode.
 
 ## 4. STATUS — 5b-1 LANDED (2026-10-29, verifier SHIP)
 
