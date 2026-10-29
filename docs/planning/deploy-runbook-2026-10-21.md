@@ -607,5 +607,16 @@ stem, owner_user_id)`, deadlines → the 4-column target above).
 - **EXPAND** — **APPLIED 2026-10-29** to prod (`auto-school-pg-55676dc46b-nb4lm`, postgres 17.11).
   `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS deadlines_course_title_legacy_owner_key ON deadlines (course_id, title, legacy_id, owner_user_id);` → `CREATE INDEX`, verified `indisvalid = t`. Pre-expand prod state: 160 deadline rows, 1 distinct owner (single-owner, no dedup needed). Old 3-column constraint still present, so the live (old-image) daemon is unaffected.
 - **NAME CORRECTION (prod-confirmed)**: the old constraint's actual name on prod is **`deadlines_course_id_title_key`** (NOT `deadlines_course_id_title_legacy_id_key` as the postgres:18 smoke predicted — prod is postgres 17 with a truncated/legacy name). §8.3 CONTRACT must drop `deadlines_course_id_title_key`.
-- **DEPLOY** — pending (image NOT yet built/pushed to ghcr; must land between expand and contract, §8.2).
-- **CONTRACT** — pending (`ALTER TABLE deadlines DROP CONSTRAINT deadlines_course_id_title_key;` after deploy + health check).
+- **DEPLOY** — **APPLIED 2026-10-29**. Both images built+push via `bun run cd` (required first
+  fixing a frontend-image build break: `reader.ts` dynamic imports used `./client.ts`+`closeDb`,
+  and the ingest route transitively pulled `mammoth`/`jszip` — split `embedPendingSessions` into
+  `src/db/embed-sessions.ts`, commit `204073c`). `kubectl rollout restart deploy/auto-school` →
+  `2/2` Running, `DB_READS=1` on frontend, no `on conflict`/`23505`/`no unique or exclusion` in
+  logs. Conflict-target probe against prod (rolled-back transaction):
+  `INSERT … ON CONFLICT (course_id, title, legacy_id, owner_user_id) DO UPDATE` → `INSERT 0 1`,
+  no arbiter error.
+- **CONTRACT** — **APPLIED 2026-10-29** (`ALTER TABLE deadlines DROP CONSTRAINT
+  deadlines_course_id_title_key; ANALYZE deadlines;`). Verified: `pg_constraint` shows zero
+  unique constraints on `deadlines` (the new arbiter is a bare unique INDEX, per §8 naming
+  note), and `deadlines_course_title_legacy_owner_key` remains `indisvalid = t`. Multi-owner
+  deadline writes are now end-to-end fixed.
