@@ -16,6 +16,7 @@ import { Readable } from "node:stream";
 import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import archiver from "archiver";
 import { join, dirname, extname, normalize, resolve, sep } from "node:path";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { TEAMS_URL } from "./login/teams-login.ts";
 import { getBrowser, invalidateBrowser, closeBrowser, authAlive, isSharedPage, lastLoginFailedAt, lastLoginFailDetail } from "./meetings/browser.ts";
 import { listMeetings } from "./meetings/list.ts";
@@ -30,13 +31,13 @@ import { consolidateSession } from "./pipeline/consolidate.ts";
 import { notify } from "./notify.ts";
 import { setActivity, setDetail, pushEvent, snapshot, getSettings, setSettings, getModelQuotas, loadLeftToday, recordLeftToday, clearLeftToday, hydrateLeftToday, applySettingsPatch, hydrateSettings } from "./status.ts";
 import { lastDeviceCode } from "./graph/auth.ts";
-import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } from "./paths.ts";
+import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR, safeSlug } from "./paths.ts";
 import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday, hydrateCourseConfigs } from "./pipeline/materials.ts";
 import { glmChatRaw, glmChatStream, type ChatMsg, type ToolCall } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
 import { generateChecklist, ChecklistGenError } from "./db/gen/checklist.ts";
 import { rebuildDeadlines, DeadlineGenError, type DocSnapshot } from "./db/gen/deadlines.ts";
-import { ensureIndex, indexDir, bundleFresh, supportsIndex } from "./pipeline/docindex.ts";
+import { ensureIndex, indexDir, bundleFresh, supportsIndex, safeMaterialRel } from "./pipeline/docindex.ts";
 import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
 import { rebuildIndex, parseCourse, courseDir, refreshMappings, normTitle as normMappingTitle } from "./pipeline/courses.ts";
@@ -754,37 +755,63 @@ async function sweepIndexes(): Promise<void> {
 // for the handler-local SQL below.
 const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
 
+/** Decode + validate a `<slug>` path segment from a /courses/<slug>/… route.
+ *  decodeURIComponent is applied FIRST so an encoded separator (%2f, %5c, %2e)
+ *  is turned into a literal one and then rejected by safeSlug — malformed
+ *  encoding throws, so it is caught here. null → the handler answers 400. */
+function decodeSlug(raw: string | undefined | null): string | null {
+  try { return safeSlug(decodeURIComponent(raw ?? "")); } catch { return null; }
+}
+
 function startController(): void {
   // manually-left meetings (today) are seeded into `handled` so a restart
   // doesn't auto-join them again — manual Join via /join still overrides
   for (const t of loadLeftToday()) handled.add(handledKey(t));
+  // Fail-closed by design: no secret ⇒ resolveRequestOwner rejects every hop.
+  // Say it loudly instead of letting ops debug silent 401s.
+  if (!process.env.EDGE_SECRET) {
+    console.warn("[daemon] EDGE_SECRET is not set — every request will 401 (the daemon hop requires a signed X-Internal-Auth)");
+  }
   const server = createServer((req, res) => {
+    // /healthz stays UNAUTHENTICATED: the k8s liveness/readiness probe has no
+    // way to sign a request, and the route exposes nothing ({ok:true}).
+    if ((req.url ?? "").split("?")[0] === "/healthz") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
     void (async () => {
       const owner = await resolveRequestOwner(req);
       if (!owner) {
         res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "unknown X-Auto-School-User" }));
+        res.end(JSON.stringify({ error: "unauthorized — X-Auto-School-User + X-Internal-Auth required" }));
         return;
       }
       ownerALS.run(owner, () => { void handleRequest(req, res); });
     })();
   });
 
-  /** Phase-1 owner resolution (federation plan §8):
-   *  X-Auto-School-User <authentik-uid> → users.id via authentik_sub;
-   *  absent header → system OWNER (daemon-internal jobs / unauthenticated pod-local calls);
-   *  present-but-unresolvable uid → null (→ 401) — never silently fall back to OWNER,
-   *    that would leak the seed user's data to a misprovisioned identity.
-   *  x-owner-uuid SMOKE_OWNER_UUID exact-match override stays (scripts/smoke.ts). */
+  /** Phase-1 owner resolution (federation plan §8) — now AUTHENTICATED:
+   *  X-Auto-School-User <authentik-uid> + X-Internal-Auth = hex
+   *  HMAC-SHA256(EDGE_SECRET, sub). The platform's daemonUserHeaders() signs
+   *  every internal hop with the same secret; a direct hit on :7800 has no way
+   *  to guess it. Failure modes ALL return null → 401, never the seed OWNER:
+   *    - no user header, no auth header, or EDGE_SECRET unset/unprovisioned;
+   *    - signature mismatch (constant-time compare, length-checked);
+   *    - valid signature but the sub is not in users.authentik_sub.
+   *  The old x-owner-uuid / SMOKE_OWNER_UUID impersonation branch is REMOVED.
+   *  (scripts/smoke.ts must sign the same HMAC instead of impersonating.) */
   async function resolveRequestOwner(req: IncomingMessage): Promise<string | null> {
     const sub = String(req.headers["x-auto-school-user"] ?? "").trim();
-    if (sub) {
-      const id = await getUserIdBySub(sub).catch(() => null);
-      if (id) return id;
-      return null; // 401 — never fall back to OWNER (data leak)
-    }
-    const h = String(req.headers["x-owner-uuid"] ?? "");
-    return h && h === process.env.SMOKE_OWNER_UUID ? h : OWNER;
+    const sig = String(req.headers["x-internal-auth"] ?? "").trim().toLowerCase();
+    const secret = process.env.EDGE_SECRET ?? "";
+    if (!sub || !sig || !secret) return null; // nothing to verify against → 401
+    const want = createHmac("sha256", secret).update(sub).digest("hex");
+    const a = Buffer.from(sig, "hex"), b = Buffer.from(want, "hex");
+    // Buffer.from("zz","hex") yields an empty/short buffer — the length test
+    // rejects malformed hex before timingSafeEqual (which throws on mismatch)
+    if (a.length !== b.length || a.length !== 32 || !timingSafeEqual(a, b)) return null;
+    return (await getUserIdBySub(sub).catch(() => null)) ?? null; // unresolvable sub → 401
   }
 
   /** The full controller body (was the createServer callback). Runs inside
@@ -796,6 +823,14 @@ function startController(): void {
       res.end(JSON.stringify(body));
     };
     if (url.pathname === "/healthz") return send(200, { ok: true });
+    /** DESTRUCTIVE fs ops run against ONE shared DATA_DIR (no owner segment):
+     *  segments/, the session purge, the cross-course move and /ingest all
+     *  mutate files the seed owner recorded. They are personal-recorder,
+     *  single-owner operations, so any OTHER authenticated user gets 401 —
+     *  tenancy is by owner-filtered DB rows, not by directory, so there is no
+     *  per-owner fs tree to scope them to (per-owner DATA_DIR is a known P2
+     *  follow-up, deliberately out of scope here). */
+    const seedOwnerOnly = (): boolean => curOwner() === OWNER;
     if (req.method === "GET" && url.pathname === "/status") {
       return send(200, {
           state, lastScan, seen: lastSeen, handled: [...handled],
@@ -840,13 +875,14 @@ function startController(): void {
     }
     if (req.method === "POST" && url.pathname === "/session/move") {
       // refile a session to a different course: mp4/webm + notes + timeline + transcript
+      if (!seedOwnerOnly()) return send(401, { error: "session move is restricted to the recorder owner" });
       (async () => {
         try {
           const body = await new Promise<Record<string, unknown>>((res) => {
             let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
           });
-          const from = String(body.from ?? "");
-          const to = String(body.to ?? "");
+          const from = safeSlug(String(body.from ?? ""));
+          const to = safeSlug(String(body.to ?? ""));
           const stem = String(body.stem ?? "");
           if (!from || !to || !stem) return send(400, { error: "from, to, stem required" });
           if (from === to) return send(400, { error: "session is already in that course" });
@@ -913,6 +949,7 @@ function startController(): void {
     }
     if (req.method === "DELETE" && url.pathname === "/session") {
       // purge a session everywhere: mp4(s) + notes + running + timeline + index
+      if (!seedOwnerOnly()) return send(401, { error: "session purge is restricted to the recorder owner" });
       const course = url.searchParams.get("course")?.replace(/[^\w -]/g, "");
       const stem = url.searchParams.get("stem")?.replace(/[^\w .-]/g, ""); // dot: .stale-HHMMSS twins
       if (!course || !stem) return send(400, { error: "course and stem required" });
@@ -958,6 +995,7 @@ function startController(): void {
     }
     if (req.method === "DELETE" && url.pathname === "/segments") {
       // TEST/OPS: wipe every raw segment + audio ogg (mp4s in recordings/ stay)
+      if (!seedOwnerOnly()) return send(401, { error: "segment purge is restricted to the recorder owner" });
       let removed = 0;
       try {
         for (const f of readdirSync(RECORD_DIR)) {
@@ -1174,6 +1212,9 @@ function startController(): void {
     // Form gives week# + course → we derive the standard stem so the UI
     // (player, transcript, week grouping) picks it up like a native session.
     if (url.pathname === "/ingest" && req.method === "POST") {
+      // ingest writes into the shared recordings/ tree of this recorder pod —
+      // seed-owner-only (see seedOwnerOnly above).
+      if (!seedOwnerOnly()) return send(401, { error: "recorder ingest is restricted to the recorder owner" });
       try {
         // streaming multipart: file parts land on disk, never in RAM
         // (undici formData() buffers the whole video — OOM in 4Gi pod)
@@ -1280,7 +1321,8 @@ function startController(): void {
     const DL_RE = /^\/courses\/([^/]+)\/materials\/download$/;
     const dlm = url.pathname.match(DL_RE);
     if (dlm && req.method === "GET") {
-      const slug = decodeURIComponent(dlm[1]!);
+      const slug = decodeSlug(dlm[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
       const picks = [...new Set(url.searchParams.getAll("p").map((p) => sanitizeRelPath(p)).filter((p): p is string => !!p))];
       if (!picks.length) return send(400, { error: "p params required" });
       const root = MATERIALS_DIR(slug);
@@ -1336,7 +1378,8 @@ function startController(): void {
     const GEN_RE = /^\/courses\/([^/]+)\/materials\/generated$/;
     const genM = url.pathname.match(GEN_RE);
     if (genM && req.method === "POST") {
-      const slug = decodeURIComponent(genM[1]);
+      const slug = decodeSlug(genM[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
       try {
         let body: Record<string, unknown> = {};
         try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
@@ -1366,7 +1409,8 @@ function startController(): void {
     const SHEET_RE = /^\/courses\/([^/]+)\/study-sheet$/;
     const sheetM = url.pathname.match(SHEET_RE);
     if (sheetM && req.method === "POST") {
-      const slug = decodeURIComponent(sheetM[1]);
+      const slug = decodeSlug(sheetM[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
       void (async () => {
         try {
           let body: Record<string, unknown> = {};
@@ -1458,7 +1502,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
     const MATERIALS_RE = /^\/courses\/([^/]+)\/materials$/;
     const mm = url.pathname.match(MATERIALS_RE);
     if (mm) {
-      const slug = decodeURIComponent(mm[1]);
+      const slug = decodeSlug(mm[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
       if (req.method === "GET") {
         // ?indexed=1 appends the derived .index/ page cache — opt-in only
         // (machine-extracted text, not meant for human browsing by default)
@@ -1553,7 +1598,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
     const TRANSCRIBE_RE = /^\/courses\/([^/]+)\/materials\/transcribe$/;
     const tm = url.pathname.match(TRANSCRIBE_RE);
     if (tm) {
-      const slug = decodeURIComponent(tm[1]!);
+      const slug = decodeSlug(tm[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
       const videoExtOk = (leaf: string): boolean => [".mp4", ".webm", ".mkv"].includes(leaf.slice(leaf.lastIndexOf(".")).toLowerCase());
       const transcriptRel = (rel: string): string => `${rel}.transcript.md`;
       if (req.method === "GET") {
@@ -1605,7 +1651,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
     const CONFIG_RE = /^\/courses\/([^/]+)\/config$/;
     const cm = url.pathname.match(CONFIG_RE);
     if (cm) {
-      const slug = decodeURIComponent(cm[1]);
+      const slug = decodeSlug(cm[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
       if (req.method === "GET") return send(200, getCourseConfig(slug) ?? { semesterStart: "" });
       if (req.method === "PUT") {
         const body = await new Promise<Record<string, unknown>>((res) => {
@@ -1634,7 +1681,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
     // ── rename a course (folders + mapping follow) ───────────────────
     const REN_RE = /^\/courses\/([^/]+)\/rename$/;
     if (REN_RE.test(url.pathname) && req.method === "POST") {
-      const from = decodeURIComponent(url.pathname.split("/")[2]!);
+      const from = decodeSlug(url.pathname.split("/")[2]);
+      if (!from) return send(400, { error: "invalid course slug" });
       const body = await new Promise<Record<string, unknown>>((res) => {
         let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
       });
@@ -1684,8 +1732,9 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
       const body = await new Promise<Record<string, unknown>>((res) => {
         let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
       });
-      const slug = String(body.slug ?? "").trim().replace(/\s+/g, "_");
-      if (!slug || slug === "." || slug.includes("/") || slug.includes("..")) return send(400, { error: "invalid name" });
+      const slugRaw = String(body.slug ?? "").trim().replace(/\s+/g, "_");
+      const slug = safeSlug(slugRaw);
+      if (!slug) return send(400, { error: "invalid name" });
       if (existsSync(join(RECORDINGS_DIR, slug)) || existsSync(join(NOTES_DIR, slug)) || existsSync(join(config.userDataDir, "courses", slug)))
         return send(409, { error: `"${slug}" already exists` });
       const s = String(body.semesterStart ?? "");
@@ -2069,12 +2118,17 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
     // ── document preview text (chat linkifier modal) ──────────────
     const docM = url.pathname.match(/^\/courses\/([^/]+)\/doc$/);
     if (docM && req.method === "GET") {
-      const slug = decodeURIComponent(docM[1]!);
-      const rel = url.searchParams.get("path") ?? "";
+      const slug = decodeSlug(docM[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
+      // `path` is CLIENT-SUPPLIED: it must stay a relative material path under
+      // this course's materials dir (readDoc re-checks). Without this a bare
+      // `?path=../../../../settings.json` read the platform's API keys.
+      const safeRel = safeMaterialRel(url.searchParams.get("path") ?? "");
+      if (!safeRel) return send(400, { error: "path must be a relative material path inside the course" });
       const page = Number(url.searchParams.get("page") ?? "") || undefined;
       void (async () => {
         try {
-          const r = await readDoc(slug, rel, page);
+          const r = await readDoc(slug, safeRel, page);
           return send(200, "error" in r ? { error: r.error } : r);
         } catch (e) { return send(500, { error: String(e).slice(0, 120) }); }
       })();
@@ -2085,7 +2139,8 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
     const CHAT_RE = /^\/courses\/([^/]+)\/chat$/;
     const chatM = url.pathname.match(CHAT_RE);
     if (chatM) {
-      const slug = decodeURIComponent(chatM[1]!);
+      const slug = decodeSlug(chatM[1]);
+      if (!slug) return send(400, { error: "invalid course slug" });
       const loadChat = (): Promise<{ role: "user" | "assistant"; content: string; at: string }[]> => chatList(slug);
       const saveChat = (msgs: { role: "user" | "assistant"; content: string; at: string }[]): Promise<void> => chatSave(slug, msgs);
       if (req.method === "GET") {
@@ -2143,7 +2198,8 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
     // Allowed ONLY when the course has no sessions (no recordings, no
     // transcripts/notes/timeline anywhere). Materials + config go too.
     if (/^\/courses\/([^/]+)$/.test(url.pathname) && req.method === "DELETE") {
-      const course = decodeURIComponent(url.pathname.split("/")[2]!);
+      const course = decodeSlug(url.pathname.split("/")[2]);
+      if (!course) return send(400, { error: "invalid course slug" });
       try {
         const recDir = join(RECORDINGS_DIR, course);
         const hasRecordings = existsSync(recDir) && readdirSync(recDir).length > 0;

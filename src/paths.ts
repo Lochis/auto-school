@@ -17,3 +17,19 @@ export const NOTES_DIR = p("notes");
 export const RECORDINGS_DIR = p("recordings");
 /** out/<file...> helper */
 export const outPath = (...parts: string[]): string => join(OUT_DIR, ...parts);
+
+// ── path-segment guard (shared by the daemon + pipeline) ───────────────────
+/** One safe path SEGMENT (a course slug). Rejects traversal, separators and
+ *  anything that could re-open a path once joined onto a directory. Callers
+ *  decodeURIComponent() first, so an encoded separator (%2f/%5c/%2e) has already
+ *  become a literal one and is rejected here. Returns null → HTTP 400. */
+export const SAFE_SLUG_RE = /^[\w .\-()]+$/;
+export function safeSlug(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (!s || s.length > 200) return null;
+  if (s === "." || s === "..") return null;
+  if (s.includes("/") || s.includes("\\") || s.includes("%") || s.includes("\0")) return null;
+  if (!SAFE_SLUG_RE.test(s)) return null;
+  return s;
+}

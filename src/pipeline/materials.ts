@@ -9,7 +9,7 @@
  *  Per-course config (semesterStart) lives at courses/<slug>/course.json.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, statSync, renameSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
 import { DATA_DIR } from "../paths.ts";
 import { getPool } from "../db/client.ts";
 import { pgConfigured } from "../db/reader.ts";
@@ -376,11 +376,21 @@ async function moveDocumentRows(course: string, from: string, to: string): Promi
   } catch (e) { console.error(`materials: documents rename failed (${course} ${from}→${to}):`, e); }
 }
 
-/** Delete a file or FOLDER (recursive) by relative path. */
+/** join + containment: the RESOLVED path must stay inside root. Catches
+ *  `..` escapes and the sibling-prefix trick (`materials-evil/` also
+ *  `startsWith("materials")`). null → caller treats it as "not found". */
+const underRoot = (root: string, rel: string): string | null => {
+  if (typeof rel !== "string" || !rel || rel.includes("\0") || rel.includes("%")) return null;
+  const base = resolve(root);
+  const abs = resolve(base, rel);
+  return abs !== base && abs.startsWith(base + sep) ? abs : null;
+};
+
+/** Delete a file or FOLDER (recursive) by relative path — materials dir only. */
 export function deleteMaterial(course: string, relPath: string): boolean {
   const root = MATERIALS_DIR(course);
-  const abs = join(root, relPath);
-  if (!abs.startsWith(root)) return false;
+  const abs = underRoot(root, relPath);
+  if (!abs) return false;
   try {
     const st = statSync(abs);
     if (st.isDirectory()) rmSync(abs, { recursive: true, force: true });
@@ -394,9 +404,9 @@ export function deleteMaterial(course: string, relPath: string): boolean {
 /** Rename/move a file or folder. Keeps manifest rows in sync. */
 export function renameMaterial(course: string, from: string, to: string): boolean {
   const root = MATERIALS_DIR(course);
-  const absFrom = join(root, from);
-  const absTo = join(root, to);
-  if (!absFrom.startsWith(root) || !absTo.startsWith(root)) return false;
+  const absFrom = underRoot(root, from);
+  const absTo = underRoot(root, to);
+  if (!absFrom || !absTo) return false;
   try {
     mkdirSync(dirname(absTo), { recursive: true });
     renameSync(absFrom, absTo);

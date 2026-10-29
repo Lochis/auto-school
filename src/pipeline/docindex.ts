@@ -7,7 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import { MATERIALS_DIR } from "./materials.ts";
 import { listSessions } from "./sessions.ts";
 import { config } from "../config.ts";
@@ -37,6 +37,35 @@ const pageNum = (f: string): number => Number(f.match(/page-(\d+)\.txt$/)?.[1] ?
  *  and the bundle could serve the wrong file's text. */
 export const indexDir = (course: string, rel: string): string =>
   join(MATERIALS_DIR(course), ".index", rel);
+
+/** ONLY a relative material path inside this course's materials dir is readable
+ *  — the single choke point for every client/tool-supplied doc path.
+ *  Rejects: absolute paths (posix + win32 drive), any `..`/`.`/empty segment,
+ *  backslashes, %-encoded separators/traversal (%2e %2f %5c), NUL, oversize.
+ *  Hidden top-level files are refused too — EXCEPT the `.index/` page cache,
+ *  which is the one derived tree allowed (and which this module owns). */
+export function safeMaterialRel(raw: string): string | null {
+  if (typeof raw !== "string" || !raw || raw.length > 512) return null;
+  if (raw.includes("\0") || raw.includes("%")) return null; // encoded separators
+  const rel = raw.replace(/\\/g, "/").trim();
+  if (rel.startsWith("/") || /^[A-Za-z]:/.test(rel)) return null; // absolute
+  const segs = rel.split("/");
+  if (!segs.length) return null;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i]!;
+    if (!s || s === "." || s === "..") return null;
+    if (s.startsWith(".") && !(i === 0 && s === ".index")) return null; // hidden
+  }
+  return segs.join("/");
+}
+
+/** resolve + containment: the abs path must stay under the course materials
+ *  root (defence in depth for safeMaterialRel). */
+function materialAbs(course: string, rel: string): string | null {
+  const root = resolve(MATERIALS_DIR(course));
+  const abs = resolve(root, rel);
+  return abs === root || abs.startsWith(root + sep) ? abs : null;
+}
 
 export const supportsIndex = (rel: string): boolean => {
   const e = extname(rel).toLowerCase();
@@ -202,16 +231,20 @@ const pagesOnDisk = (dir: string): number => {
 };
 
 /** Read a page (1-based) or the whole doc. Caps output so one huge PDF can't eat the context. */
-export async function readDoc(course: string, rel: string, page?: number, cap = 48_000): Promise<{ pages: number; page: number | null; text: string } | { error: string }> {
+export async function readDoc(course: string, relRaw: string, page?: number, cap = 48_000): Promise<{ pages: number; page: number | null; text: string } | { error: string }> {
+  const rel = safeMaterialRel(relRaw);
+  if (!rel) return { error: `not a readable material path: ${relRaw.slice(0, 80)}` };
+  const abs = materialAbs(course, rel);
+  if (!abs) return { error: `not a readable material path: ${rel.slice(0, 80)}` };
   // .index/ page-cache files are already extracted text — serve directly
   // (never index the index: no nested .index/.index/ bundles)
   if (rel.startsWith(".index/")) {
     try {
-      return { pages: 1, page: page === undefined ? null : 1, text: readFileSync(join(MATERIALS_DIR(course), rel), "utf8").slice(0, cap) };
+      return { pages: 1, page: page === undefined ? null : 1, text: readFileSync(abs, "utf8").slice(0, cap) };
     } catch { return { error: `no such file: ${rel}` }; }
   }
   if (!supportsIndex(rel)) return { error: `${rel}: ${extname(rel) || "unknown"} files aren't readable` };
-  if (!existsSync(join(MATERIALS_DIR(course), rel))) return { error: `no such file: ${rel} — list_materials shows the exact paths` };
+  if (!existsSync(abs)) return { error: `no such file: ${rel} — list_materials shows the exact paths` };
   const pages = await ensureIndex(course, rel);
   if (!pages) return { error: `indexing failed for ${rel}` };
   const dir = indexDir(course, rel);
@@ -229,7 +262,9 @@ export async function readDoc(course: string, rel: string, page?: number, cap = 
 }
 
 /** Path of a rasterized page for the VLM (PDFs only). */
-export async function pageImage(course: string, rel: string, page: number): Promise<string | null> {
+export async function pageImage(course: string, relRaw: string, page: number): Promise<string | null> {
+  const rel = safeMaterialRel(relRaw);
+  if (!rel) return null;
   const ext = extname(rel).toLowerCase();
   if (ext !== ".pdf" && ext !== ".docx") return null;
   await ensureIndex(course, rel);
