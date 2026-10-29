@@ -1,12 +1,19 @@
 # Planning: PostgreSQL + pgvector migration for auto-school
 
-Status: implementation underway — importer (`scripts/import-fs-to-pg.ts`), `src/db/` access layer,
+Status: **Phases 3-4 LANDED** — all 4 cutover phases are DONE (planning/README.md step 2,
+hosted-platform.md §5 step 2). Importer (`scripts/import-fs-to-pg.ts`), `src/db/` access layer,
 and the smoke suite are merged on main; this doc remains the plan of record (original planning
 branch `plan/postgres-migration`).
+**As-built deviation:** the read switch is **`DB_READS=1`** — there is no `DATA_BACKEND=dual`
+mode in the shipped code (§4.4 Phase 2/3 wording below is the plan, not the implementation).
+The ro `/data` mount does **not** drop at Phase-4 exit: it goes away with the **HELD** 5a
+manifest cutover (`recorder-split.md` §5 step 3), which is the deploy change that removes the
+frontend's fs read.
 Deliverables: this document + `docs/planning/postgres-architecture.mmd` (two mermaid diagrams:
 ER + target data flow).
 Companion docs (written in parallel, cross-reference them): `docs/planning/authentik-federation.md`,
-`docs/planning/multi-user-architecture.md`.
+`docs/planning/multi-user-architecture.md` *(historical — pod-per-user, killed 2026-10-20; see
+hosted-platform.md §1.5/§6)*.
 
 Mission: replace the filesystem/JSON data layer with PostgreSQL (+ pgvector for embeddings),
 keeping recordings as blobs on the PVC (later S3/MinIO), with a verifiable, reversible migration.
@@ -523,7 +530,7 @@ top; the exporter is an escape hatch, not the rollback path of record):
 | 1 — Import (read-only DB) | Importer runs nightly; parity dashboards compare fs vs DB | Parity checklist green for 2 consecutive runs |
 | 2 — Dual-write | Daemon writes fs (primary) **and** DB in one code path (`DATA_BACKEND=dual`); reads still fs | No parity drift over ≥1 week incl. a full class cycle (record→consolidate→notes) |
 | 3 — DB reads | Reads switch to `src/db/queries` (`DATA_BACKEND=db`); fs writes continue as backup; importer keeps repairing drift | Frontend + chat tools stable; semantic search live |
-| 4 — fs write removal | Daemon writes only DB; blobs only via storage layer; retention via `retained_until`/`deleted_at`; frontend drops ro `/data` mount | 30 days clean; PVC remains live blob store for recordings (`storage-backends.md` §7 deviation); fs metadata tree archived read-only |
+| 4 — fs write removal | Daemon writes only DB; blobs only via storage layer; retention via `retained_until`/`deleted_at`; frontend drops ro `/data` mount — **as-built: the mount drop is the HELD 5a manifest cutover (`recorder-split.md` §5 step 3), not a Phase-4 change** | 30 days clean; PVC remains live blob store for recordings (`storage-backends.md` §7 deviation); fs metadata tree archived read-only |
 
 ---
 

@@ -1,8 +1,10 @@
 # Authentik federation — planning document
 
-**Status:** planning only — no code changed. Branch `plan/postgres-migration`.
-**Scope:** use Authentik as the IdP / user-account federation layer for a future multi-user
-auto-school. Companion to the Postgres migration plan (user records will live there).
+**Status:** Phases 0/1/2 **LANDED** (2026-10-20/21). Phases below are the historical plan text;
+§5 (school credentials) and §8 "Phase 2 — full federation" are **SUPERSEDED** by
+`hosted-platform.md` §6 — see the banners there. No pod-per-user.
+**Scope:** use Authentik as the IdP / user-account federation layer for auto-school. Companion to
+the Postgres migration plan (user records live there).
 Later product goals (onboarding wizard, AI login-recipe builder, BYOK): see
 `future-product-goals.md`.
 
@@ -167,10 +169,15 @@ Rules:
    (`TRUST_AUTHENTIK_HEADERS=1` set in `deploy/k8s/auto-school.yaml`) so local dev (no Traefik)
    and `next start` outside k8s can't be spoofed.
 2. Traefik's `authResponseHeaders`/Regex handling **removes any inbound client-supplied copies**
-   of those headers before copying the outpost's values — that is the anti-spoofing mechanism.
-   Keep the regex form so newly added authentik headers are covered automatically. Belt-and-braces:
-   `frontend/src/middleware.ts` can additionally reject/strip `X-authentik-*` on requests that
-   arrive without the internal marker (see §9).
+   of those headers before copying the outpost's values — the edge-side half of the anti-spoofing
+   mechanism. Keep the regex form so newly added authentik headers are covered automatically.
+   **The app-side mechanism actually in force is `EDGE_SECRET`** (`deploy/k8s/authentik-edge.yaml`
+   + `frontend/src/middleware.ts`): a Traefik `headers` middleware stamps `X-Edge-Secret`; when
+   `EDGE_SECRET` is set, middleware **strips `X-authentik-*` and `X-Auto-School-User` from every
+   request arriving without it** — that closes the port-forward/direct-pod spoofing path. Unset →
+   middleware passes through and `TRUST_AUTHENTIK_HEADERS` is the only gate (local dev).
+   Residual analysis: §9.1. The matcher deliberately excludes the streaming upload proxies
+   (`api/ingest`, `api/courses/*/materials`) — Next buffers middleware-served bodies at 10MB.
 3. Custom headers (if ever needed, e.g. percent-encoded name): set via authentik
    user/group attribute `additionalHeaders` or a proxy scope mapping returning
    `{"ak_proxy": {"user_attributes": {"additionalHeaders": {...}}}}` — docs: "Custom headers"
@@ -203,7 +210,14 @@ Rules:
   exposure).
 
 **School credentials (Teams email/password/TOTP)** — authentik does **not** hold these; the app
-must collect and store them per user. High-level options:
+must collect and store them per user.
+
+> **⚠ SUPERSEDED (2026-10-20) by `hosted-platform.md` §6.** This whole section describes
+> platform-held school credentials (including the recommended PG "encrypted credential blob") and
+> per-user filesystem partitioning — both **killed**. In the hosted product there is no
+> pod-per-user: the credentials live in the user's Electron client **keychain**, never with us.
+> Per-user fs partitioning is deferred (irrelevant to a single-owner personal pod). Kept as
+> historical rationale only; do not implement `user_credentials`/`CREDENTIALS_MASTER_KEY`.
 
 | Option | Notes |
 | --- | --- |
@@ -291,7 +305,13 @@ status events (`src/status.ts` board messages).
   per §5.
 - Acceptance: two authentik test users see disjoint recordings/notes/settings.
 
-### Phase 2 — full federation (multi-recorder)
+### Phase 2 — full federation (multi-recorder) — SUPERSEDED 2026-10-20
+
+> **⚠ SUPERSEDED by `hosted-platform.md` §6.** No pod-per-user and no per-user credential
+> capture on the platform: credentials live in the user's keychain, the recorder is a single
+> personal Deployment (5a, `recorder-split.md`), and hosted users submit via the ingestion API
+> (5b, `ingestion-api.md`). The Phase-2 **schema** work (sessions/app_settings owner keys) DID
+> land — see the Phase 1 note above. Text below is historical.
 - Per-user school credentials capture + encrypted storage (§5), per-user Chromium profile and
   PulseAudio sink per recording session; likely one daemon/container-set per active user
   (StatefulSet or per-user Deployments) instead of one shared pod — the RWO PVC + profile lock
@@ -304,13 +324,15 @@ status events (`src/status.ts` board messages).
 
 ## 9. Open questions / risks
 
-1. **Header spoofing** — mitigated by: Traefik `authResponseHeadersRegex` strips/overwrites
-   inbound `X-authentik-*`; the app only honors them when `TRUST_AUTHENTIK_HEADERS=1`; the pod's
-   7800 port is never exposed beyond loopback; Phase 0 middleware strips inbound copies as
-   belt-and-braces. Residual: anyone who can reach the Next.js container bypassing Traefik
-   (port-forward, debug `kubectl port-forward` habit noted in `deploy/k8s/auto-school.yaml`)
-   could forge `X-Auto-School-User` *to the daemon* — acceptable while same-pod; close with an
-   HMAC on that internal header if topology ever splits.
+1. **Header spoofing** — mitigated by: Traefik `authResponseHeaders`/Regex strips/overwrites
+   inbound `X-authentik-*`; the app only honors them when `TRUST_AUTHENTIK_HEADERS=1`; and
+   `EDGE_SECRET` + `frontend/src/middleware.ts` strip `X-authentik-*`/`X-Auto-School-User` from any
+   request lacking the edge marker (§4 rule 2 — the mechanism actually in force); the pod's 7800
+   port is never exposed beyond loopback. Residual: anyone who can reach the Next.js container
+   bypassing Traefik (port-forward, debug `kubectl port-forward` habit noted in
+   `deploy/k8s/auto-school.yaml`) could forge `X-Auto-School-User` *to the daemon* when
+   `EDGE_SECRET` is unset — acceptable while same-pod; close with an HMAC on that internal
+   header if topology ever splits.
 2. **Middleware ownership** — `authentik-forwardauth` lives outside this repo (authentik
    namespace). Confirm it forwards the full header set; if it was created with the legacy
    explicit list, entitlements/jwt headers may be missing today.

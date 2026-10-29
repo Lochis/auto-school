@@ -20,7 +20,8 @@ files directly (`frontend/src/lib/calendar.ts`, `calendar-board.tsx`). No PG tab
 
 **Why deferred:** this is the owner's personal auto-join schedule. The commercialized product
 replaces "one daemon scrapes my Graph calendar" with per-user meeting ingestion (see
-`multi-user-architecture.md` §5 jobs/scheduling), so this fs dump has no commercial future.
+`multi-user-architecture.md` §5 jobs/scheduling) *(historical — pod-per-user, killed
+2026-10-20; see hosted-platform.md §1.5/§6)*, so this fs dump has no commercial future.
 
 **Eventual (owner-only convenience):** daemon `GET /calendar` → `{ events, asOf }` (mirrors the
 `/status` live-state pattern), frontend polls a proxy; drop the fs dump. Or persist in a

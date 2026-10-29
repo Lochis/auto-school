@@ -35,11 +35,14 @@ One contract, two variants (`recorder-split.md` registry `mode` column):
 | Storage | PVC (never syncs) | on-device default; optional segment sync to the user's own cloud (§4) |
 | Ingest | direct PG (trusted pod) | ingestion API (§3) |
 
-ICS flows: **platform → recorder** (`/api/calendar/<feed-id>.ics`, authenticated): the web
-app's calendar UI becomes a timetable editor for hosted users; the feed arms record windows.
+ICS flows: **platform → recorder** (`/api/calendar/<feed-id>.ics`, authenticated — **NOT YET
+BUILT**: no such route in `frontend/src/app/api/` today; the web app's calendar UI is still the
+recorder's fs dump behind the daemon proxy — see `personal-not-commercial-phase3-gaps.md` Gap 1).
+In the target state the calendar UI becomes a timetable editor for hosted users and the feed arms
+record windows.
 **user → platform** (import): one-time ICS/Outlook URL import populates the timetable — user's
 own calendar data, no scraping, no borrowed client IDs. Same feed mechanism gives a
-deadlines-ICS (platform → phone calendar) as a user feature.
+deadlines-ICS (platform → phone calendar) as a user feature — also **not built**.
 
 ### 1.6 Recorder/platform responsibility boundary (DECIDED 2026-10-29)
 
@@ -54,9 +57,10 @@ back end).
 | Transcribe (Gemini/GLM), notes, deadlines, checklists, semantic search | **platform** (reads PG, platform-held keys) |
 | Session/artifact/deadline submission | ingestion API (`POST /api/ingest/session`) |
 
-Already platform-side today: chat/semantic search (embeddings in PG), materials metadata +
-embeddings (Gap 3) so checklist/deadlines/notes generation reads PG, not the recorder's fs.
-Transcription may optionally run on the recorder as a fast local path during the class, but
+Already platform-side: chat/semantic search (embeddings in PG), materials metadata +
+embeddings (Gap 3). **Not yet platform-side:** checklist/deadline/notes *generation* still
+proxies to the recorder's fs (5b-2, `ingestion-api.md` §3) — those move once the 5b split
+lands. Transcription may optionally run on the recorder as a fast local path during the class, but
 it is a data step, not a recorder function — the platform can also transcribe after submit.
 
 **Refactor direction (5b):** the daemon is currently a monolith that does all of this locally
@@ -64,7 +68,7 @@ it is a data step, not a recorder function — the platform can also transcribe 
 the intelligence to the platform. The personal pod's direct-PG ingest is the trusted fast-path
 of the same contract; an Electron client uses the API over HTTPS.
 
-## 2. Tier decision (open, gates the ingestion API)
+## 2. Tier decision (open — no longer gates the code; gates the hosted tier's LAUNCH)
 
 COMMERCIALIZATION-PLAN.md drew the line at "no hosted storage of recordings/transcripts";
 hosting transcripts is the new posture. Resolve as tiers, not a rewrite:
@@ -74,20 +78,31 @@ hosting transcripts is the new posture. Resolve as tiers, not a rewrite:
 2. **Hosted-sync tier** — subscription; transcripts + derived artifacts in the platform DB
    (encrypted per-user at rest), optional recording sync to the user's OWN cloud (§4).
 
-The ingestion API gates the tier; the pipeline code is shared. Legal consequence: privacy
-policy + EULA become **prerequisites** for the hosted tier (identifiable-lecture transcripts,
+The tier decision **no longer gates the code** — the ingestion API v1 shipped 2026-10-29
+(`ingestion-api.md`) and the pipeline code is shared either way. It gates the **hosted tier's
+launch**: privacy policy + EULA become **prerequisites** (identifiable-lecture transcripts,
 minors), and Gemini spend needs quota (BYOK per future-product-goals.md §D vs platform key).
 
 ## 3. The one new server component: Ingestion API
 
-The daemon writes PG directly today (same trust zone). An Electron client can't. Add:
+> **SHIPPED vs TARGET (2026-10-29):** `ingestion-api.md` §4 records what landed as **5b-1**:
+> `POST /api/ingest/session` with `Authorization: Bearer $INGEST_TOKEN` (shared secret,
+> fail-closed) **and the owner uid in the body** — no OIDC yet, no deadlines endpoint. The
+> OIDC/"+ deadlines" description below is the **TARGET**; deadlines submission + the
+> platform-side mutation/AI work are 5b-2 (`ingestion-api.md` §3).
+
+The daemon writes PG directly today (same trust zone). An Electron client can't. Add
+(**TARGET**, unless marked shipped):
 
 - `POST /api/ingest/session` (+ artifacts, deadlines) — owner-authenticated wrapper around
   the existing `src/db/writes.ts` upserts (`sessionId`, `sessionArtifact`, deadline writes).
   The daemon's `/ingest` + `/transcribe` endpoints are the prototype of this surface.
+  *Shipped v1:* session + transcript/notes/timeline artifacts only; deadlines are 5b-2.
 - **Auth:** OIDC via authentik from the Electron shell (system-browser flow → API token).
   Requests carry the token; Phase 1's `resolveRequestOwner` pattern carries over verbatim
   (token → uid → users.id, 401 on unknown, system-owner only for internal jobs).
+  *Shipped v1:* Bearer `INGEST_TOKEN` (constant-time compare, unset = 401) + `owner` uid in the
+  body resolved via `getUserIdBySub` (unknown uid → 401). OIDC is 5b-2.
 - **Daemon-local auth** for :7800 stays a pre-packaging checkbox (COMMERCIALIZATION-PLAN.md
   already lists it).
 
@@ -97,7 +112,8 @@ Original scope was per-user blob storage incl. recordings on platform infra. New
 
 - **The platform never holds blobs.** Recordings live on the user's device; if they want
   in-app video playback, they sync segments to **their own cloud** (S3/B2/r2… via per-user
-  credentials, `user_credentials` table per authentik-federation.md §5).
+  credentials held by the client/keychain — see §6; the `user_credentials` blob of
+  `authentik-federation.md` §5 is dead).
 - `session_artifacts.storage_uri` already exists (`file://…` today, `s3://bucket/…` later).
   The media route resolves it: local path (personal pod) or presigned GET (user cloud) —
   the web app streams from the *user's* provider, not us.
@@ -116,11 +132,18 @@ Original scope was per-user blob storage incl. recordings on platform infra. New
    covers the hosted world; personal pod is single-user).
 5. **Platform split** — two halves:
    a. **Recorder split** (`recorder-split.md`) — frontend daemon-less by default, personal
-      recorder = own Deployment + per-owner registry (heartbeat, inbound mode).
+      recorder = own Deployment + per-owner registry (heartbeat, inbound mode). **CODE DONE**
+      (`5e40545`); **manifest cutover HELD** — the single-pod is still live. The real
+      dependency was the daemon's media route: the platform media route proxies to the
+      recorder when `mediaServe` is true, so the cutover could not land while the daemon had
+      no file server. That route is **5b-1 — LANDED 2026-10-29**, so 5a step 3 is now
+      **unblocked, not done**.
    b. **Ingestion API + token auth** (§3) for external Electron clients (poll-mode
-      recorders); can follow without touching (a). Frontend must fully work with no
-   daemon attached (status board/autopilot surfaces degrade gracefully — local-dev mode
-   already proves most of this).
+      recorders); can follow without touching (a). **5b-1 ✅ DONE** (`ingestion-api.md` §4);
+      **5b-2 deferred**: deadlines submission, deadline/checklist mutation split,
+      platform-side AI generation, full OIDC (that doc's §3). Frontend must fully work with no
+      daemon attached (status board/autopilot surfaces degrade gracefully — local-dev mode
+      already proves most of this).
 6. **Electron packaging** — web app shell + capture engine + sync client; code signing,
    auto-update, offline license (COMMERCIALIZATION-PLAN.md checklist).
 7. **Storage backends** (§4 scope) — per-user cloud creds + presigned playback.

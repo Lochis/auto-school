@@ -7,7 +7,8 @@ and lists what the planned architecture already supports vs. what needs new
 design when the time comes.
 
 Companions: `authentik-federation.md` (identity), `multi-user-architecture.md`
-(worker pods), `postgres-migration.md` (schema).
+(worker pods) *(historical — pod-per-user, killed 2026-10-20; see hosted-platform.md §1.5/§6)*,
+`postgres-migration.md` (schema).
 
 ## 1. Vision
 

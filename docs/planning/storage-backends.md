@@ -5,9 +5,11 @@ the platform never holds blobs: recordings stay user-local, optional sync goes t
 own cloud (S3/B2/r2), playback via presigned URLs through the media route. See
 `hosted-platform.md` §4 for the decision and scope. Original per-user-cloud design below
 remains largely applicable with "platform infra" readings replaced by "user's provider".
+Storage is **device-local or the user's own cloud, never platform-held**.
 Companion docs: `postgres-migration.md` (schema incl. `session_artifacts.storage_uri`, cutover
 phases §4.4), `multi-user-architecture.md` (§5 "Storage evolution": per-user scratch → publish
-artifacts → metadata in PG), `authentik-federation.md` (§5 per-user encrypted credential blob),
+artifacts → metadata in PG) *(historical — pod-per-user, killed 2026-10-20; see
+hosted-platform.md §1.5/§6)*,
 `future-product-goals.md` (BYOK, compliance stance).
 
 Mission: make the **blob store pluggable per user**. The platform (Postgres) holds text + pointers
@@ -38,8 +40,10 @@ their personal backend — a founder privilege, recorded here so it's a decision
 
 One interface, implemented per scheme, used by exactly four call sites (publish, media, delete,
 export). Scratch space is deliberately **not** abstracted — live capture stays on local disk
-(per-user PVC in the multi-user form) until consolidation completes; only final artifacts are
-published. This mirrors `multi-user-architecture.md` §5 and keeps PVCs small.
+(the owner's PVC on the personal pod; the user's device for hosted capture) until consolidation
+completes; only final artifacts are published. That keeps local scratch small and keeps the
+platform out of the blob path entirely. (The old "per-user PVC in the multi-user form" is dead
+with pod-per-user — there is no platform-side per-user volume.)
 
 ```ts
 // src/storage/backend.ts (sketch)
@@ -53,8 +57,9 @@ interface StorageBackend {
 // resolution: per-user config (§3) → backend instance; file:// default for owner.
 ```
 
-- `file://` wraps the fs (`DATA_DIR` today; per-user PVC later). `s3://` via MinIO client (works
-  against R2/B2/Wasabi/real S3 — the client is the standard).
+- `file://` wraps the fs (`DATA_DIR` today — the owner's own PVC, which is the personal
+  deployment's blob store, not "platform storage"). `s3://` via MinIO client (works
+  against R2/B2/Wasabi/real S3 — the client is the standard) against the **user's** bucket.
 - `publish()` is called by `consolidate.ts` (recording kind) and `notes.ts` finalize (text kinds
   keep inlining into `content` — no backend call needed, they're KBs).
 - No backend touches: `docindex` page caches (rebuildable from sources, stay fs), timeline
@@ -64,12 +69,13 @@ interface StorageBackend {
 
 | Item | Where | Notes |
 |---|---|---|
-| Backend scheme + endpoint/bucket/prefix | `users` row or the per-user encrypted blob (`authentik-federation.md` §5) | bucket name is low-sensitivity → `users`-adjacent column; **keys never in plaintext columns** |
-| S3 credentials | per-user encrypted blob | same AEAD design as school creds/TOTP; scoped, per-user keys — never shared platform creds |
+| Backend scheme + endpoint/bucket/prefix | `users` row (low-sensitivity: bucket name/prefix; **keys never in plaintext columns**) | the platform stores only *where* the bytes are, per `session_artifacts.storage_uri` |
+| S3 credentials | **not platform-held** — the user's own keychain (Electron client) or the personal pod's Secret for the owner's single account | the old `user_credentials` AEAD blob (`authentik-federation.md` §5) is **dead** — hosting users' provider creds is exactly what was ruled out (`hosted-platform.md` §6) |
 | Migration between backends | new subcommand on the exporter: `export --backend s3://…` | DB update is just `storage_uri` rewrite + copy; checksum verify both ends |
 
-Sequencing: **requires Authentik Phase 1** (per-user uid partitioning + credential blob storage).
-Until then there is exactly one user; `file://` hardwired is correct and stays.
+Sequencing: **no longer requires Authentik Phase 2 / credential blob storage** (killed). It needs
+only username→uid ownership (Phase 1) for `storage_uri` scoping. Until multi-user exists there
+is exactly one user; `file://` hardwired is correct and stays.
 
 ## 4. Flow-by-flow changes
 

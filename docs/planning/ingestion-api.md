@@ -1,6 +1,6 @@
 # Ingestion API + recorder media route (5b-1)
 
-Status: IN PROGRESS (2026-10-29). Implements the §1.6 boundary: recorder = capture+submit,
+Status: 5b-1 **LANDED** (2026-10-29, verifier SHIP — see §4); 5b-2 deferred (§3). Implements the §1.6 boundary: recorder = capture+submit,
 platform = AI+DB. This increment ships the two foundational pieces that make the platform
 daemon-less and unblock the held recorder-split cutover.
 

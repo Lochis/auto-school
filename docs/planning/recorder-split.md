@@ -1,6 +1,9 @@
 # Recorder split — daemon-less platform, personal recorder stays live
 
-Status: PLAN (2026-10-21). Answers: how does the frontend become daemon-less (hosted-platform.md
+Status: **5a steps 1-2 LANDED** (`5e40545`); **step 3 (manifest cutover) HELD** — the
+single-pod is still live; unblocked 2026-10-29 by the 5b-1 recorder media route
+(`ingestion-api.md` §1/§4). Plan of record below (2026-10-21). Answers: how does the frontend
+become daemon-less (hosted-platform.md
 §5 item 5) while the owner's recording daemon keeps working? Short answer: **no new
 microservices — split the pod into two Deployments (platform vs recorder) and introduce a
 per-owner recorder registry with heartbeats.** The daemon already *is* a microservice; the work
@@ -36,6 +39,13 @@ boundary that matters is recorder ↔ platform.
   our trusted pod, not a stranger's client; the ingestion API (hosted-platform.md §3) is for
   *external* Electron clients and can come later without touching this split.
 - Postgres unchanged (shared, already owner-scoped).
+
+> **Boundary note (2026-10-29).** The recorder pod is today's daemon **verbatim for now**: it
+> still does capture → Gemini transcribe → notes → DB writes locally, because it owned
+> everything historically. `hosted-platform.md` §1.6 shrinks its irreducible job to
+> **capture + submit**; its direct-PG writes are the **trusted fast-path** of the same
+> ingestion contract (an Electron client uses the API over HTTPS instead). This doc only
+> moves the *process boundary*; the responsibility shrink is 5b work.
 
 ## 3. The recorder registry (the one new platform table)
 
@@ -73,9 +83,11 @@ CREATE TABLE IF NOT EXISTS recorders (
 | Settings | daemon `/settings` | platform-side: user overlay direct-to-PG; recorder knobs only when a recorder is attached |
 | Calendar/autopilot target | daemon fs dump (`out/`) | recorder-only; stays behind the proxy |
 
-Degradation is per-owner and dynamic: `GET /api/me` grows `recorder: {attached, mode,
-staleAfterMs}` so the UI can render both worlds from one codebase. (This is also exactly the
-seam the Electron shell reuses — "recorder attached" becomes "recorder is me, local".)
+Degradation is per-owner and dynamic: `GET /api/me` grows `recorder: {attached, mode}` so the
+UI can render both worlds from one codebase (only those two fields are returned — staleness is
+collapsed into `attached` server-side; there is no `staleAfterMs` in the payload). (This is also
+exactly the seam the Electron shell reuses — "recorder attached" becomes "recorder is me,
+local".)
 
 ## 5. Migration order (each step deploys independently)
 
@@ -88,8 +100,17 @@ seam the Electron shell reuses — "recorder attached" becomes "recorder is me, 
 >
 > **Known follow-ups for 5b:** deadline/checklist *mutations* still proxy to the daemon
 > (toggles, date edits — not just generate/rebuild), now visibly gated in the UI; moving
-> them platform-side is 5b work alongside the ingestion API. `mediaServe` stays false
-> until the daemon grows its media route (5a-final step 3).
+> them platform-side is 5b work alongside the ingestion API.
+>
+> **Env knobs for the split (undocumented until now, see `src/recorder-heartbeat.ts` and
+> `deploy/k8s/auto-school-recorder.yaml`):** `PLATFORM_URL` — where the recorder posts
+> heartbeats (default `http://localhost:3000`, same-pod transitional; set to the platform
+> Service, e.g. `http://auto-school:80`, on the recorder Deployment) and `RECORDER_ENDPOINT` —
+> the controller base URL the recorder *registers* in its registry row (default
+> `http://localhost:7800`; set to `http://auto-school-recorder:7800`). Both live on the
+> recorder pod, not the platform.
+> The media prerequisite is now met: the 5b-1 daemon media route landed 2026-10-29 and the
+> heartbeat posts `mediaServe: true` (`ingestion-api.md` §1/§4).
 
 1. **Registry + heartbeat** (additive; daemon posts it; frontend ignores it) — zero risk.
 2. **Frontend proxy indirection**: `lib/backend.ts` resolveRecorder() with `BACKEND_URL`
