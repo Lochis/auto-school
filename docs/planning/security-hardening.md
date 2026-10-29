@@ -1,7 +1,34 @@
 # Security hardening — auth/tenancy findings + fix plan
 
-Status: **AUDITED 2026-10-29** (6 parallel read-only audits); fixes in progress. Findings are the
-consolidated output of the trust-boundary, frontend-A/B/C, bearer/media, and daemon/db audits.
+Status: **DEPLOYED 2026-10-29** — waves A–E merged (`main` 3d80ffe, tag
+`security-hardening-code-complete-2026-10-29`), re-audited (FIX-LIST closed by wave E), and applied
+to prod via the atomic EDGE_SECRET chain. Findings are the consolidated output of the trust-boundary,
+frontend-A/B/C, bearer/media, and daemon/db audits.
+
+## Deploy log (APPLIED 2026-10-29)
+Atomic order: **secret → marker → ingress → rollout**. Do NOT reorder — new pods 401 without the
+marker, and `CreateContainerConfigError` without the key.
+1. `EDGE_SECRET` added to `auto-school-env` (`openssl rand -hex 32`, 64 hex chars; the secret now
+   has 25 keys).
+2. Applied ONLY the `auto-school-edge-marker` doc from `deploy/k8s/authentik-edge.yaml`, rendered
+   with the same value. **Do NOT whole-file-apply that manifest** — its first doc re-declares the
+   live `authentik-forwardauth` (which points at `authentik-server.authentik.svc.cluster.local` with
+   an explicit header list) and would clobber it.
+3. `kubectl apply -f deploy/k8s/auto-school-ingress.yaml` (adds the two priority-100 bearer routes
+   + chains `auto-school-edge-marker` after `authentik-forwardauth`).
+4. `kubectl apply -f auto-school-recorder.yaml -f auto-school-platform.yaml` → both rolled 1/1.
+
+Verified: direct-pod forged `X-Authentik-*` → 401; daemon hop bare → 401 / HMAC-signed →
+authenticated; recorder heartbeat round-trip fresh (~27s); marker == EDGE_SECRET byte-identical;
+recorder rehydrated 50 sessions with no EDGE_SECRET/HMAC errors.
+
+**⚠ Rotation trap:** the marker is a *rendered* Traefik CRD — a later `EDGE_SECRET` rotation silently
+desyncs (marker still holds the old value) until you re-render + re-apply the marker. Put
+`render + apply auto-school-edge-marker` into any key-rotation runbook.
+
+**⚠ Secret double-duty (open):** the SAME value is both the plaintext `X-Edge-Secret` marker (liftable
+from header-logging proxies) and the internal daemon-hop HMAC key. Split into `EDGE_MARKER` vs
+`INTERNAL_HMAC_KEY` before this goes multi-tenant.
 
 ## Root cause
 The app is a single-user design with a PARTIAL multi-user migration. Phase 1/2 owner-scoped
