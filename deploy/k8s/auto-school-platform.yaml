@@ -66,6 +66,11 @@ spec:
             - name: RECORDER_TOKEN
               valueFrom:
                 secretKeyRef: { name: auto-school-env, key: RECORDER_TOKEN, optional: true }
+            # ingestion API auth (POST /api/ingest/session): shared secret the
+            # Electron client sends as Bearer; unset → 401 (fail closed)
+            - name: INGEST_TOKEN
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: INGEST_TOKEN, optional: true }
             - { name: DB_READS, value: "1" }
             - { name: PGHOST, value: auto-school-pg }
             - { name: PGPORT, value: "5432" }
