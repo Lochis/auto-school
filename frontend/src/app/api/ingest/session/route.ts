@@ -14,6 +14,7 @@ import { NextResponse } from "next/server";
 import { getUserIdBySub } from "../../../../../../src/db/avatar.ts";
 import { listSessions } from "../../../../../../src/db/queries/sessions.ts";
 import { courseId, sessionId, upsertArtifact } from "../../../../../../src/db/writes.ts";
+import { ownerALS } from "../../../../../../src/db/owner.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -129,30 +130,37 @@ export async function POST(req: Request) {
     }
     const finalStem = stem;
 
-    const cid = await courseId(course);
-    const sid = await sessionId(cid, finalStem, {
-      sessionDate: date,
-      ...(name ? { title: name } : {}),
-    });
+    // Every write runs inside the request's owner context: writes.ts keys
+    // sessions by curOwner() (= owner_user_id), and outside an ALS store that
+    // falls back to the SYSTEM owner — which would file this session under
+    // lochis and make the same-day reuse lookup above miss (duplicates).
+    const sid = await ownerALS.run(ownerUserId, async () => {
+      const cid = await courseId(course);
+      const id = await sessionId(cid, finalStem, {
+        sessionDate: date,
+        ...(name ? { title: name } : {}),
+      });
 
-    if (transcript !== null) {
-      await upsertArtifact(sid, "transcript", `notes/${course}/${finalStem}__transcript.md`, {
-        content: transcript,
-        mimeType: "text/markdown",
-      });
-    }
-    if (notes !== null) {
-      await upsertArtifact(sid, "notes", `notes/${course}/${finalStem}__notes.md`, {
-        content: notes,
-        mimeType: "text/markdown",
-      });
-    }
-    if (timeline !== null) {
-      await upsertArtifact(sid, "timeline", `notes/${course}/${finalStem}__timeline.json`, {
-        content: JSON.stringify(timeline, null, 2),
-        mimeType: "application/json",
-      });
-    }
+      if (transcript !== null) {
+        await upsertArtifact(id, "transcript", `notes/${course}/${finalStem}__transcript.md`, {
+          content: transcript,
+          mimeType: "text/markdown",
+        });
+      }
+      if (notes !== null) {
+        await upsertArtifact(id, "notes", `notes/${course}/${finalStem}__notes.md`, {
+          content: notes,
+          mimeType: "text/markdown",
+        });
+      }
+      if (timeline !== null) {
+        await upsertArtifact(id, "timeline", `notes/${course}/${finalStem}__timeline.json`, {
+          content: JSON.stringify(timeline, null, 2),
+          mimeType: "application/json",
+        });
+      }
+      return id;
+    });
 
     return NextResponse.json({ ok: true, sessionId: sid, stem: finalStem });
   } catch (e) {

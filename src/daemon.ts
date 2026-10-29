@@ -2877,8 +2877,11 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
       try { rel = normalize(decodeURIComponent(url.pathname).replace(/^\/+/, "")); } catch { return send(400, { error: "bad path" }); }
       const root = resolve(DATA_DIR);
       const abs = resolve(root, rel);
-      if (!rel || rel.startsWith("..") || rel.includes("\0") || (abs !== root && !abs.startsWith(root + sep))) {
-        return send(404, { error: "not found" }); // traversal / absolute escape
+      // `..` segments collapse before the prefix check, so `/out/../settings.json`
+      // normalizes to `settings.json` — keep the served set to the three
+      // advertised prefixes (settings.json holds API keys).
+      if (!/^(?:recordings|out|courses)(?:\/|$)/.test(rel) || rel.startsWith("..") || rel.includes("\0") || (abs !== root && !abs.startsWith(root + sep))) {
+        return send(404, { error: "not found" }); // traversal / absolute escape / off-prefix
       }
       let st;
       try { st = statSync(abs); } catch { return send(404, { error: "not found" }); }
@@ -2901,12 +2904,17 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
           "Accept-Ranges": "bytes",
         });
         if (req.method === "HEAD") { res.end(); return; }
-        createReadStream(abs, { start, end }).pipe(res);
+        const rs = createReadStream(abs, { start, end });
+        // file deleted mid-stream (retention / move) must not take the daemon down
+        rs.on("error", () => res.destroy());
+        rs.pipe(res);
         return;
       }
       res.writeHead(200, { "Content-Type": type, "Content-Length": size, "Accept-Ranges": "bytes" });
       if (req.method === "HEAD") { res.end(); return; }
-      createReadStream(abs).pipe(res);
+      const fsStream = createReadStream(abs);
+      fsStream.on("error", () => res.destroy());
+      fsStream.pipe(res);
       return;
     }
     send(404, { error: "not found" });
