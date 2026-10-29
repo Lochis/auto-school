@@ -72,6 +72,19 @@ spec:
               valueFrom:
                 secretKeyRef: { name: auto-school-env, key: INGEST_TOKEN, optional: true }
             - { name: DB_READS, value: "1" }
+            # ── platform AI generation (5b-2 c, docs/planning/platform-ai-generation.md) ──
+            # Keys are OPTIONAL and resolved env → app_settings system row
+            # (src/db/llm-keys.ts) — never the fs (this pod has no /data mount).
+            # Unset → generation routes fail closed; the pod still serves.
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: GEMINI_API_KEY, optional: true }
+            - name: GLM_API_KEY
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: GLM_API_KEY, optional: true }
+            # flips the platform into the in-pod generator role (recorder sends
+            # capture only, transcribe stays on the recorder — D3/D4/D5)
+            - { name: PLATFORM_AI, value: "1" }
             - { name: PGHOST, value: auto-school-pg }
             - { name: PGPORT, value: "5432" }
             - { name: PGDATABASE, value: autoschool }

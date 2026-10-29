@@ -11,6 +11,11 @@
  */
 
 import { isModelExhausted, isModelAvailable, recordQuota429, markModelUnavailable, noteModelUsed, getModelQuotas, modelChain, apiKey, glmBase } from "../status.ts";
+// Transport (one fetch + body parse, no policy) lives in db/llm.ts so the
+// platform image — which only copies src/db/ — can reuse it (5b-2 c blocker 2).
+// All quota bookkeeping, key resolution and model rotation stays HERE.
+import { geminiGenerate, glmChatComplete, glmGenerate, glmStream, type AnyPart, type ChatMsg, type ToolCall } from "../db/llm.ts";
+export type { ChatMsg, ToolCall } from "../db/llm.ts";
 
 try { process.loadEnvFile(); } catch { /* .env optional if env vars come from elsewhere */ }
 
@@ -18,9 +23,7 @@ function geminiModels(): string[] {
   return modelChain(); // live: settings.json wins, .env is the seed
 }
 
-interface Part { text: string; }
-interface MediaPart { inline_data: { mime_type: string; data: string } }
-type AnyPart = Part | MediaPart;
+const glmModel = (): string => process.env.GLM_MODEL ?? "glm-5.3";
 
 function nearestRecoveryMs(): number {
   const now = Date.now();
@@ -40,31 +43,18 @@ export async function geminiCall(
   let lastErr = "";
   for (const model of models) {
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            ...(opts.json ? { generationConfig: { responseMimeType: "application/json" } } : {}),
-            ...(opts.temperature != null ? { generationConfig: { temperature: opts.temperature } } : {}),
-          }),
-        },
-      );
-      const body = await res.text();
-      if (res.status === 429 || body.includes("RESOURCE_EXHAUSTED")) {
-        recordQuota429(model, body); // detects limits + schedules recovery + logs activity
+      const r = await geminiGenerate(model, key, parts, opts);
+      if (r.status === 429 || r.body.includes("RESOURCE_EXHAUSTED")) {
+        recordQuota429(model, r.body); // detects limits + schedules recovery + logs activity
         continue;
       }
-      if (res.status === 404 || res.status === 403) {
-        markModelUnavailable(model, res.status); // e.g. gemini-2.5-flash is gone for new keys
+      if (r.status === 404 || r.status === 403) {
+        markModelUnavailable(model, r.status); // e.g. gemini-2.5-flash is gone for new keys
         continue;
       }
-      if (!res.ok) throw new Error(`Gemini ${model} ${res.status}: ${body.slice(0, 200)}`);
-      const json = JSON.parse(body) as any;
+      if (!r.ok) throw new Error(`Gemini ${model} ${r.status}: ${r.body.slice(0, 200)}`);
       noteModelUsed(model);
-      return (json?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "").trim();
+      return r.text;
     } catch (e) {
       lastErr = String(e);
     }
@@ -72,22 +62,10 @@ export async function geminiCall(
   throw new Error(`all Gemini models failed — last: ${lastErr}`);
 }
 
-/** GLM endpoint — Coding Plan keys only authorize /api/coding/paas/v4 (the
- *  standard /api/paas/v4 returns 1113 "insufficient balance" for them).
- *  Overridable via GLM_BASE. */
-const glmEndpoint = (): string => `${glmBase()}/chat/completions`;
-
-export interface ToolCall {
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
-}
-export interface ChatMsg {
-  role: "system" | "user" | "assistant" | "tool";
-  content?: string;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-}
+// GLM transport → db/llm.ts (glmGenerate / glmChatComplete / glmStream).
+// The endpoint base stays settings-driven here: glmBase() = settings → GLM_BASE
+// → Coding Plan default (/api/coding/paas/v4; the standard /api/paas/v4
+// answers 1113 "insufficient balance" for Coding Plan keys).
 
 /** Streaming variant of glmChatRaw — same loop-friendly return shape, but
  *  text tokens are forwarded live via onDelta (tool-call rounds accumulate
@@ -101,61 +79,7 @@ export async function glmChatStream(
 ): Promise<{ content: string; tool_calls?: ToolCall[] }> {
   const key = apiKey("GLM_API_KEY");
   if (!key) throw new Error("GLM_API_KEY not set");
-  const model = process.env.GLM_MODEL ?? "glm-5.3";
-  const res = await fetch(glmEndpoint(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, messages, ...(tools?.length ? { tools, tool_choice: "auto" } : {}), temperature: 0.4, stream: true }),
-    signal,
-  });
-  if (!res.ok) throw new Error(`GLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  if (!res.body || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
-    const json = (await res.json()) as any; // gateway stripped SSE — one-shot
-    const m = json?.choices?.[0]?.message ?? {};
-    const content = (m.content ?? "").trim();
-    if (content) onDelta(content);
-    return { content, ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}) };
-  }
-  let content = "";
-  const tcMap = new Map<number, ToolCall>();
-  const handle = (payload: string): void => {
-    if (!payload || payload === "[DONE]") return;
-    let j: any;
-    try { j = JSON.parse(payload); } catch { return; }
-    const d = j?.choices?.[0]?.delta;
-    if (!d) return;
-    if (typeof d.content === "string" && d.content) {
-      content += d.content;
-      onDelta(d.content);
-    }
-    if (Array.isArray(d.tool_calls)) {
-      for (const tc of d.tool_calls) {
-        const i = tc.index ?? 0;
-        const cur = tcMap.get(i) ?? { id: "", type: "function" as const, function: { name: "", arguments: "" } };
-        if (tc.id) cur.id = tc.id;
-        if (tc.function?.name) cur.function.name = tc.function.name; // name arrives whole, once
-        if (tc.function?.arguments) cur.function.arguments += tc.function.arguments; // args stream in pieces
-        tcMap.set(i, cur);
-      }
-    }
-  };
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (line.startsWith("data:")) handle(line.slice(5).trim());
-    }
-  }
-  if (buf.trim().startsWith("data:")) handle(buf.trim().slice(5).trim());
-  const toolCalls = [...tcMap.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v).filter((t) => t.function.name);
-  return { content: content.trim(), ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
+  return glmStream(glmModel(), key, messages, tools, onDelta, signal, glmBase());
 }
 
 /** One raw round-trip with optional OpenAI-style tools — returns the assistant
@@ -166,16 +90,9 @@ export async function glmChatRaw(
 ): Promise<{ content: string; tool_calls?: ToolCall[] }> {
   const key = apiKey("GLM_API_KEY");
   if (!key) throw new Error("GLM_API_KEY not set");
-  const model = process.env.GLM_MODEL ?? "glm-5.3";
-  const res = await fetch(glmEndpoint(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, messages, ...(tools?.length ? { tools, tool_choice: "auto" } : {}), temperature: 0.4 }),
-  });
-  if (!res.ok) throw new Error(`GLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const json = (await res.json()) as any;
-  const m = json?.choices?.[0]?.message ?? {};
-  return { content: (m.content ?? "").trim(), ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}) };
+  const r = await glmChatComplete(glmModel(), key, messages, { base: glmBase(), tools, temperature: 0.4 });
+  if (!r.ok) throw new Error(`GLM ${r.status}: ${r.body.slice(0, 200)}`);
+  return { content: r.text, ...(r.tool_calls ? { tool_calls: r.tool_calls } : {}) };
 }
 
 /** Vision describe via the VLM provider (default: opencode-go mimo-v2.5).
@@ -215,15 +132,9 @@ export async function vlmDescribe(prompt: string, imageBase64: string, mime = "i
 export async function glmCall(prompt: string): Promise<string> {
   const key = apiKey("GLM_API_KEY");
   if (!key) throw new Error("GLM_API_KEY not set");
-  const model = process.env.GLM_MODEL ?? "glm-5.3";
-  const res = await fetch(glmEndpoint(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0.3 }),
-  });
-  if (!res.ok) throw new Error(`GLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const json = (await res.json()) as any;
-  return (json?.choices?.[0]?.message?.content ?? "").trim();
+  const r = await glmGenerate(glmModel(), key, prompt, { base: glmBase() });
+  if (!r.ok) throw new Error(`GLM ${r.status}: ${r.body.slice(0, 200)}`);
+  return r.text;
 }
 
 /** Multi-turn chat via GLM (Zhipu) — system prompt + message history. */
@@ -233,19 +144,11 @@ export async function glmChat(
 ): Promise<string> {
   const key = apiKey("GLM_API_KEY");
   if (!key) throw new Error("GLM_API_KEY not set");
-  const model = process.env.GLM_MODEL ?? "glm-5.3";
-  const res = await fetch(glmEndpoint(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "system", content: system }, ...messages],
-      temperature: 0.4,
-    }),
+  const r = await glmChatComplete(glmModel(), key, [{ role: "system", content: system }, ...messages], {
+    base: glmBase(), temperature: 0.4,
   });
-  if (!res.ok) throw new Error(`GLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const json = (await res.json()) as any;
-  return (json?.choices?.[0]?.message?.content ?? "").trim();
+  if (!r.ok) throw new Error(`GLM ${r.status}: ${r.body.slice(0, 200)}`);
+  return r.text;
 }
 
 /** Text work: GLM if configured, else the Gemini chain. */
