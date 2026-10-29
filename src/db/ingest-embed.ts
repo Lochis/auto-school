@@ -9,7 +9,7 @@
 import { execFile } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname } from "node:path";
-import { getPool } from "./client.ts";
+import { getPool } from "./pg.ts";
 import { embedTexts, geminiApiKey, toVectorLiteral, EMBEDDING_MODEL } from "./embeddings.ts";
 import { pgConfigured } from "./reader.ts";
 import { courseId } from "./writes.ts";

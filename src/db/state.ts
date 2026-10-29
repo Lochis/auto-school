@@ -5,7 +5,7 @@
  *  daemon's in-memory hydration + sync consumers stay unchanged.
  *
  *  Raw SQL via the shared Pool (matches writes.ts / reader.ts convention). */
-import { getPool } from "./client.ts";
+import { getPool } from "./pg.ts";
 import { OWNER } from "./writes.ts";
 import { curOwner } from "./owner.ts";
 import { pgConfigured } from "./reader.ts";

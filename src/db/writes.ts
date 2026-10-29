@@ -7,7 +7,7 @@
  *  Raw SQL via the shared Pool (matches importer/ingest-embed convention; the
  *  daemon is long-lived so closeDb() is NOT called here). Every write is an
  *  idempotent upsert on the natural key, so re-runs converge. */
-import { getPool } from "./client.ts";
+import { getPool } from "./pg.ts";
 import { curOwner } from "./owner.ts";
 
 /** lochis bootstrap owner (ddl.sql seed row). Multi-user claims rows later. */
