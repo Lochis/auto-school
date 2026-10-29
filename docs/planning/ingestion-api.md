@@ -1,9 +1,9 @@
 # Ingestion API + recorder media route (5b-1)
 
 Status: 5b-1 **LANDED** (2026-10-29, verifier SHIP — see §4); 5b-2a/b **LANDED** (deadlines
-submission + trivial-mutation split — see §3). Implements the §1.6 boundary: recorder = capture+submit,
-platform = AI+DB. This increment ships the two foundational pieces that make the platform
-daemon-less and unblock the held recorder-split cutover.
+submission + trivial-mutation split — see §3); **5b-2(c) platform AI generation DEPLOYED
+2026-10-29** and the **5a manifest cutover APPLIED** (§4). Implements the §1.6 boundary:
+recorder = capture+submit, platform = AI+DB.
 
 ## 1. Recorder media route (daemon) — unblocks the cutover
 
@@ -127,9 +127,19 @@ platform frontend env in `deploy/k8s/auto-school-platform.yaml`; leave the singl
   Still daemon-proxied (needs the model / course tools): `POST /api/deadlines` rebuild (LLM sweep +
   mtime manifest) and any body the classifier cannot place, and `POST /api/checklists` generation.
 
+**LANDED (5b-2c) — platform-side AI generation, DEPLOYED 2026-10-29:**
+- deadline rebuild and checklist generation run in-process on the platform when `PLATFORM_AI=1`
+  (set in `deploy/k8s/auto-school-platform.yaml`; gates at
+  `frontend/src/app/api/deadlines/route.ts` and `frontend/src/app/api/checklists/route.ts`).
+- on-demand notes generation is a platform route unconditionally (`api/notes/generate` —
+  `finalizeNotes` over the stored timeline; deliberately not under `/api/ingest`).
+- transcription stays **recorder-side** (ffmpeg + Gemini/GLM in the daemon); the platform's
+  `/api/transcribe` is still a proxy to the recorder.
+
 **Still DEFERRED:**
-- platform-side AI generation (transcribe/notes/checklists generation on the platform).
 - full OIDC token verification (v1 uses the shared-secret + owner-uid pattern).
+- the multi-owner `documents` owner-scope schema migration (§3a.1) — the one remaining known
+  pre-multi-owner blocker from this increment (expand/contract, same shape as §3b.1).
 
 ## 3a. KNOWN ISSUES / FLAGGED FOLLOW-UPS (found 2026-10-29 cohesion review)
 
@@ -206,7 +216,7 @@ Do NOT lose these:
    read by `/status`); not required for 5b-2 and deliberately deferred — no event-emitting code was
    added here.
 
-## 4. STATUS — 5b-1 LANDED (2026-10-29, verifier SHIP)
+## 4. STATUS — 5b-1 LANDED (2026-10-29, verifier SHIP); 5a cutover + 5b-2(c) DEPLOYED (§4.1)
 
 `feat/ingestion-api` merged to main. Verifier built a live harness (traversal/Range/streaming
 probes) and caught+fixed 3 defects: (a) media route now enforces its `recordings|out|courses`
@@ -215,8 +225,27 @@ API keys) through the platform proxy; (b) stream error handler so a mid-stream f
 can't crash the daemon; (c) ingestion writes run inside `ownerALS.run(ownerUserId)` — they had
 filed every session under the system owner, breaking owner-scoped same-day stem reuse.
 
-Deploy note: ingestion API + media route are CODE-ONLY (no schema change). The recorder
-media route only activates for the platform after the 5a manifest cutover; the single-pod
-still serves media from its own /data mount. `INGEST_TOKEN`/`RECORDER_TOKEN` secrets remain
-optional (fail closed) until the cutover. The held cutover (recorder-split §5 step 3) is now
-unblocked: daemon media route exists and mediaServe=true.
+Deploy note (updated at the 5a cutover, 2026-10-29): ingestion API + media route are
+CODE-ONLY (no schema change). **The 5a manifest cutover is APPLIED** — the single-pod
+`auto-school.yaml` is retired; two Deployments are live, `auto-school-platform` (frontend,
+`PLATFORM_AI=1`, `DB_READS=1`) and `auto-school-recorder` (daemon, PVC `auto-school-data`,
+node-pinned `k3s-worker-02`, `PLATFORM_URL=http://auto-school:80`,
+`RECORDER_ENDPOINT=http://auto-school-recorder:7800`). The recorder media route is therefore the
+platform's LIVE media path, and the registry heartbeat reports `mode: inbound`,
+`mediaServe: true` (`src/recorder-heartbeat.ts`).
+
+`RECORDER_TOKEN` / `INGEST_TOKEN` are now **SET** in the `auto-school-env` secret (previously
+absent, so both sides failed closed). The manifests keep `optional: true` on those keys
+so an unset value still fails closed rather than blocking a pod start.
+
+### 4.1 5b-2(c) platform AI generation — DEPLOYED (2026-10-29)
+
+Code @ main (`946a297`, `c8aabb5`, `6b9aa16` — extracted deadline-rebuild generator, generation
+wired behind `PLATFORM_AI=1`, ingest timeline → `transcript_segments`, `notes/generate` route),
+images pushed, **platform pod live with `PLATFORM_AI=1`**. So the platform now owns generation;
+the recorder only captures and submits.
+
+**Remaining known item:** the multi-owner `documents` owner-scope schema migration (§3a.1) —
+`documents`' unique arbiter is still `(course_id, kind, rel_path)`, so two owners sharing a
+course + artifact rel_path cross-owner-collide on the embed upsert. **Still deferred; must land
+before multi-owner** (§3b.1 pattern).
