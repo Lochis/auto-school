@@ -15,6 +15,10 @@
 #     and the registry never populates (silently masked by daemon-less mode)
 #   * kubectl create secret ... auto-school-env with RECORDER_TOKEN (both pods
 #     read it; without it heartbeats 401 and the platform stays daemon-less)
+#   * the same Secret MUST carry EDGE_SECRET (32+ random bytes, hex): it is a
+#     REQUIRED secretKeyRef below and the material for the edge marker + the
+#     internal daemon-hop HMAC.  openssl rand -hex 32
+#     Render the matching Traefik marker from it (see authentik-edge.yaml).
 ---
 apiVersion: v1
 kind: Namespace
@@ -59,8 +63,14 @@ spec:
             - { name: TRUST_AUTHENTIK_HEADERS, value: "1" }
             - { name: AUTHENTIK_ADMIN_GROUP, value: auto-school-admins }
             - name: EDGE_SECRET
+              # REQUIRED (security-hardening.md §3): the shared edge marker
+              # (deploy/k8s/authentik-edge.yaml stamps it, frontend/src/middleware.ts
+              # verifies it) AND the key for the internal daemon-hop HMAC
+              # (lib/owner.ts daemonUserHeaders → X-Internal-Auth). No
+              # `optional: true`: a missing key must stop the rollout, not
+              # silently degrade to an unverifiable edge (requireUser() 401s).
               valueFrom:
-                secretKeyRef: { name: auto-school-env, key: EDGE_SECRET, optional: true }
+                secretKeyRef: { name: auto-school-env, key: EDGE_SECRET }
             # recorder registry auth: the platform verifies daemon heartbeats
             # with this token (same key as the recorder pod's env)
             - name: RECORDER_TOKEN

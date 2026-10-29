@@ -53,8 +53,8 @@ export async function resolveRecorderBase(
   return (await resolveRecorder(ownerId)).base;
 }
 
-/** Per-request base for the current authenticated owner (ownerId() degrades
- *  to the seed/system owner when auth is untrusted, matching Phase 1). */
+/** Per-request base for the current authenticated owner (ownerId() is
+ *  undefined when no identity resolves → no recorder, never the seed owner). */
 export async function daemonBase(): Promise<string | null> {
   return resolveRecorderBase(await ownerId());
 }

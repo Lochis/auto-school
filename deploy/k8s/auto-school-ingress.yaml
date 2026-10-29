@@ -27,6 +27,11 @@ spec:
     # bypass of the app's auth. Traefik ranks by rule length, so these
     # PathPrefix rules win over the plain Host() catch-all below; `priority`
     # makes that explicit rather than incidental.
+    # They carry NO edge marker (they never pass the outpost), so
+    # frontend/src/middleware.ts strips X-authentik-* / X-Auto-School-User /
+    # X-Internal-Auth from them exactly like any other untrusted request —
+    # neither route reads those headers, they resolve their owner from the
+    # Bearer token + body only.
     - kind: Rule
       priority: 100
       match: Host(`school.vanderloch.com`) && (PathPrefix(`/api/ingest/session`) || PathPrefix(`/api/recorder/heartbeat`))
@@ -37,7 +42,16 @@ spec:
     - kind: Rule
       match: Host(`school.vanderloch.com`)
       middlewares:
+        # ORDER IS LOAD-BEARING (security-hardening.md §3): forwardAuth first,
+        # then the marker — Traefik only runs the next middleware after the
+        # auth server allows the request, so X-Edge-Secret is stamped ONLY on
+        # requests that actually went through the authentik outpost. The app
+        # (frontend/src/middleware.ts) strips client-supplied
+        # X-authentik-* / X-Auto-School-User / X-Internal-Auth from everything
+        # that lacks the marker. Render the marker value from the Secret first
+        # (see authentik-edge.yaml) — an unrendered one fails closed (401).
         - name: authentik-forwardauth
+        - name: auto-school-edge-marker
       services:
         - name: auto-school
           port: 80

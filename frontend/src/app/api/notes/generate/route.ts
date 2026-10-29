@@ -10,10 +10,10 @@
  *  Deliberately NOT under /api/ingest: ingestion stays fast + fail-soft
  *  (ingestion-api.md §2 — an LLM sweep can take minutes and must never sit on
  *  the recorder's submit path). This is an interactive platform action, so it
- *  is authenticated like every other read/write route (Authentik headers →
- *  ownerId()), not with INGEST_TOKEN. */
+ *  is authenticated like every other read/write route (requireUser() → 401 when
+ *  no owner resolves), not with INGEST_TOKEN. */
 import { NextResponse } from "next/server";
-import { ownerId, SYSTEM_OWNER } from "@/lib/owner";
+import { requireUser, unauthorized } from "@/lib/owner";
 import { getPool } from "../../../../../../src/db/pg.ts";
 import { ownerALS } from "../../../../../../src/db/owner.ts";
 import { defaultTextCall, finalizeNotes, resolveSessionTarget, type NotesTimelineEntry } from "../../../../../../src/db/gen/notes.ts";
@@ -96,7 +96,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "bad stem" }, { status: 400 });
   }
 
-  const owner = (await ownerId()) ?? SYSTEM_OWNER;
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
   try {
     // explicit target: slug+stem come from the request, never re-derived from
     // "today" (a re-generate must land on the session the user clicked).

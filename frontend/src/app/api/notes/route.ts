@@ -3,10 +3,12 @@
  *  DB_READS=1 serves the same markdown from session_artifacts.content. */
 import { NextResponse } from "next/server";
 import { listCourses, notesMarkdown } from "@/lib/backend";
+import { requireUser, unauthorized } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  if (!(await requireUser())) return unauthorized();
   const u = new URL(req.url);
   const course = u.searchParams.get("course") ?? "";
   const stem = u.searchParams.get("stem") ?? "";

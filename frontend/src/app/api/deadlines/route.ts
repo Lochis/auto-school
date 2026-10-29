@@ -15,7 +15,7 @@
 import { NextResponse } from "next/server";
 import { dbReads, daemonBaseOrThrow } from "@/lib/backend";
 import * as db from "@/lib/db";
-import { daemonUserHeaders, ownerId, SYSTEM_OWNER } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { applyDeadlineMutation, clearDeadlines } from "../../../../../src/db/deadlines.ts";
 import { rebuildDeadlines, DeadlineGenError } from "../../../../../src/db/gen/deadlines.ts";
 import { ownerALS } from "../../../../../src/db/owner.ts";
@@ -25,7 +25,9 @@ export const dynamic = "force-dynamic";
 const platformAi = (): boolean => process.env.PLATFORM_AI === "1";
 
 export async function GET() {
-  if (dbReads()) return NextResponse.json(await db.deadlinesFeed(await ownerId()));
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
+  if (dbReads()) return NextResponse.json(await db.deadlinesFeed(owner));
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/deadlines`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const body = await res.text();
@@ -38,8 +40,9 @@ export async function GET() {
 export async function POST(req: Request) {
   const raw = await req.json().catch(() => ({}));
   const prompt: Record<string, unknown> = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
   if (dbReads()) {
-    const owner = (await ownerId()) ?? SYSTEM_OWNER;
     const r = await applyDeadlineMutation(prompt, owner);
     if (r.ok) {
       // daemon parity: { ok, deadlines, folded?, deleted? } — the panel only
@@ -107,11 +110,13 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE() {
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
   if (dbReads()) {
     // clear-all = the daemon's raw owner-scoped delete (never writeDl([], …):
     // that preserves accepted fold children, whose parent delete then cascades
     // the fold and resurfaces them — daemon/platform divergence). Returns { ok: true }.
-    await clearDeadlines((await ownerId()) ?? SYSTEM_OWNER);
+    await clearDeadlines(owner);
     return NextResponse.json({ ok: true });
   }
   try {

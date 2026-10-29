@@ -1,19 +1,20 @@
-import { getAuthUser } from "@/lib/auth";
 import {
   AVATAR_MIME_ALLOWLIST,
   MAX_AVATAR_BYTES,
   clearAvatar,
-  ensureUserRow,
   getAvatarFor,
   upsertAvatar,
 } from "@/lib/avatar";
 import { facehashSvg } from "@/lib/facehash";
+import { requireUser, unauthorized } from "@/lib/owner";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-/** Unauthenticated / no edge trust → indistinguishable from "no such route". */
+/** Unauthenticated / no edge trust → indistinguishable from "no such route".
+ *  (401 is the contract answer for the data routes; avatars keep the opaque
+ *  404 only on the internal failure path — neither leaks owner data.) */
 const notFound = () => new NextResponse(null, { status: 404, headers: { "cache-control": "no-store" } });
 
 /** Same hardening on every 200 this route emits (stored blob or FaceHash
@@ -28,12 +29,15 @@ const serveHeaders = (contentType: string, etag: string) => ({
 
 /** Serve the DB-cached avatar; when none is stored (never synced, missing
  *  claim, or reset), fall back to the FaceHash identicon — deterministic
- *  per uid, so it caches as safely as a stored avatar (Gap 4b). 404 (no-store)
- *  only for unauthenticated / no-uid / no-trust. */
+ *  per uid, so it caches as safely as a stored avatar (Gap 4b). 401 (no-store)
+ *  for unauthenticated / no-uid / no-trust. */
 export async function GET() {
-  if (process.env.TRUST_AUTHENTIK_HEADERS !== "1") return notFound();
+  // Fail closed: no resolvable owner (untrusted edge, no uid, DB down) → 401.
+  // The image tag renders an empty sheet either way.
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
   const uid = (await headers()).get("x-authentik-uid");
-  if (!uid) return notFound();
+  if (!uid) return unauthorized();
   try {
     let av: Awaited<ReturnType<typeof getAvatarFor>> = null;
     try {
@@ -60,8 +64,8 @@ export async function GET() {
  *  Gap 4 rework 2026-10-18). Returns the new cache-buster epoch. */
 export async function POST(request: Request) {
   try {
-    const user = await getAuthUser();
-    if (!user) return notFound(); // untrusted edge / not behind the outpost
+    const owner = await requireUser(); // authenticated users.id or 401 (fail closed)
+    if (!owner) return unauthorized();
     const form = await request.formData();
     const file = form.getAll("file").find((v): v is File => v instanceof File);
     if (!file) {
@@ -77,9 +81,7 @@ export async function POST(request: Request) {
     if (bytes.length > MAX_AVATAR_BYTES) {
       return NextResponse.json({ ok: false, error: "avatar exceeds 256KB" }, { status: 413 });
     }
-    const id = await ensureUserRow(user);
-    if (!id) return notFound();
-    const syncedAt = await upsertAvatar(id, bytes, file.type);
+    const syncedAt = await upsertAvatar(owner, bytes, file.type);
     return NextResponse.json({ ok: true, v: syncedAt?.getTime() ?? Date.now() });
   } catch (e) {
     console.error("[avatar] upload failed:", e);
@@ -92,11 +94,9 @@ export async function POST(request: Request) {
  *  Gap 4 rework, 2026-10-18). Bumps synced_at for a fresh ?v=. */
 export async function DELETE() {
   try {
-    const user = await getAuthUser();
-    if (!user) return notFound(); // untrusted edge / not behind the outpost
-    const id = await ensureUserRow(user);
-    if (!id) return notFound();
-    await clearAvatar(id);
+    const owner = await requireUser(); // authenticated users.id or 401 (fail closed)
+    if (!owner) return unauthorized();
+    await clearAvatar(owner);
     return NextResponse.json({ ok: true, v: Date.now() });
   } catch (e) {
     console.error("[avatar] remove failed:", e);

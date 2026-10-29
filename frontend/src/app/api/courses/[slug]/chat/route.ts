@@ -1,16 +1,18 @@
 /** Proxy: course chat with GLM (study assistant scoped to one course). */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 export const dynamic = "force-dynamic";
 const base = async (slug: string) => `${await daemonBaseOrThrow()}/courses/${encodeURIComponent(slug)}/chat`;
 export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  if (!(await requireUser())) return unauthorized();
   try { return NextResponse.json(await (await fetch(await base(slug), { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(5000) })).json()); }
   catch { return NextResponse.json({ messages: [] }); }
 }
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(await base(slug), { method: "POST", headers: { "Content-Type": "application/json", ...(await daemonUserHeaders()) }, body: await req.text(), signal: AbortSignal.timeout(600_000) }); // tool loop + docx→PDF + VLM pages = minutes
     // happy path: SSE stream (tool statuses + live answer tokens) — pass the
@@ -26,6 +28,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 }
 export async function DELETE(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
+  if (!(await requireUser())) return unauthorized();
   try { return NextResponse.json(await (await fetch(await base(slug), { method: "DELETE", headers: await daemonUserHeaders() })).json()); }
   catch { return NextResponse.json({ error: "backend unreachable" }, { status: 502 }); }
 }

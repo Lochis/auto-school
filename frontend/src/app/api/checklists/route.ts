@@ -8,7 +8,7 @@
 import { NextResponse } from "next/server";
 import { dbReads, daemonBaseOrThrow } from "@/lib/backend";
 import * as db from "@/lib/db";
-import { daemonUserHeaders, ownerId, SYSTEM_OWNER } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { applyChecklistMutation, readCk, readDl, writeCk } from "../../../../../src/db/deadlines.ts";
 import { generateChecklist, ChecklistGenError } from "../../../../../src/db/gen/checklist.ts";
 import { ownerALS } from "../../../../../src/db/owner.ts";
@@ -18,7 +18,9 @@ export const dynamic = "force-dynamic";
 const platformAi = (): boolean => process.env.PLATFORM_AI === "1";
 
 export async function GET() {
-  if (dbReads()) return NextResponse.json({ checklists: await db.checklists(await ownerId()) });
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
+  if (dbReads()) return NextResponse.json({ checklists: await db.checklists(owner) });
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/checklists`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(10_000) });
     const body = await res.text();
@@ -33,11 +35,12 @@ export async function POST(req: Request) {
   const mut: Record<string, unknown> = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   // a generate body carries ONLY deadlineId (no item toggle / add / remove)
   const isGenerate = typeof mut.deadlineId === "string" && mut.itemId === undefined && mut.add === undefined && mut.removeItemId === undefined;
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
   if (dbReads()) {
     // item toggle / manual add / item remove run on the platform PG; checklist
     // GENERATION needs the LLM + course tools — locally when PLATFORM_AI=1,
     // else it falls through to the daemon.
-    const owner = (await ownerId()) ?? SYSTEM_OWNER;
     const r = await applyChecklistMutation(mut, owner);
     if (r.ok) return NextResponse.json({ ok: true, checklists: r.checklists });
     if (r.code !== "unsupported") return NextResponse.json({ error: r.error }, { status: r.status });
@@ -79,8 +82,9 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   const id = new URL(req.url).searchParams.get("deadlineId");
+  const owner = await requireUser();
+  if (!owner) return unauthorized();
   if (dbReads()) {
-    const owner = (await ownerId()) ?? SYSTEM_OWNER;
     if (id) {
       const ck = (await readCk(owner)).filter((c) => c.deadlineId !== id);
       await writeCk(ck, owner);

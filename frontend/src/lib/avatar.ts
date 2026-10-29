@@ -7,9 +7,8 @@
  *  path was removed by owner decision. `avatar_synced_at` survives purely
  *  as a write-timestamp for cache-busting (?v=).
  *
- *  ensureUserRow stays: it is identity infrastructure (claims the pre-seeded
- *  row on first login / JIT-provisions new users, per
- *  docs/planning/authentik-federation.md §5) that Phase 1 will build on.
+ *  ensureUserRow stays: it is identity infrastructure (JIT-provisions by sub,
+ *  never claims an existing row by username — security-hardening.md §4).
  *
  *  Nothing here throws: DB-down degrades to a plain /api/me/avatar URL
  *  (FaceHash), and /api/me still 200s.
@@ -42,24 +41,30 @@ export const AVATAR_MIME_ALLOWLIST = [
   "image/webp",
 ];
 
-/** Identity claim/JIT step: claim the pre-seeded identity row on first login
- *  (authentik_sub is NULL until then), JIT-provision rows for other users,
- *  then resolve the row id (idempotent, per authentik-federation.md §5).
+/** Identity resolution / JIT provisioning — by authentik sub ONLY.
+ *  (security-hardening.md §"Shared contract" 4: NO username claim.)
+ *
+ *  The old `update users set authentik_sub=$1 where authentik_sub is null and
+ *  username=$2` takeover is GONE: anyone who could authenticate with a
+ *  matching preferred_username bound their sub to a row they do not own and
+ *  inherited its data. Now:
+ *  1. JIT-insert this sub (bare `on conflict do nothing` — a username or sub
+ *     collision inserts nothing instead of overwriting/claiming a row), then
+ *  2. resolve sub → id; `null` when no row carries this sub.
+ *
+ *  Consequence (deliberate, fail closed): a pre-seeded username row whose
+ *  authentik_sub is still NULL is NOT claimed automatically. Bind it once,
+ *  explicitly, by an operator:
+ *    update users set authentik_sub = '<authentik-sub>'
+ *     where id = '00000000-0000-0000-0000-000000000001' and authentik_sub is null;
+ *  Until then that login resolves to no owner and every user-facing route
+ *  401s (requireUser()) rather than serving the seed user's rows.
+ *
  *  May throw on DB failure — callers wrap; null when the row can't be
  *  resolved. Shared by /api/me and the /api/me/avatar POST/DELETE handlers
  *  so no path duplicates the SQL. */
 export async function ensureUserRow(user: AuthUser): Promise<string | null> {
   const pool = getPool();
-  await pool.query(
-    `update users set authentik_sub = $1 where authentik_sub is null and username = $2`,
-    [user.uid, user.username],
-  );
-  // JIT-provision other users. BARE on-conflict: after the claim above, the
-  // seed user's row already holds both this sub AND this username — an
-  // arbiter on (authentik_sub) alone would leave the username UNIQUE
-  // violation unhandled and throw on every login of the seed user
-  // (the Gap 4 upload 500s, 2026-10-19). A genuine username collision with a
-  // DIFFERENT sub still inserts nothing here; callers degrade gracefully.
   await pool.query(
     `insert into users (authentik_sub, username, display_name) values ($1, $2, $3)
      on conflict do nothing`,

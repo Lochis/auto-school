@@ -1,6 +1,6 @@
 /** Rename a course — backend moves folders + updates meeting mappings. */
 import { NextResponse } from "next/server";
-import { daemonUserHeaders } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { daemonBaseOrThrow } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const { to } = (await req.json().catch(() => ({}))) as { to?: string };
+  if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/courses/${encodeURIComponent(slug)}/rename`, {
       method: "POST",
