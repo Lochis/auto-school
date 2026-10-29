@@ -34,6 +34,7 @@ import { NOTES_DIR, RECORDINGS_DIR, OUT_DIR, SEGMENTS_DIR, outPath, DATA_DIR } f
 import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, renameMaterial, sanitizeRelPath, weekFromPath, MATERIALS_DIR, getCourseConfig, setCourseConfig, weekOf, weekMonday, hydrateCourseConfigs } from "./pipeline/materials.ts";
 import { glmChatRaw, glmChatStream, type ChatMsg, type ToolCall } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
+import { generateChecklist, ChecklistGenError } from "./db/gen/checklist.ts";
 import { ensureIndex, indexDir, bundleFresh, supportsIndex } from "./pipeline/docindex.ts";
 import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
@@ -2284,59 +2285,27 @@ Reply with ONLY a JSON array, one object per pair in order: {"pair": <number>, "
             // ── generate / regenerate for a deadline ──
             const dl = (await readDl()).find((d) => d.id === dlId);
             if (!dl) return send(404, { error: "no such deadline id" });
-            const systemPrompt = `You build an EXECUTION CHECKLIST for one specific student task, from the real course files — never invent steps.
-Task: "${dl.title}" (${dl.kind})${dl.due ? `, due ${dl.due}` : ""}${dl.note ? `. Known detail: ${dl.note}` : ""}${dl.parts?.length ? `\nThis task has KNOWN PARTS (folded sub-deliverables) — each MUST appear as its own step, with its due date when given:\n${dl.parts.map((p) => `- ${p.title}${p.due ? ` (due ${p.due})` : ""}${p.done ? " [already done]" : ""}${p.note ? ` — ${p.note}` : ""}`).join("\n")}` : ""}
-Course slug: ${dl.course}
-Explore with tools first: list_materials / read_document / view_page on anything related to THIS task (task sheets, lab specs, submission instructions). Read enough to know what concretely must be done; skim, don't quote.
-Then reply with ONLY a JSON array (no prose, no markdown fences) of ordered steps:
-[{"text": "short imperative step, individually verifiable"}]
-5-12 items unless the source genuinely demands more. Split the work into its real parts (prepare → do → verify → submit) — a 1- or 2-item checklist is almost never useful. Steps must be concrete and checkable (e.g. "Complete Section 2 query exercises", "Upload the .zip to Moodle"), not vague ("understand the lab"). Include setup, the actual work, and submission. Today is ${new Date().toISOString().slice(0, 10)}.`;
-            const convo: ChatMsg[] = [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: `Build the checklist for "${dl.title}" now. Explore the course materials with tools, then output ONLY the JSON array.` },
-            ];
-            let raw = "";
-            for (let step = 0; step < 10; step++) {
-              const msg = await glmChatRaw(convo, TOOL_DEFS);
-              if (msg.tool_calls?.length) {
-                convo.push({ role: "assistant", content: msg.content || "", tool_calls: msg.tool_calls });
-                for (const tc of msg.tool_calls) {
-                  const result = await runTool(tc, dl.course);
-                  pushEvent(`checklist tool: ${tc.function.name} → ${String(result).slice(0, 80).replace(/\s+/g, " ")}…`);
-                  convo.push({ role: "tool", tool_call_id: tc.id, content: String(result).slice(0, 26_000) });
-                }
-                continue;
-              }
-              raw = msg.content;
-              break;
-            }
-            const m = raw.match(/\[[\s\S]*\]/);
-            if (!m) return send(500, { error: `model produced no JSON array: ${raw.slice(0, 120)}` });
-            let parsed: unknown[];
-            try { parsed = JSON.parse(m[0]); } catch (e) {
-              return send(500, { error: `JSON parse failed: ${String(e).slice(0, 120)}` });
-            }
-            const steps = parsed
-              .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
-              .map((s) => String(s.text ?? "").trim().slice(0, 200))
-              .filter((t) => t.length > 1);
-            if (!steps.length) return send(500, { error: "model returned no usable steps" });
-            // done-ness + manual items carry over (id = deadlineId|text)
-            const prev = mine();
-            const prevDone = new Map((prev?.items ?? []).filter((x) => x.done).map((x) => [x.id, x]));
-            const items: CkItem[] = steps.map((text) => {
-              const id = itemId(dlId, text);
-              const old = prevDone.get(id);
-              return { id, text, done: Boolean(old?.done), doneAt: old?.doneAt ?? null };
+            // DELEGATED to src/db/gen/checklist.ts (5b-2 c, B2): ONE generator
+            // shared with the platform. The policy this daemon owns is injected:
+            //   • quota-aware GLM call  → pipeline/llm.ts glmChatRaw
+            //   • fs-capable tool runner → pipeline/tools.ts runTool (the .index/
+            //     page bundles + VLM view_page the platform cannot have)
+            // Prompts, the 10-round tool loop, the JSON contract and the
+            // checklist_items carry-over (done-ness + manual adds, id =
+            // deadlineId|text) are byte-for-byte the pre-5b2c code, now living in
+            // gen/checklist.ts. Only delta on both paths: when the course corpus
+            // has NO indexed text the user message gains one warning sentence.
+            const gen = await generateChecklist(dl, dl.course, {
+              callTools: (messages, tools) => glmChatRaw(messages, tools),
+              runTool: (name, argsJson) => runTool({ id: "checklist", function: { name, arguments: argsJson } }, dl.course),
+              tools: TOOL_DEFS,
+              onEvent: pushEvent,
             });
-            for (const x of prev?.items ?? []) if (x.manual && !items.some((n) => n.id === x.id)) items.push(x); // keep manual adds
-            const entry: Ck = { deadlineId: dlId, course: dl.course, title: dl.title, items, updatedAt: Date.now() };
-            const out = ck.filter((c) => c.deadlineId !== dlId);
-            out.push(entry);
-            await writeCk(out);
-            pushEvent(`checklist built: ${dl.title} — ${items.length} step(s)`);
-            return send(200, { ok: true, count: items.length, checklists: out });
+            return send(200, { ok: true, count: gen.items.length, checklists: gen.checklists });
           } catch (e) {
+            // generation failures keep their exact pre-5b2c bodies (no JSON array /
+            // JSON parse failed / no usable steps)
+            if (e instanceof ChecklistGenError) return send(e.status, { error: e.message });
             return send(500, { error: `checklist failed: ${String(e).slice(0, 150)}` });
           }
         })();
