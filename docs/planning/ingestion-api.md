@@ -133,6 +133,22 @@ Do NOT lose these:
    embedded under the system owner. Fixing it interacts with the `on conflict (course_id,
    kind, rel_path)` dedupe used by backfill + the daemon sweep — needs a coordinated change, not
    a one-liner. **Owner attribution bug, 5b-2.**
+   **FIXED (2026-10-30, 5b-2c A2):** `embedPendingSessions` takes an explicit `owner?: string`
+   (falls back to `curOwner()`); the ingest route passes `{ owner: ownerUserId }` because its
+   embed kick runs OUTSIDE `ownerALS.run`. `embedOneMaterial` uses `curOwner()`; the `OWNER`
+   consts are gone from both `embed-sessions.ts` and `ingest-embed.ts`. Key resolution also
+   gained the D1 fallback (`geminiApiKey(DATA) ?? resolveApiKey("GEMINI_API_KEY")`), so the
+   platform's fs-less pod no longer silently no-ops.
+   **SIBLING FINDING (still open — needs a schema migration, exactly like §3b.1):** the
+   `documents` unique arbiter is `(course_id, kind, rel_path)` and is **NOT owner-scoped**, while
+   the embed INSERTs use `on conflict (course_id, kind, rel_path) do update`
+   (`src/db/embed-sessions.ts:74`, `src/db/ingest-embed.ts:110`) and never re-own. Two owners with
+   the same course + artifact rel_path therefore cross-owner-collide identically to the deadlines
+   bug: owner B's embed UPDATEs owner A's `documents` row (`session_id`/`updated_at`, then A's
+   `document_chunks` get deleted + rewritten) while B's semantic search sees nothing. Fixing it
+   requires the same expand/contract migration (§3b.1 pattern): the arbiter must become
+   `(course_id, kind, rel_path, owner_user_id)` and the conflict target + re-own logic made
+   owner-aware. **Must land BEFORE multi-owner**, together with §3b.1.
 2. **`future-product-goals.md §D/BYOK` still describes the AEAD "encrypted per-user credential
    blob … in `authentik-federation.md` §5" as the plan** — that design is DEAD (credentials
    live in the user's keychain, hosted-platform.md §6). Reword §D/BYOK to keychain storage.

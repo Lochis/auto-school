@@ -7,9 +7,8 @@ import { getPool } from "./pg.ts";
 import { embedTexts, geminiApiKey, toVectorLiteral, EMBEDDING_MODEL } from "./embeddings.ts";
 import { pgConfigured } from "./reader.ts";
 import { courseId } from "./writes.ts";
-
-/** lochis bootstrap owner (see ddl.sql seed) */
-const OWNER = "00000000-0000-0000-0000-000000000001";
+import { resolveApiKey } from "./llm-keys.ts";
+import { curOwner } from "./owner.ts";
 
 export interface Chunk { page: number; chunk_index: number; content: string }
 
@@ -50,11 +49,17 @@ export interface EmbedSweepResult {
  *  (timeline). Call it from the 6h sweep AND right after finalizeNotes. */
 export async function embedPendingSessions(opts: {
   dataDir?: string; batch?: number; rpm?: number; log?: (m: string) => void;
+  /** Data owner for the documents row. Callers that kick this OUTSIDE an
+   *  ownerALS.run (e.g. the platform ingest route's fire-and-forget) must pass
+   *  it explicitly — curOwner() would otherwise fall back to the system owner. */
+  owner?: string;
 } = {}): Promise<EmbedSweepResult> {
   const DATA = opts.dataDir ?? process.env.AUTO_SCHOOL_DATA ?? ".";
   const log = opts.log ?? (() => { });
   if (!pgConfigured()) return { ok: false, reason: "pg-not-configured", docs: 0, chunks: 0 };
-  const key = geminiApiKey(DATA);
+  // fs-first (daemon: settings.json → env), app_settings as the platform's last
+  // resort — the platform pod has no /data mount, so fs resolution fails there.
+  const key = geminiApiKey(DATA) ?? (await resolveApiKey("GEMINI_API_KEY"));
   if (!key) return { ok: false, reason: "no-key", docs: 0, chunks: 0 };
 
   const pool = getPool();
@@ -67,7 +72,7 @@ export async function embedPendingSessions(opts: {
       from session_artifacts a join sessions s on s.id = a.session_id
       where a.kind = any($2) and a.content is not null
       on conflict (course_id, kind, rel_path) do update set session_id = excluded.session_id, updated_at = now()`,
-      [OWNER, ["notes", "transcript", "timeline"]]);
+      [opts.owner ?? curOwner(), ["notes", "transcript", "timeline"]]);
 
     // 2. pending docs (notes/transcript by artifact mtime; timeline by newest segment)
     const { rows } = await q(`select d.id, d.kind, d.session_id, d.rel_path, d.filename, d.indexed_at, c.slug,

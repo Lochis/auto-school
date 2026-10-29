@@ -16,14 +16,13 @@ import { embedTexts, geminiApiKey, toVectorLiteral, EMBEDDING_MODEL } from "./em
 import { pgConfigured } from "./reader.ts";
 import { courseId } from "./writes.ts";
 import { splitLong, type Chunk, type EmbedSweepResult } from "./embed-sessions.ts";
+import { resolveApiKey } from "./llm-keys.ts";
+import { curOwner } from "./owner.ts";
 
 // Re-exports for the daemon/scripts that still import from this module.
 export { splitLong };
 export type { Chunk, EmbedSweepResult };
 export { embedPendingSessions } from "./embed-sessions.ts";
-
-/** lochis bootstrap owner (see ddl.sql seed) */
-const OWNER = "00000000-0000-0000-0000-000000000001";
 
 const run = (cmd: string, args: string[]) =>
   new Promise<{ code: number; out: string; err: string }>((res) =>
@@ -95,7 +94,8 @@ export async function embedOneMaterial(course: string, relPath: string, opts: {
   const DATA = opts.dataDir ?? process.env.AUTO_SCHOOL_DATA ?? ".";
   const log = opts.log ?? (() => { });
   if (!pgConfigured()) return { ok: false, reason: "pg-not-configured", docs: 0, chunks: 0 };
-  const key = geminiApiKey(DATA);
+  // fs-first (daemon), app_settings as the platform's last resort (no /data mount there).
+  const key = geminiApiKey(DATA) ?? (await resolveApiKey("GEMINI_API_KEY"));
   if (!key) return { ok: false, reason: "no-key", docs: 0, chunks: 0 };
   const pool = getPool();
   const q = (text: string, params: unknown[] = []) => pool.query(text, params);
@@ -108,7 +108,7 @@ export async function embedOneMaterial(course: string, relPath: string, opts: {
     const row = (await q(`insert into documents (course_id, kind, rel_path, filename, owner_user_id, updated_at)
       values ($1,'material',$2,$3,$4, now())
       on conflict (course_id, kind, rel_path) do update set filename = excluded.filename, updated_at = now()
-      returning id`, [cid, relPath, filename, OWNER])).rows[0];
+      returning id`, [cid, relPath, filename, curOwner()])).rows[0];
     await q(`delete from document_chunks where document_id = $1`, [row.id]);
     if (chunks.length) {
       const embeddings = await embedTexts(chunks.map((c) => c.content), { apiKey: key, rpm: opts.rpm ?? 60 });
@@ -138,7 +138,8 @@ export async function embedPendingMaterials(opts: {
   const DATA = opts.dataDir ?? process.env.AUTO_SCHOOL_DATA ?? ".";
   const log = opts.log ?? (() => { });
   if (!pgConfigured()) return { ok: false, reason: "pg-not-configured", docs: 0, chunks: 0 };
-  const key = geminiApiKey(DATA);
+  // fs-first (daemon), app_settings as the platform's last resort (no /data mount there).
+  const key = geminiApiKey(DATA) ?? (await resolveApiKey("GEMINI_API_KEY"));
   if (!key) return { ok: false, reason: "no-key", docs: 0, chunks: 0 };
 
   const pool = getPool();
