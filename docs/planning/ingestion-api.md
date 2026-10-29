@@ -1,6 +1,7 @@
 # Ingestion API + recorder media route (5b-1)
 
-Status: 5b-1 **LANDED** (2026-10-29, verifier SHIP — see §4); 5b-2 deferred (§3). Implements the §1.6 boundary: recorder = capture+submit,
+Status: 5b-1 **LANDED** (2026-10-29, verifier SHIP — see §4); 5b-2a/b **LANDED** (deadlines
+submission + trivial-mutation split — see §3). Implements the §1.6 boundary: recorder = capture+submit,
 platform = AI+DB. This increment ships the two foundational pieces that make the platform
 daemon-less and unblock the held recorder-split cutover.
 
@@ -47,9 +48,38 @@ Body: {
   transcript?: string,     # full transcript markdown
   notes?: string,          # notes markdown
   timeline?: unknown       # timeline entries (opaque JSON)
+  deadlines?: IngestDeadline[]   # optional deadline batch — see "Deadline batch" below
 }
-Response: { ok: true, sessionId: number, stem: string } | { ok:false, error } (4xx/5xx)
+Response: { ok: true, sessionId: number, stem: string, deadlines?: DeadlineBatchSummary }
+        | { ok:false, error } (4xx/5xx)
 ```
+
+**Deadline batch (5b-2a) — `deadlines[]`:**
+```
+IngestDeadline = {
+  title: string,           # required; trimmed; blank → item skipped
+  course?: string,         # course slug; defaults to the body's `course`
+  due?: string | null,     # YYYY-MM-DD or null
+  startBy?: string | null,
+}
+DeadlineBatchSummary = { upserted: number, added: number, updated: number, skipped: number }
+```
+- **undefined vs null**: an omitted (`undefined`) field is left ALONE; `null` (or `""`) CLEARS the
+  column; an unparseable date is treated as `undefined` (leave alone) — never a 400, never a guess.
+- **Merge key**: course + case-insensitive, trimmed title (`lower(trim(title))`) per owner. A match
+  UPDATEs, otherwise INSERT (`legacy_id` = djb2 course+title, `on conflict (course_id, title,
+  legacy_id) do nothing`, then a re-update if a concurrent insert won the race).
+- **Precedence**: `due_manual` wins — a date the student set by hand is never clobbered by a
+  document date; `start_by` has no manual flag and is updated when supplied.
+- **Cap**: the first 200 items are applied; the remainder are counted in `skipped`.
+- **Per-item skip, never a request error**: non-objects, missing/blank title or course → skipped.
+  The whole batch is one transaction; a hard DB failure rolls back and reports
+  `error` (logged server-side) with `0` counts.
+- **Additive response**: `deadlines` is present only when the request carried a `deadlines` key
+  (an array, even empty → `{0,0,0,0}`). Clients that never send it see the exact v1 response.
+- **Never fails a committed ingest**: the batch runs AFTER the session/artifact writes commit, in
+  its own try/catch — a deadline failure is logged, not returned as a 500, and cannot roll back
+  the session.
 
 **Implementation:**
 - Env `INGEST_TOKEN` (secretKeyRef optional in manifests, like RECORDER_TOKEN). Unset → 401
@@ -72,11 +102,23 @@ Response: { ok: true, sessionId: number, stem: string } | { ok:false, error } (4
 platform frontend env in `deploy/k8s/auto-school-platform.yaml`; leave the single-pod
 `auto-school.yaml` as-is (it doesn't need it — personal pod writes PG directly).
 
-## 3. Explicitly DEFERRED (5b-2)
+## 3. Deferred vs landed (5b-2)
 
-- deadlines submission (dedup/merge logic lives in the daemon /deadlines handler — needs a
-  platform-side deadline upsert with the same semantics first).
-- deadline/checklist trivial-mutation split (toggle/dates/fold → platform-side PG).
+**LANDED (5b-2a/b):**
+- **deadlines submission** — ingest accepts `deadlines[]` and applies it through
+  `upsertIngestDeadlines` (`src/db/deadlines.ts`): case-insensitive title merge, `due_manual`
+  precedence, 200-cap, per-item skip, additive response (§2).
+- **deadline/checklist trivial-mutation split** — the platform routes now run every trivial
+  mutation on its own PG via the shared `src/db/deadlines.ts` implementation
+  (`applyDeadlineMutation` / `applyChecklistMutation`) when `DB_READS=1`, instead of proxying:
+  deadlines = toggle done, manual `due`/`startBy` + revert, delete/remove-entry, fold
+  (`fold`/`acceptFold`), unfold, `declineFold`, user note; checklists = item toggle, manual add,
+  item remove. Single source of truth: the daemon handlers and these routes share the module, so
+  the branch ORDER (manual dates BEFORE the done-toggle) lives in one place.
+  Still daemon-proxied (needs the model / course tools): `POST /api/deadlines` rebuild (LLM sweep +
+  mtime manifest) and any body the classifier cannot place, and `POST /api/checklists` generation.
+
+**Still DEFERRED:**
 - platform-side AI generation (transcribe/notes/checklists generation on the platform).
 - full OIDC token verification (v1 uses the shared-secret + owner-uid pattern).
 

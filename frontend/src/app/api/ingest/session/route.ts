@@ -16,6 +16,7 @@ import { listSessions } from "../../../../../../src/db/queries/sessions.ts";
 import { courseId, sessionId, upsertArtifact } from "../../../../../../src/db/writes.ts";
 import { ownerALS } from "../../../../../../src/db/owner.ts";
 import { embedPendingSessions } from "../../../../../../src/db/ingest-embed.ts";
+import { upsertIngestDeadlines, type IngestDeadline } from "../../../../../../src/db/deadlines.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -96,6 +97,7 @@ export async function POST(req: Request) {
       transcript?: unknown;
       notes?: unknown;
       timeline?: unknown;
+      deadlines?: unknown;
     } | null;
     if (!body || typeof body !== "object") {
       return NextResponse.json({ ok: false, error: "json body required" }, { status: 400 });
@@ -133,6 +135,19 @@ export async function POST(req: Request) {
     const transcript = typeof body.transcript === "string" ? body.transcript : null;
     const notes = typeof body.notes === "string" ? body.notes : null;
     const timeline = body.timeline === undefined || body.timeline === null ? null : body.timeline;
+    // Optional deadline batch (ingestion-api.md §2): the client may submit the
+    // calendar items it extracted. Applied AFTER the session/artifacts commit,
+    // with per-item skips (non-objects, missing course/title) — never a 400.
+    const deadlines: IngestDeadline[] = Array.isArray(body.deadlines)
+      ? body.deadlines
+          .filter((d): d is Record<string, unknown> => !!d && typeof d === "object")
+          .map((d) => ({
+            title: typeof d.title === "string" ? d.title : "",
+            course: typeof d.course === "string" ? d.course : course,
+            ...("due" in d ? { due: d.due === null ? null : String(d.due) } : {}),
+            ...("startBy" in d ? { startBy: d.startBy === null ? null : String(d.startBy) } : {}),
+          }))
+      : [];
     if (transcript === null && notes === null && timeline === null) {
       return NextResponse.json(
         { ok: false, error: "at least one of transcript/notes/timeline required" },
@@ -203,7 +218,21 @@ export async function POST(req: Request) {
     // ingest that already committed.
     void embedPendingSessions().catch(() => { });
 
-    return NextResponse.json({ ok: true, sessionId: sid, stem: finalStem });
+    // Deadline batch — its OWN try/catch: the session + artifacts are already
+    // committed, so a bad batch must never roll that back or turn into a 500.
+    let dlSummary: { upserted: number; added: number; updated: number; skipped: number } | undefined;
+    if (body.deadlines !== undefined) {
+      try {
+        const r = await upsertIngestDeadlines(ownerUserId, deadlines);
+        dlSummary = { upserted: r.upserted, added: r.added, updated: r.updated, skipped: r.skipped };
+        if (r.error) console.error("[ingest/session] deadline batch rolled back:", r.error);
+      } catch (e) {
+        dlSummary = { upserted: 0, added: 0, updated: 0, skipped: deadlines.length };
+        console.error("[ingest/session] deadline batch failed:", String(e).slice(0, 200));
+      }
+    }
+
+    return NextResponse.json({ ok: true, sessionId: sid, stem: finalStem, ...(dlSummary ? { deadlines: dlSummary } : {}) });
   } catch (e) {
     console.error("[ingest/session] failed:", String(e).slice(0, 200));
     return NextResponse.json({ ok: false, error: "ingest failed" }, { status: 500 });

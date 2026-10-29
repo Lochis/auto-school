@@ -1,8 +1,16 @@
-/** Deadlines API — GET list, POST rebuild (LLM sweep, slow), DELETE clear. */
+/** Deadlines API — GET list, POST rebuild (LLM sweep, slow) or a trivial
+ *  mutation, DELETE clear.
+ *
+ *  Trivial mutations (toggle done, manual due/startBy + revert, delete, fold /
+ *  unfold / decline-fold, user note) are pure row edits: in dbReads mode they
+ *  run on the platform PG via the shared src/db/deadlines.ts implementation.
+ *  Anything else (rebuild = LLM sweep + mtime manifest, unclassifiable kinds)
+ *  still proxies to the daemon, which owns the model and 400s/404s itself. */
 import { NextResponse } from "next/server";
 import { dbReads, daemonBaseOrThrow } from "@/lib/backend";
 import * as db from "@/lib/db";
-import { daemonUserHeaders, ownerId } from "@/lib/owner";
+import { daemonUserHeaders, ownerId, SYSTEM_OWNER } from "@/lib/owner";
+import { applyDeadlineMutation } from "../../../../../src/db/deadlines.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +26,22 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const prompt = await req.json().catch(() => ({}));
+  const raw = await req.json().catch(() => ({}));
+  const prompt: Record<string, unknown> = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  if (dbReads()) {
+    const r = await applyDeadlineMutation(prompt, (await ownerId()) ?? SYSTEM_OWNER);
+    if (r.ok) {
+      // daemon parity: { ok, deadlines, folded?, deleted? } → the panel only
+      // reads `deadlines`, so the extra keys are additive (never invented).
+      return NextResponse.json({
+        deadlines: r.deadlines,
+        ...(r.folded !== undefined ? { folded: r.folded } : {}),
+        ...(r.deleted !== undefined ? { deleted: r.deleted } : {}),
+      });
+    }
+    if (r.code !== "unsupported") return NextResponse.json({ error: r.error }, { status: r.status });
+    // rebuild / unknown kind → let the daemon classify (and 400) it
+  }
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/deadlines`, {
       method: "POST",

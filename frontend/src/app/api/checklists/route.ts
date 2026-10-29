@@ -3,7 +3,8 @@
 import { NextResponse } from "next/server";
 import { dbReads, daemonBaseOrThrow } from "@/lib/backend";
 import * as db from "@/lib/db";
-import { daemonUserHeaders, ownerId } from "@/lib/owner";
+import { daemonUserHeaders, ownerId, SYSTEM_OWNER } from "@/lib/owner";
+import { applyChecklistMutation } from "../../../../../src/db/deadlines.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +21,15 @@ export async function GET() {
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
-  const isGenerate = typeof body.deadlineId === "string" && body.itemId === undefined && body.add === undefined && body.removeItemId === undefined;
+  const mut: Record<string, unknown> = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  if (dbReads()) {
+    // item toggle / manual add / item remove run on the platform PG; checklist
+    // GENERATION needs the LLM + course tools, so it falls through to the daemon.
+    const r = await applyChecklistMutation(mut, (await ownerId()) ?? SYSTEM_OWNER);
+    if (r.ok) return NextResponse.json({ checklists: r.checklists });
+    if (r.code !== "unsupported") return NextResponse.json({ error: r.error }, { status: r.status });
+  }
+  const isGenerate = typeof mut.deadlineId === "string" && mut.itemId === undefined && mut.add === undefined && mut.removeItemId === undefined;
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/checklists`, {
       method: "POST",
