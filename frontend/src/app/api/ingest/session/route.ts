@@ -13,7 +13,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getUserIdBySub } from "../../../../../../src/db/avatar.ts";
 import { listSessions } from "../../../../../../src/db/queries/sessions.ts";
-import { courseId, sessionId, upsertArtifact } from "../../../../../../src/db/writes.ts";
+import { courseId, sessionId, upsertArtifact, upsertSegments, type SegmentInit } from "../../../../../../src/db/writes.ts";
 import { ownerALS } from "../../../../../../src/db/owner.ts";
 import { embedPendingSessions } from "../../../../../../src/db/embed-sessions.ts";
 import { upsertIngestDeadlines, type IngestDeadline } from "../../../../../../src/db/deadlines.ts";
@@ -61,6 +61,46 @@ function torontoSeq(): number {
 /** Daemon ingest stem: `${date}__${course}__${HHMMSS padded to 6}`. */
 function deriveStem(course: string, date: string): string {
   return `${date}__${course}__${String(torontoSeq()).padStart(6, "0")}`;
+}
+
+/** Timeline entries → writable `transcript_segments` rows.
+ *  Entries without a finite non-negative `offsetSec` are skipped; `visualNotes`
+ *  are coerced to `{t: seconds, note}` (pipeline/segment.ts `noteT`). */
+function toSegments(timeline: unknown): SegmentInit[] {
+  if (!Array.isArray(timeline)) return [];
+  // one row per offset_sec: a duplicate inside one INSERT trips the
+  // (session_id, offset_sec) ON CONFLICT target ("cannot affect row a second
+  // time"). Last entry wins, matching the upsert's own update semantics.
+  const byOffset = new Map<number, SegmentInit>();
+  for (const raw of timeline) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const e = raw as Record<string, unknown>;
+    const off = Number(e.offsetSec);
+    if (!Number.isFinite(off) || off < 0) continue;
+    const offsetSec = Math.round(off);
+    const notes = Array.isArray(e.visualNotes)
+      ? e.visualNotes
+          .filter((v): v is Record<string, unknown> => !!v && typeof v === "object")
+          .map((v) => ({ t: noteSec(v.t), note: typeof v.note === "string" ? v.note : "" }))
+      : [];
+    byOffset.set(offsetSec, {
+      segIndex: 0, // renumbered below (map insertion order = timeline order)
+      offsetSec,
+      file: typeof e.file === "string" ? e.file : null,
+      transcript: typeof e.transcript === "string" ? e.transcript : "",
+      visualNotes: notes,
+    });
+  }
+  return [...byOffset.values()].map((s, i) => ({ ...s, segIndex: i }));
+}
+
+/** "m:ss" (or a bare number/string) → seconds — pipeline/segment.ts:26-34 `noteT`. */
+function noteSec(t: unknown): number {
+  if (typeof t === "number") return Number.isFinite(t) ? Math.max(0, Math.round(t)) : 0;
+  const m = String(t ?? "").match(/^(\d{1,3}):(\d{1,2})/);
+  if (m) return Number(m[1]) * 60 + Number(m[2]);
+  const n = parseInt(String(t ?? ""), 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 /** Parse the JSON body under MAX_BODY_BYTES. Null → 400 (missing/malformed);
@@ -135,6 +175,10 @@ export async function POST(req: Request) {
     const transcript = typeof body.transcript === "string" ? body.transcript : null;
     const notes = typeof body.notes === "string" ? body.notes : null;
     const timeline = body.timeline === undefined || body.timeline === null ? null : body.timeline;
+    // §1.3 ingest delta: the timeline is not only an artifact blob — it is also
+    // materialized into transcript_segments so the embed sweep can see it.
+    // Built before any write so a malformed entry is dropped, never thrown.
+    const segments = toSegments(timeline);
     // Optional deadline batch (ingestion-api.md §2): the client may submit the
     // calendar items it extracted. Applied AFTER the session/artifacts commit,
     // with per-item skips (non-objects, missing course/title) — never a 400.
@@ -208,6 +252,15 @@ export async function POST(req: Request) {
           content: JSON.stringify(timeline, null, 2),
           mimeType: "application/json",
         });
+        // transcript_segments — idempotent on (session_id, offset_sec); own
+        // try/catch: segment materialization must never fail the ingest.
+        if (segments.length) {
+          try {
+            await upsertSegments(id, segments);
+          } catch (e) {
+            console.error("[ingest/session] segment materialization failed:", String(e).slice(0, 200));
+          }
+        }
       }
       return id;
     });
