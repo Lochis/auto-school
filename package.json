@@ -9,9 +9,9 @@
     "login:fresh": "node src/index.ts login --fresh",
     "meetings": "node src/index.ts meetings",
     "daemon": "node src/index.ts daemon",
-    "cd": "bun run cd:build && bun run cd:push && echo '✓ built + pushed both images — now run: kubectl -n auto-school rollout restart deploy/auto-school'",
-    "cd:build": "docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school:buildcache,mode=max -t ghcr.io/lochis/auto-school:latest -f deploy/Dockerfile . && docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache,mode=max -t ghcr.io/lochis/auto-school-frontend:latest -f frontend/Dockerfile .",
-    "cd:push": "docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school-frontend:latest",
+    "cd": "bun run cd:build && bun run cd:push && echo '✓ built + pushed both images (latest + git-sha) — pin/rollback via: kubectl -n auto-school set image deploy/auto-school-recorder=ghcr.io/lochis/auto-school:$(git rev-parse HEAD)'",
+    "cd:build": "TAG=$(git rev-parse HEAD) && docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school:buildcache,mode=max -t ghcr.io/lochis/auto-school:latest -t ghcr.io/lochis/auto-school:$TAG -f deploy/Dockerfile . && docker buildx build --load --cache-from type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache --cache-to type=registry,ref=ghcr.io/lochis/auto-school-frontend:buildcache,mode=max -t ghcr.io/lochis/auto-school-frontend:latest -t ghcr.io/lochis/auto-school-frontend:$TAG -f frontend/Dockerfile .",
+    "cd:push": "TAG=$(git rev-parse HEAD) && docker push ghcr.io/lochis/auto-school:latest && docker push ghcr.io/lochis/auto-school:$TAG && docker push ghcr.io/lochis/auto-school-frontend:latest && docker push ghcr.io/lochis/auto-school-frontend:$TAG",
     "install-browser": "npx playwright install chromium"
   },
   "dependencies": {

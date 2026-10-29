@@ -1,0 +1,57 @@
+name: prune-old-images
+
+# GHCR has no native lifecycle policy — this is the retention schedule.
+# Policy: always keep `latest`, `buildcache`, and any `v*` (semver release)
+# tags; keep the newest KEEP hash-tagged builds; delete the rest.
+# Tune KEEP below (rollback window). Run manually via Actions → "Run workflow"
+# or wait for the weekly cron.
+on:
+  schedule:
+    - cron: "17 4 * * 0" # Sunday 04:17 UTC
+  workflow_dispatch: {}
+
+permissions:
+  packages: write # read+delete package versions
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [auto-school, auto-school-frontend]
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      KEEP: "20"
+    steps:
+      - name: Prune old hash builds for ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          pkg="${{ matrix.package }}"
+          dry="${DRY_RUN:-0}"
+          echo "::group::listing versions for ghcr.io/lochis/$pkg"
+          gh api --paginate --jq '.[] | select(.metadata.container.tags != null) | [.id, .created_at, (.metadata.container.tags | join(","))] | @tsv' \
+            "/user/packages/container/${pkg}/versions?per_page=100" > /tmp/versions.tsv
+          wc -l < /tmp/versions.tsv | xargs echo "total tagged versions:"
+          echo "::endgroup::"
+
+          # protect: latest / buildcache / semver v* tags
+          grep -E $'\t(latest|buildcache|v[0-9])' /tmp/versions.tsv > /tmp/keep.tsv || true
+          echo "protected (latest/buildcache/v*):"
+          cat /tmp/keep.tsv || true
+
+          # hash-only versions: newest KEEP survive, older get deleted
+          grep -v -E $'\t(latest|buildcache|v[0-9])' /tmp/versions.tsv | sort -k2,2 -r > /tmp/hash.tsv || true
+          tail -n +$((KEEP + 1)) /tmp/hash.tsv > /tmp/delete.tsv || true
+          echo "to delete (older than newest ${KEEP} hash builds):"
+          cat /tmp/delete.tsv || true
+
+          while IFS=$'\t' read -r id created tags; do
+            if [ "$dry" = "1" ]; then
+              echo "DRY-RUN would delete version $id (tags: $tags)"
+              continue
+            fi
+            echo "deleting version $id (tags: $tags, created: $created)"
+            gh api -X DELETE "/user/packages/container/${pkg}/versions/${id}" || echo "  (delete failed — may need manual cleanup)"
+          done < /tmp/delete.tsv
+          echo "done"
