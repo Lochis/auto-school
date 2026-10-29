@@ -225,7 +225,7 @@ async function upsertSession(s: Sess): Promise<number> {
   const r = await q(`insert into sessions (course_id, stem, session_date, start_time, title,
       join_url, stage, seg_count, duration_sec, size_mb, started_at, updated_at, owner_user_id)
     values ($1,$2,$3,$4,$5,null,$6,null,null,null,$7,$8,$9)
-    on conflict (course_id, stem) do update set session_date=excluded.session_date,
+    on conflict (course_id, stem, owner_user_id) do update set session_date=excluded.session_date,
       start_time=excluded.start_time, title=excluded.title, started_at=excluded.started_at
     returning id`,
     [courseIds.get(s.course), s.stem, s.date, s.time ?? null, title,
@@ -409,7 +409,7 @@ async function importDeadlines() {
     const r = await q(`insert into deadlines (legacy_id, course_id, title, due, due_manual, kind,
         spread, start_by, note, source, confidence, done, done_at, user_note, stale, owner_user_id, updated_at)
       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now())
-      on conflict (course_id, title, legacy_id) do update set due=excluded.due,
+      on conflict (course_id, title, legacy_id, owner_user_id) do update set due=excluded.due,
         due_manual=excluded.due_manual, kind=excluded.kind, spread=excluded.spread,
         start_by=excluded.start_by, note=excluded.note, source=excluded.source,
         confidence=excluded.confidence, done=excluded.done, done_at=excluded.done_at,
@@ -431,7 +431,7 @@ async function importDeadlines() {
       bump("deadline_parts", d.parts.length);
     }
   }
-  if (dup.size) log(`  note: ${dup.size} duplicate (course,title) key(s) encountered; UNIQUE(course_id,title,legacy_id) keeps both — dlKey() uniqueness is enforced app-side, mirroring fs`);
+  if (dup.size) log(`  note: ${dup.size} duplicate (course,title) key(s) encountered; UNIQUE(course_id,title,legacy_id,owner_user_id) keeps both — dlKey() uniqueness is enforced app-side, mirroring fs`);
 }
 
 async function importFolds() {
@@ -445,7 +445,7 @@ async function importFolds() {
     const r = await q(`insert into deadlines (legacy_id, course_id, title, due, due_manual, kind,
         spread, start_by, note, source, confidence, done, done_at, user_note, stale, owner_user_id)
       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-      on conflict (course_id, title, legacy_id) do update set legacy_id=excluded.legacy_id returning id`,
+      on conflict (course_id, title, legacy_id, owner_user_id) do update set legacy_id=excluded.legacy_id returning id`,
       [tomb.child.id, cid, tomb.child.title, tomb.child.due, tomb.child.dueManual ?? false,
         tomb.child.kind, tomb.child.spread, tomb.child.startBy, tomb.child.note, tomb.child.source,
         tomb.child.confidence, tomb.child.done, tomb.child.doneAt ? new Date(tomb.child.doneAt) : null,
