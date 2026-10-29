@@ -41,6 +41,29 @@ app's calendar UI becomes a timetable editor for hosted users; the feed arms rec
 own calendar data, no scraping, no borrowed client IDs. Same feed mechanism gives a
 deadlines-ICS (platform → phone calendar) as a user feature.
 
+### 1.6 Recorder/platform responsibility boundary (DECIDED 2026-10-29)
+
+The recorder's irreducible job is **capture + submit** — nothing else. Every AI operation and
+all DB interaction belongs to the **platform** (back end), independent of which recorder fed
+the data in (personal pod or Electron client — the recorder type "doesn't matter" to the
+back end).
+
+| Responsibility | Where |
+| --- | --- |
+| Capture (browser/desktop, ffmpeg, segmenting), auto-join bot | recorder |
+| Transcribe (Gemini/GLM), notes, deadlines, checklists, semantic search | **platform** (reads PG, platform-held keys) |
+| Session/artifact/deadline submission | ingestion API (`POST /api/ingest/session`) |
+
+Already platform-side today: chat/semantic search (embeddings in PG), materials metadata +
+embeddings (Gap 3) so checklist/deadlines/notes generation reads PG, not the recorder's fs.
+Transcription may optionally run on the recorder as a fast local path during the class, but
+it is a data step, not a recorder function — the platform can also transcribe after submit.
+
+**Refactor direction (5b):** the daemon is currently a monolith that does all of this locally
+(historic — it owned everything). The platform split shrinks it to capture+submit and moves
+the intelligence to the platform. The personal pod's direct-PG ingest is the trusted fast-path
+of the same contract; an Electron client uses the API over HTTPS.
+
 ## 2. Tier decision (open, gates the ingestion API)
 
 COMMERCIALIZATION-PLAN.md drew the line at "no hosted storage of recordings/transcripts";
