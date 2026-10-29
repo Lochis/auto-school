@@ -5,14 +5,21 @@
  *  POST → { title, folder } upsert (creates the folder)
  *  DELETE ?title= → remove one mapping */
 import { NextResponse } from "next/server";
-import { mappingSnap, daemonBaseOrThrow } from "@/lib/backend";
+import { mappingSnap, daemonBaseOrThrow, OwnerRequiredError } from "@/lib/backend";
 import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   if (!(await requireUser())) return unauthorized();
-  return NextResponse.json(await mappingSnap());
+  try {
+    return NextResponse.json(await mappingSnap());
+  } catch (e) {
+    // DB mode with no resolvable owner (PG died mid-request): 401, never the
+    // seed owner's mapping (fail-closed requireOwner, security fix wave E)
+    if (e instanceof OwnerRequiredError) return unauthorized();
+    throw e;
+  }
 }
 
 export async function POST(req: Request) {
@@ -31,7 +38,8 @@ export async function POST(req: Request) {
     // writes Postgres, so an fs-built response would echo stale folders here
     const snap = await mappingSnap();
     return NextResponse.json({ ...body, folders: snap.folders, candidates: snap.candidates });
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerRequiredError) return unauthorized();
     return NextResponse.json({ error: "backend unreachable" }, { status: 502 });
   }
 }
@@ -45,7 +53,8 @@ export async function DELETE(req: Request) {
     if (!res.ok) return NextResponse.json(body, { status: res.status });
     const snap = await mappingSnap();
     return NextResponse.json({ ...body, folders: snap.folders, candidates: snap.candidates });
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerRequiredError) return unauthorized();
     return NextResponse.json({ error: "backend unreachable" }, { status: 502 });
   }
 }

@@ -10,7 +10,7 @@ import * as fsData from "./data";
 import * as fsDeadlines from "./deadlines";
 import * as fsMapping from "./mapping";
 import * as db from "./db";
-import { ownerId, SYSTEM_OWNER } from "./owner";
+import { ownerId, requireUser } from "./owner";
 import { getActiveRecorder } from "../../../src/db/recorders.ts";
 import type { Session } from "./data";
 import type { DeadEntry } from "./deadlines";
@@ -69,10 +69,25 @@ export async function daemonBaseOrThrow(): Promise<string> {
 
 export const weekOf = fsData.weekOf; // pure fn, no io
 
-/** Owner for the mandatory-owner DB reads. ownerId() returns undefined only in
- *  untrusted-auth local dev; the db layer no longer accepts an unfiltered
- *  "all tenants" read, so that case degrades to the seed system view. */
-const requireOwner = async (): Promise<string> => (await ownerId()) ?? SYSTEM_OWNER;
+/** Owner for the mandatory-owner DB reads. Throws when no owner resolves —
+ *  no authenticated identity, or PG died mid-request — so the route can
+ *  answer 401 (fail closed). It NEVER falls back to the seed owner: the only
+ *  seed-owner return path is requireUser()'s localIdentity(), i.e. a
+ *  deployment with no Authentik edge at all (`next dev`, docker-compose). */
+const requireOwner = async (): Promise<string> => {
+  const owner = await requireUser();
+  if (!owner) throw new OwnerRequiredError();
+  return owner;
+};
+
+/** A DB read could not resolve the owner. Routes catch this and return
+ *  unauthorized() (401) — never the seed owner's rows. */
+export class OwnerRequiredError extends Error {
+  constructor() {
+    super("unauthorized: no owner for this request");
+    this.name = "OwnerRequiredError";
+  }
+}
 
 // ── courses / sessions (parity with data.ts) ──────────────────────────────
 
@@ -81,16 +96,22 @@ export async function listCourses(): Promise<string[]> {
 }
 
 export async function courseIconOf(slug: string): Promise<string | null> {
-  return dbReads() ? db.courseIcon(slug) : fsData.courseIcon(slug);
+  if (!dbReads()) return fsData.courseIcon(slug);
+  // Cosmetic metadata: a missing owner degrades to `null` (no icon, no week
+  // grouping) instead of throwing — these run inside RSC pages, where a 401
+  // isn't a response shape — but never to the seed owner's rows.
+  const owner = await requireUser();
+  return owner ? db.courseIcon(slug, owner) : null;
 }
 
 export async function semesterStartOf(slug: string): Promise<string | null> {
-  return dbReads() ? db.semesterStartOf(slug) : fsData.semesterStartOf(slug);
+  if (!dbReads()) return fsData.semesterStartOf(slug);
+  const owner = await requireUser();
+  return owner ? db.semesterStartOf(slug, owner) : null;
 }
 
 export async function listSessions(course: string): Promise<Session[]> {
-  const owner = await requireOwner();
-  if (dbReads()) return db.sessions(course, owner);
+  if (dbReads()) return db.sessions(course, await requireOwner());
   const fsList = fsData.sessions(course);
   if (!pgAvailable()) return fsList;
   // PG is configured: merge in artifact-derived notes/transcript/timeline and
@@ -98,7 +119,7 @@ export async function listSessions(course: string): Promise<Session[]> {
   // longer discover — the pipeline no longer writes those files to disk. The
   // fs list still contributes recordings and fills fields PG lacks (import
   // pending / pre-PG sessions), so nothing regresses while tables fill.
-  const pgList = await db.sessions(course, owner);
+  const pgList = await db.sessions(course, await requireOwner());
   if (!pgList.length) return fsList;
   const overlay = (pg: Session, fs: Session): Session => {
     const m = { ...fs };
@@ -154,8 +175,10 @@ export async function timelineEntries(course: string, stem: string, rel?: string
 
 export async function deadlinesList(): Promise<DeadEntry[]> {
   // user-data/deadlines.json has no writer anymore — when PG is configured
-  // the deadlines table is the only live copy.
-  if (dbReads() || pgAvailable()) return db.readDeadlines(await ownerId());
+  // the deadlines table is the only live copy. requireOwner() (not ownerId()):
+  // readDeadlines(undefined) is an UNFILTERED all-tenants read, so a missing
+  // owner must throw (route 401s) instead of listing every owner's deadlines.
+  if (dbReads() || pgAvailable()) return db.readDeadlines(await requireOwner());
   return fsDeadlines.readDeadlines();
 }
 

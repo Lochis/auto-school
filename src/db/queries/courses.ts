@@ -33,12 +33,14 @@ export async function listCourses(owner: string): Promise<string[]> {
 }
 
 /** data.ts courseIcon() + semesterStartOf() in one round-trip (course.json
- *  parity). Null when the course is unknown — same as the fs try/catch. */
-export async function courseMeta(slug: string): Promise<CourseMeta | null> {
+ *  parity). Null when the course is unknown — same as the fs try/catch.
+ *  `owner` (users.id) is REQUIRED for the same reason as listCourses(): a slug
+ *  alone would expose another tenant's course name/icon/semester anchor. */
+export async function courseMeta(slug: string, owner: string): Promise<CourseMeta | null> {
   const rows = await q<{ slug: string; name: string; icon: string | null; semester_start: string | null }>(
     `select slug, name, icon, semester_start::text as semester_start
-     from courses where slug = $1`,
-    [slug],
+     from courses where slug = $1 and owner_user_id = $2`,
+    [slug, owner],
   );
   const r = rows[0];
   return r ? { slug: r.slug, name: r.name, icon: r.icon, semesterStart: r.semester_start } : null;

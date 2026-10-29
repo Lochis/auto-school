@@ -47,12 +47,12 @@ export async function courses(owner: string): Promise<string[]> {
   return listCourses(owner);
 }
 
-export async function courseIcon(slug: string): Promise<string | null> {
-  return (await courseMeta(slug))?.icon ?? null;
+export async function courseIcon(slug: string, owner: string): Promise<string | null> {
+  return (await courseMeta(slug, owner))?.icon ?? null;
 }
 
-export async function semesterStartOf(slug: string): Promise<string | null> {
-  return (await courseMeta(slug))?.semesterStart ?? null;
+export async function semesterStartOf(slug: string, owner: string): Promise<string | null> {
+  return (await courseMeta(slug, owner))?.semesterStart ?? null;
 }
 
 // ── sessions — delegate to src/db/queries/sessions.ts ─────────────────────

@@ -829,7 +829,18 @@ function startController(): void {
      *  single-owner operations, so any OTHER authenticated user gets 401 —
      *  tenancy is by owner-filtered DB rows, not by directory, so there is no
      *  per-owner fs tree to scope them to (per-owner DATA_DIR is a known P2
-     *  follow-up, deliberately out of scope here). */
+     *  follow-up, deliberately out of scope here).
+     *
+     *  The SAME gate covers the rest of the global recorder control surface
+     *  below (scan/pause/auth/join/leave/transcribe, settings writes, mapping
+     *  writes, course create/rename/config/delete, material writes): those
+     *  drive ONE browser, ONE ingest+transcription pipeline and the shared
+     *  DATA_DIR, so in the single-owner topology only the seed owner may issue
+     *  them. GET reads stay available to every authenticated user (they are
+     *  owner-filtered at the row level). A real admin/ACL tier — per-user
+     *  recorders, per-course roles — is the multi-user future; it is
+     *  deliberately NOT a `role` check yet, because a member has no recorder
+     *  of their own to control. */
     const seedOwnerOnly = (): boolean => curOwner() === OWNER;
     if (req.method === "GET" && url.pathname === "/status") {
       return send(200, {
@@ -848,6 +859,7 @@ function startController(): void {
         });
     }
     if (req.method === "POST" && url.pathname === "/scan") {
+      if (!seedOwnerOnly()) return send(401, { error: "scan is restricted to the recorder owner" });
       if (url.searchParams.get("reset") === "1") {
         handled.clear();
         clearLeftToday();
@@ -857,6 +869,7 @@ function startController(): void {
       return send(200, { ok: true, state, note: state.startsWith("attending") ? "busy — scan queued" : "scanning now" });
     }
     if (req.method === "POST" && url.pathname === "/pause") {
+      if (!seedOwnerOnly()) return send(401, { error: "pause is restricted to the recorder owner" });
       const body = await new Promise<Record<string, unknown>>((res) => {
         let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
       });
@@ -866,6 +879,7 @@ function startController(): void {
       return send(200, { ok: true, joinPaused: paused, note: paused ? "auto-join PAUSED — daemon will not enter meetings" : "auto-join resumed" });
     }
     if (req.method === "POST" && url.pathname === "/auth/graph") {
+      if (!seedOwnerOnly()) return send(401, { error: "graph auth is restricted to the recorder owner" });
       if (hasGraphToken()) return send(200, { ok: true, note: "token already present" });
       // fire-and-forget: device code is pinged to Discord; approval may take minutes
       void getAccessToken()
@@ -1008,6 +1022,7 @@ function startController(): void {
     }
     if (req.method === "POST" && url.pathname === "/join") {
       // manual join by title (UI "Join" button) — bypasses joinableNow/handled
+      if (!seedOwnerOnly()) return send(401, { error: "join is restricted to the recorder owner" });
       if (state.startsWith("attending")) return send(409, { ok: false, note: `busy attending: ${state}` });
       if (buildBusy) return send(409, { ok: false, note: "busy building schedule — retry in ~a minute" });
       let body: Record<string, unknown> = {};
@@ -1060,11 +1075,13 @@ function startController(): void {
       return send(202, { ok: true, note: `joining "${body.title}" — watch status` });
     }
     if (req.method === "POST" && url.pathname === "/leave") {
+      if (!seedOwnerOnly()) return send(401, { error: "leave is restricted to the recorder owner" });
       if (!active && !state.startsWith("attending")) return send(200, { ok: true, note: "not in a meeting" });
       leaveRequested = true; // consumed by the watch loop within ~2s; consolidation + transcription continue
       return send(200, { ok: true, note: "leaving now — webhook will confirm; consolidating & transcribing in background" });
     }
     if (req.method === "POST" && url.pathname === "/transcribe") {
+      if (!seedOwnerOnly()) return send(401, { error: "transcribe is restricted to the recorder owner" });
       const course = url.searchParams.get("course")?.replace(/[^\w -]/g, "");
       const stem = url.searchParams.get("stem")?.replace(/[^\w .-]/g, ""); // dot: .stale-HHMMSS twins
       if (!course || !stem) return send(400, { error: "course and stem required" });
@@ -1140,6 +1157,7 @@ function startController(): void {
       };
       if (req.method === "GET") return send(200, await readMap());
       if (req.method === "PUT") {
+        if (!seedOwnerOnly()) return send(401, { error: "mapping writes are restricted to the recorder owner" });
         const body = await new Promise<Record<string, unknown>>((res) => {
           let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
         });
@@ -1155,6 +1173,7 @@ function startController(): void {
         return send(200, { ok: true, mapping: await readMap(), created });
       }
       if (req.method === "DELETE") {
+        if (!seedOwnerOnly()) return send(401, { error: "mapping writes are restricted to the recorder owner" });
         const t = url.searchParams.get("title")?.trim();
         if (!t) return send(400, { error: "title required" });
         const m = await readMap();
@@ -1182,6 +1201,7 @@ function startController(): void {
       };
       if (req.method === "GET") return send(200, maskedSettings(getSettings()));
       if (req.method === "PUT") {
+        if (!seedOwnerOnly()) return send(401, { error: "settings writes are restricted to the recorder owner" });
         const body = await new Promise<Record<string, unknown>>((res) => {
           let b = "";
           req.on("data", (c) => (b += c));
@@ -1511,6 +1531,8 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         return send(200, { materials: withIndex ? [...await listMaterials(slug), ...listIndexFiles(slug)] : await listMaterials(slug) });
       }
       if (req.method === "POST") {
+        // material writes land in the shared MATERIALS_DIR of this recorder pod
+        if (!seedOwnerOnly()) return send(401, { error: "material upload is restricted to the recorder owner" });
         try {
           // streaming multipart — multi-file with optional subpaths
           const TMP = join(config.userDataDir, "tmp-materials");
@@ -1573,6 +1595,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
       }
       if (req.method === "PATCH") {
         // rename/move a file or folder: { from, to } relative paths
+        if (!seedOwnerOnly()) return send(401, { error: "material writes are restricted to the recorder owner" });
         try {
           let body: Record<string, unknown> = {};
           try { body = await new Promise((res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } }); }); } catch { /* empty */ }
@@ -1585,6 +1608,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         } catch (e) { return send(500, { error: `rename failed: ${String(e).slice(0, 100)}` }); }
       }
       if (req.method === "DELETE") {
+        if (!seedOwnerOnly()) return send(401, { error: "material writes are restricted to the recorder owner" });
         const rel = sanitizeRelPath(url.searchParams.get("path") ?? "");
         if (!rel) return send(400, { error: "path param required" });
         const ok = deleteMaterial(slug, rel);
@@ -1655,6 +1679,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
       if (!slug) return send(400, { error: "invalid course slug" });
       if (req.method === "GET") return send(200, getCourseConfig(slug) ?? { semesterStart: "" });
       if (req.method === "PUT") {
+        if (!seedOwnerOnly()) return send(401, { error: "course config is restricted to the recorder owner" });
         const body = await new Promise<Record<string, unknown>>((res) => {
           let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
         });
@@ -1681,6 +1706,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
     // ── rename a course (folders + mapping follow) ───────────────────
     const REN_RE = /^\/courses\/([^/]+)\/rename$/;
     if (REN_RE.test(url.pathname) && req.method === "POST") {
+      if (!seedOwnerOnly()) return send(401, { error: "course rename is restricted to the recorder owner" });
       const from = decodeSlug(url.pathname.split("/")[2]);
       if (!from) return send(400, { error: "invalid course slug" });
       const body = await new Promise<Record<string, unknown>>((res) => {
@@ -1729,6 +1755,7 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
     // ── create a course shell (manual-only courses: upload materials +
     //    ingest recordings/transcripts by hand until the bot can join) ──
     if (url.pathname === "/courses/create" && req.method === "POST") {
+      if (!seedOwnerOnly()) return send(401, { error: "course create is restricted to the recorder owner" });
       const body = await new Promise<Record<string, unknown>>((res) => {
         let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { try { res(JSON.parse(b)); } catch { res({}); } });
       });
@@ -2198,6 +2225,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
     // Allowed ONLY when the course has no sessions (no recordings, no
     // transcripts/notes/timeline anywhere). Materials + config go too.
     if (/^\/courses\/([^/]+)$/.test(url.pathname) && req.method === "DELETE") {
+      if (!seedOwnerOnly()) return send(401, { error: "course delete is restricted to the recorder owner" });
       const course = decodeSlug(url.pathname.split("/")[2]);
       if (!course) return send(400, { error: "invalid course slug" });
       try {

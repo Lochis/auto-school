@@ -10,12 +10,18 @@
  *  - Headers are only honored when TRUST_AUTHENTIK_HEADERS=1 (set in the
  *    frontend container env, NOT in local dev) — local `next dev` can't be
  *    spoofed by a stray curl.
- *  - If EDGE_SECRET is configured (required in the platform manifest),
- *    src/middleware.ts strips X-authentik-* (and the internal-hop headers)
- *    from EVERY route that lacks the edge marker — direct pod access cannot
- *    present an identity the edge did not stamp. `requireUser()`
- *    (lib/owner.ts) additionally requires EDGE_SECRET before trusting a
- *    header, so header trust without the marker 401s instead of spoofing.
+ *  - Edge marker (OWNER of the trust decision, security fix wave E): when
+ *    EDGE_SECRET is configured (required in the platform manifest) the
+ *    request must ALSO carry X-Edge-Secret: <EDGE_SECRET> or getAuthUser()
+ *    returns null → every caller 401s. The marker is checked HERE, in the
+ *    node runtime, from headers only (no body): the streaming upload routes
+ *    (/api/ingest, /api/courses/<slug>/materials) are excluded from
+ *    src/middleware.ts because Next's edge runtime clones+buffers every
+ *    non-GET body it sees and truncates at 10MB — a lecture-sized upload
+ *    would be silently cut. Those two routes therefore rely on this check.
+ *  - src/middleware.ts keeps stripping client-supplied X-authentik-* /
+ *    X-Auto-School-User / X-Internal-Auth on every OTHER route as
+ *    defense-in-depth; it is no longer the only enforcement point.
  */
 import { headers } from "next/headers";
 
@@ -44,6 +50,13 @@ export function trustAuthentikHeaders(): boolean {
 export async function getAuthUser(): Promise<AuthUser | null> {
   if (!trustAuthentikHeaders()) return null;
   const h = await headers();
+  // Edge-marker trust: with EDGE_SECRET configured, headers that the
+  // authentik outpost did not stamp (kubectl port-forward, direct pod hit,
+  // spoofed curl) are unauthenticated — fail closed. No secret ⇒ no edge to
+  // prove (local `next dev`, docker-compose) and TRUST_AUTHENTIK_HEADERS
+  // already gates the rest.
+  const secret = process.env.EDGE_SECRET;
+  if (secret && h.get("x-edge-secret") !== secret) return null;
   const uid = h.get("x-authentik-uid");
   if (!uid) return null; // not behind the authentik outpost
   const groups = (h.get("x-authentik-groups") ?? "")

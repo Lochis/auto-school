@@ -6,7 +6,7 @@
  *                 paused toggles auto-join suppression (absence mode). */
 import { NextResponse } from "next/server";
 import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
-import { listCourses, listSessions, daemonBaseOrThrow } from "@/lib/backend";
+import { listCourses, listSessions, daemonBaseOrThrow, OwnerRequiredError } from "@/lib/backend";
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +49,10 @@ export async function GET() {
       for (const s of body.sessions as Record<string, unknown>[]) canonicalizeSession(s, canon, stemsByCourse);
     }
     return NextResponse.json(body);
-  } catch {
+  } catch (e) {
+    // DB mode with no resolvable owner (PG died mid-request): 401, not the
+    // seed owner's catalog (fail-closed requireOwner, wave E)
+    if (e instanceof OwnerRequiredError) return unauthorized();
     return NextResponse.json({ online: false, state: "offline" });
   }
 }

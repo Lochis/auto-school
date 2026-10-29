@@ -14,6 +14,7 @@ import { ensureIndex, indexedPages, pageImage, readDoc, supportsIndex } from "./
 import { vlmDescribe } from "./llm.ts";
 import { pgConfigured, vectorSearch, keywordSearch, type ChunkHit } from "../db/reader.ts";
 import { curOwner } from "../db/owner.ts";
+import { OWNER } from "../db/writes.ts";
 import { embedQuery, geminiApiKey } from "../db/embeddings.ts";
 
 /** One search hit rendered for the model: kind + course + file/session +
@@ -80,15 +81,26 @@ export function allCourses(): string[] {
 
 /** DB-aware course list for the async chat tools. `allCourses()` stays
  *  synchronous (daemon.ts request handlers call it directly and pg has no
- *  sync API), so the DB read lives here and is awaited in execTool/courseTool. */
+ *  sync API), so the DB read lives here and is awaited in execTool/courseTool.
+ *  OWNER-SCOPED (fix wave E): the SQL filters `owner_user_id = curOwner()`, so
+ *  the chat tools can only see the requesting user's catalog. The fs dir union
+ *  below has no owner segment (single shared DATA_DIR — per-owner trees are a
+ *  P2 follow-up), so it is only folded in for the seed owner, i.e. the owner
+ *  who actually recorded those folders; anyone else gets the DB answer. */
 async function resolveCourses(): Promise<string[]> {
   if (!pgConfigured()) return allCourses();
   try {
     const pool = await dbPool();
-    const { rows } = await pool.query("select slug from courses order by slug");
+    const owner = curOwner();
+    const { rows } = await pool.query(
+      "select slug from courses where owner_user_id = $1 order by slug",
+      [owner],
+    );
     const slugs = rows.map((r: { slug: string }) => r.slug);
-    // union the live recordings dir so a course on disk but not yet in the DB stays reachable
-    return [...new Set([...slugs, ...allCourses()])].sort();
+    // union the live recordings dir so a course on disk but not yet in the DB
+    // stays reachable — seed owner only (the dirs are that user's recordings)
+    const fsSlugs = owner === OWNER ? allCourses() : [];
+    return [...new Set([...slugs, ...fsSlugs])].sort();
   } catch {
     return allCourses();
   }
