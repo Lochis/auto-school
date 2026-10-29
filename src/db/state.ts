@@ -172,25 +172,26 @@ export async function leftClear(): Promise<void> {
 }
 
 /** deadlines-meta.json → { docs: { '<course>/<relPath>': { m, s } } }. */
-export async function metaLoad(): Promise<{ docs: Record<string, { m: number; s: number }> }> {
+export async function metaLoad(owner?: string): Promise<{ docs: Record<string, { m: number; s: number }> }> {
   if (!pgConfigured()) return { docs: {} };
-  const r = await q(`select doc_key, mtime, size from deadlines_meta where owner_user_id = $1`, [curOwner()]);
+  const r = await q(`select doc_key, mtime, size from deadlines_meta where owner_user_id = $1`, [owner ?? curOwner()]);
   const docs: Record<string, { m: number; s: number }> = {};
   for (const row of r.rows) docs[row.doc_key] = { m: Number(row.mtime), s: Number(row.size) };
   return { docs };
 }
 
 /** Replace the whole manifest (upsert every key + prune removed keys). */
-export async function metaReplace(docs: Record<string, { m: number; s: number; course: string }>): Promise<void> {
+export async function metaReplace(docs: Record<string, { m: number; s: number; course: string }>, owner?: string): Promise<void> {
   if (!pgConfigured()) return;
+  const own = owner ?? curOwner();
   const client = await getPool().connect();
   try {
     await client.query("begin");
-    await client.query(`delete from deadlines_meta where owner_user_id = $1`, [curOwner()]);
+    await client.query(`delete from deadlines_meta where owner_user_id = $1`, [own]);
     for (const [k, v] of Object.entries(docs)) {
       await client.query(
         `insert into deadlines_meta (doc_key, mtime, size, course, owner_user_id) values ($1,$2,$3,$4,$5)`,
-        [k, v.m, v.s, v.course, curOwner()],
+        [k, v.m, v.s, v.course, own],
       );
     }
     await client.query("commit");

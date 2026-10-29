@@ -25,7 +25,10 @@
  *  the unindexed documents is appended to the USER message (same wording family
  *  as gen/checklist.ts) and surfaced as `warning`.
  *
- *  FS INPUTS BECAME PG INPUTS (the only two fs couplings):
+ *  FS INPUTS BECAME PG INPUTS (the only two fs couplings) — both are
+ *  INJECTABLE via `RebuildDeadlinesOpts.snapshotDocs` / `.courseList`, so the
+ *  daemon passes its ORIGINAL fs reads back in (byte-identical pre-5b2c sweep)
+ *  while the platform takes these PG defaults:
  *    - `snapshotDocs` (daemon `:1857-1875`) stat-walked
  *      `DATA_DIR/courses/<slug>/materials` into the `deadlines_meta` manifest
  *      of `{m, s}` per `${course}/${relPath}`; now it aggregates
@@ -125,6 +128,14 @@ export class DeadlineGenError extends Error {
 /** Manifest entry — `deadlines_meta` row shape (`state.ts:175-181`). */
 export type DocStat = { m: number; s: number };
 export type DocSnapshot = Record<string, DocStat & { course: string }>;
+
+/** Manifest snapshot source — the PG default below, or the daemon's pre-5b2c
+ *  fs stat walk. `owner` is forwarded so an explicit-owner caller never needs
+ *  the ALS context. */
+export type SnapshotDocsFn = (owner?: string, course?: string | null) => Promise<DocSnapshot> | DocSnapshot;
+/** Slug allow-list source — `select slug from courses` (below), or the daemon's
+ *  fs dir union (`pipeline/tools.ts` `allCourses()`). */
+export type CourseListFn = () => Promise<string[]> | string[];
 
 /** Course slugs — replacement for pipeline/tools.ts `allCourses()` (a readdir
  *  union of recordings/notes/courses). PG is the only source on the platform;
@@ -284,6 +295,15 @@ export interface RebuildDeadlinesOpts {
   owner?: string;
   /** "today" for the prompt (default: now) */
   now?: Date;
+  /** material-manifest source for the incremental diff; defaults to the PG
+   *  `documents` aggregate (`snapshotDocs` export). The DAEMON injects its fs
+   *  stat walk so a material on disk with no `documents` row is not mistaken
+   *  for a deleted document. */
+  snapshotDocs?: SnapshotDocsFn;
+  /** course-slug allow-list; defaults to `select slug from courses`
+   *  (`courseList` export). The DAEMON injects the fs dir union so fs-only
+   *  courses keep normalizing. */
+  courseList?: CourseListFn;
 }
 
 export interface RebuildDeadlinesResult {
@@ -329,16 +349,19 @@ export async function rebuildDeadlines(opts: RebuildDeadlinesOpts = {}): Promise
     ((name, argsJson) => runToolPgCall({ function: { name, arguments: argsJson } }, scopeSlug ?? undefined, owner));
   const tools = opts.tools ?? TOOL_DEFS_PG;
   const onEvent = opts.onEvent;
+  // inputs are injectable: PG defaults (platform) vs the daemon's fs reads
+  const snapshotDocsOf = opts.snapshotDocs ?? snapshotDocs;
+  const courseListOf = opts.courseList ?? courseList;
 
   // manifest: updated_at+size of every course document at last build — a PG
   // query (no LLM) tells us exactly what changed since
-  const prevMeta = await metaLoad();
+  const prevMeta = await metaLoad(owner);
   const prev0 = await readDl(owner);
   const changedDocs = new Map<string, string[]>(); // slug → rel paths changed/new
   const deletedKeys = new Set<string>();           // manifest keys whose doc is gone
   let scoped = false;
   if (mode === "update" && prev0.length > 0 && Object.keys(prevMeta.docs).length > 0) {
-    const cur = await snapshotDocs(owner, scopeSlug);
+    const cur = await snapshotDocsOf(owner, scopeSlug);
     for (const [k, v] of Object.entries(cur)) {
       const p = prevMeta.docs[k];
       if (!p || p.m !== v.m || p.s !== v.s) changedDocs.set(v.course, [...(changedDocs.get(v.course) ?? []), k.slice(v.course.length + 1)]);
@@ -360,7 +383,7 @@ export async function rebuildDeadlines(opts: RebuildDeadlinesOpts = {}): Promise
   // corpus probe — PG is a FILTERED corpus (embeddable exts only, PDFs need
   // pdftotext, nothing chunked post-cutover until the embed key path works).
   // Unindexed documents make the tool loop read nothing; say so once, upfront.
-  const probeCourses = scopeSlug ? [scopeSlug] : scoped ? [...changedDocs.keys()] : await courseList();
+  const probeCourses = scopeSlug ? [scopeSlug] : scoped ? [...changedDocs.keys()] : await courseListOf();
   const coverage: DocCoverage[] = [];
   const notes: string[] = [];
   for (const c of probeCourses) {
@@ -410,7 +433,7 @@ export async function rebuildDeadlines(opts: RebuildDeadlinesOpts = {}): Promise
 
   // normalize: real course slugs, valid-ish dates, stable ids;
   // done-ness carries over from the previous build (by course+title)
-  const slugs = await courseList();
+  const slugs = await courseListOf();
   const prev = prev0;
   const norm = items
     .filter((it): it is Record<string, unknown> => !!it && typeof it === "object")
@@ -658,14 +681,14 @@ export async function rebuildDeadlines(opts: RebuildDeadlinesOpts = {}): Promise
   await writeDl(merged, owner);
   // manifest rewrite — a course-scoped run must not prune the other courses'
   // keys (`metaReplace` replaces the owner's whole manifest)
-  const nextMeta = await snapshotDocs(owner, scopeSlug);
+  const nextMeta = await snapshotDocsOf(owner, scopeSlug);
   if (scopeSlug) {
     for (const [k, v] of Object.entries(prevMeta.docs)) {
       const c = k.split("/")[0]!;
       if (c !== scopeSlug) nextMeta[k] = { ...v, course: c };
     }
   }
-  await metaReplace(nextMeta);
+  await metaReplace(nextMeta, owner);
   const changedCount = [...changedDocs.values()].reduce((n, ds) => n + ds.length, 0) + deletedKeys.size;
   onEvent?.(scoped
     ? `deadlines updated: +${added.length} new, ${updatedDates.length} date(s) changed${semanticMerged ? `, ${semanticMerged} dup(s) merged` : ""}${foldedCount ? `, ${foldedCount} folded` : ""}${newPending.length ? `, ${newPending.length} fold suggestion(s)` : ""}, ${changedCount} changed doc(s) scanned — ${merged.length} item(s) total`

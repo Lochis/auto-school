@@ -35,7 +35,7 @@ import { listMaterials, listIndexFiles, registerMaterial, deleteMaterial, rename
 import { glmChatRaw, glmChatStream, type ChatMsg, type ToolCall } from "./pipeline/llm.ts";
 import { TOOL_DEFS, TOOL_DEFS_WITH_WEB, runTool, allCourses } from "./pipeline/tools.ts";
 import { generateChecklist, ChecklistGenError } from "./db/gen/checklist.ts";
-import { rebuildDeadlines, DeadlineGenError } from "./db/gen/deadlines.ts";
+import { rebuildDeadlines, DeadlineGenError, type DocSnapshot } from "./db/gen/deadlines.ts";
 import { ensureIndex, indexDir, bundleFresh, supportsIndex } from "./pipeline/docindex.ts";
 import { mdToPdf } from "./pipeline/render.ts";
 import { readDoc } from "./pipeline/docindex.ts";
@@ -1855,8 +1855,35 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
             // behaves exactly as before while the platform runs the SAME generator
             // over PG documents (src/db/gen/deadlines.ts).
             try {
+              // inputs: the generator defaults to PG (platform); the recorder keeps
+              // its pre-5b2c fs reads so its sweep is byte-identical. Without this a
+              // material on disk with no `documents` row would be a deletedKey (its
+              // deadlines silently dropped on the next update run) and an fs-only
+              // course would vanish from the slug allow-list.
+              const snapshotDocsFs = (): DocSnapshot => {
+                const out: DocSnapshot = {};
+                for (const c of allCourses()) {
+                  const root = join(DATA_DIR, "courses", c, "materials");
+                  const walk = (rel: string): void => {
+                    let names: string[] = [];
+                    try { names = readdirSync(join(root, rel)); } catch { return; }
+                    for (const n of names.sort()) {
+                      if (n === "materials.json" || n.startsWith(".")) continue; // derived caches / registry
+                      const child = rel ? `${rel}/${n}` : n;
+                      let st;
+                      try { st = statSync(join(root, child)); } catch { continue; }
+                      if (st.isDirectory()) walk(child);
+                      else out[`${c}/${child}`] = { m: Math.round(st.mtimeMs), s: st.size, course: c };
+                    }
+                  };
+                  walk("");
+                }
+                return out;
+              };
               const rebuilt = await rebuildDeadlines({
                 mode: body.mode === "full" ? "full" : "update",
+                snapshotDocs: snapshotDocsFs,
+                courseList: () => allCourses(),
                 callTools: (messages, tools) => glmChatRaw(messages, tools),
                 runTool: (name, argsJson) => runTool({ id: "deadlines", function: { name, arguments: argsJson } }),
                 tools: TOOL_DEFS,

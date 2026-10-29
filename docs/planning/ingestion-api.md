@@ -82,6 +82,14 @@ DeadlineBatchSummary = { upserted: number, added: number, updated: number, skipp
   its own try/catch — a deadline failure is logged, not returned as a 500, and cannot roll back
   the session.
 
+**Timeline batch (5b-2c) — `timeline[]` → `transcript_segments`:**
+A timeline entry with a finite non-negative `offsetSec` is upserted as a segment row (one row per
+`offset_sec`: duplicates inside one request collapse last-wins; entries without a usable offset are
+skipped) so the embed sweep can see it. **Upsert-only — no delete-not-in:** re-ingesting a session
+with a SHORTER timeline leaves the previous, longer ingest's higher-offset rows orphaned in place
+(invisible to a normal segment read but still embedded/searchable); re-ingesting the full session is
+the cleanup path.
+
 **Implementation:**
 - Env `INGEST_TOKEN` (secretKeyRef optional in manifests, like RECORDER_TOKEN). Unset → 401
   (fail closed).
