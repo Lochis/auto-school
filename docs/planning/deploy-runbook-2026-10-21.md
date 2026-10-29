@@ -620,3 +620,26 @@ stem, owner_user_id)`, deadlines → the 4-column target above).
   unique constraints on `deadlines` (the new arbiter is a bare unique INDEX, per §8 naming
   note), and `deadlines_course_title_legacy_owner_key` remains `indisvalid = t`. Multi-owner
   deadline writes are now end-to-end fixed.
+
+---
+
+## 9. APPLIED LOG 2026-10-29 — 5a cutover (single-pod → platform + recorder)
+
+The recorder split's manifest switch (5a step 3) was applied live on 2026-10-29 and is healthy.
+The service is no longer one pod: `Deployment/auto-school-platform` (frontend, no `/data` mount,
+no `BACKEND_URL`) + `Deployment/auto-school-recorder` (the daemon + the `auto-school-data` PVC,
+pinned to `k3s-worker-02`). `Service/auto-school` fronts the platform only, and
+`svc/auto-school-ctrl` was repointed at `app=auto-school-recorder`.
+
+Sequence: token patch (`RECORDER_TOKEN` + `INGEST_TOKEN` via `stringData` merge, 21 → 23 keys,
+existing keys preserved) → `kubectl delete deploy auto-school --cascade=background` + wait for pod
+deletion (RWO PVC fully released before anything new ran) → apply platform + recorder manifests
+(PVC "configured" was benign — still `Bound` at 60Gi) → repoint the ctrl Service → verify (both
+pods `Running` on `k3s-worker-02`; registry row `mode=inbound`, `endpoint
+http://auto-school-recorder:7800`, capabilities `mediaServe` + `joinControl`, fresh `last_seen`;
+`/api/me` → `recorder.attached: true`; media GET → 200 for a 221 MB `.webm`) → clear the persisted
+`joinPaused` (`POST /pause` → `{joinPaused: false}`, auto-join resumed).
+
+Full applied log, the kubectl `--patch-file=-` stdin gotcha, and the rollback path:
+`docs/planning/recorder-split.md` §5.1. Nothing above in §1/§2/§8 is affected — this cutover
+touched manifests + one secret only, no DDL.

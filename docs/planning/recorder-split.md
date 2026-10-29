@@ -1,8 +1,9 @@
 # Recorder split — daemon-less platform, personal recorder stays live
 
-Status: **5a steps 1-2 LANDED** (`5e40545`); **step 3 (manifest cutover) HELD** — the
-single-pod is still live; unblocked 2026-10-29 by the 5b-1 recorder media route
-(`ingestion-api.md` §1/§4). Plan of record below (2026-10-21). Answers: how does the frontend
+Status: **5a steps 1-2 LANDED** (`5e40545`); **step 3 (manifest cutover) APPLIED 2026-10-29** —
+live is now platform + recorder (split pods), enabled by the 5b-1 recorder media route
+(`ingestion-api.md` §1/§4); `/api/me` reports `recorder.attached: true` and media serves through
+the recorder. Applied log: §5.1. Plan of record below (2026-10-21). Answers: how does the frontend
 become daemon-less (hosted-platform.md
 §5 item 5) while the owner's recording daemon keeps working? Short answer: **no new
 microservices — split the pod into two Deployments (platform vs recorder) and introduce a
@@ -91,6 +92,9 @@ local".)
 
 ## 5. Migration order (each step deploys independently)
 
+> **APPLIED 2026-10-29 — step 3 (manifest cutover).** Live is platform + recorder; the exact
+> sequence, evidence and the kubectl gotcha are in the applied log at the end of §5.1.
+>
 > **Deploy prerequisites (verified in review, 2026-10-21):** before cutover, apply the
 > `recorders` DDL to Postgres (else heartbeats 500 and the registry silently never
 > populates — masked by daemon-less fallback) and set `RECORDER_TOKEN` in the
@@ -117,9 +121,9 @@ local".)
 1. **Registry + heartbeat** (additive; daemon posts it; frontend ignores it) — zero risk.
 2. **Frontend proxy indirection**: `lib/backend.ts` resolveRecorder() with `BACKEND_URL`
    fallback; degradation UI behind `recorder.attached`. Still same pod. Deploy, verify parity.
-3. **Pod split**: recorder Deployment (+Service) with today's daemon spec + PVC;
-   platform Deployment keeps frontend; drop ro `/data` mount + `BACKEND_URL` from platform;
-   media route flips to recorder proxy. Node unpinned for platform.
+3. **Pod split** — **APPLIED 2026-10-29** (§5.1 applied log): recorder Deployment (+Service)
+   with today's daemon spec + PVC; platform Deployment keeps frontend; drop ro `/data` mount +
+   `BACKEND_URL` from platform; media route flips to recorder proxy. Node unpinned for platform.
 4. **Cleanup**: retire the two-container manifest (`kubectl delete deploy auto-school` only —
    never `kubectl delete -f`, see §5.1), `deploy/k8s/auto-school.yaml` is superseded by
    `auto-school-platform.yaml` + `auto-school-recorder.yaml`; smoke suite aims at the
@@ -130,7 +134,8 @@ local".)
 ### 5.1 Cutover runbook — manifest switch (5a step 3)
 
 Verified READY 2026-10-29 against `main` @ `aee53b6` + the live cluster (see the table at the
-end of this section). **Not applied** — this section is the run to execute.
+end of this section). **APPLIED 2026-10-29** — the actual sequence and evidence are in the
+applied log at the end of this section; the steps below stay the canonical run + rollback.
 
 **Preflight (read-only).** Any failure here = stop, do not cut over.
 
@@ -143,8 +148,10 @@ end of this section). **Not applied** — this section is the run to execute.
   (`src/recorder-heartbeat.ts:27-40`). State 2026-10-29: set.
 - **No class in flight.** `kubectl -n auto-school exec deploy/auto-school -c auto-school -- \
   curl -s localhost:7800/status` shows no active recording, and
-  `select count(*) from recordings where stage in
-  ('recording','remuxing','transcribing','noting','consolidating')` = 0. Never cut over mid-class
+  `select count(*) from sessions where stage in
+  ('recording','remuxing','transcribing','noting','consolidating')` = 0 (there is **no**
+  `recordings` table — the `stage` column lives on `sessions`, `src/db/ddl.sql:55-75`).
+  Never cut over mid-class
   (the old pod consolidates on SIGTERM, but the recorder cannot resume its capture).
 - Capture the rollback artifact:
   `kubectl -n auto-school get deploy auto-school -o yaml > /tmp/auto-school-old-deploy.yaml`.
@@ -155,18 +162,22 @@ end of this section). **Not applied** — this section is the run to execute.
 REC=$(openssl rand -hex 32); ING=$(openssl rand -hex 32)
 kubectl -n auto-school patch secret auto-school-env --type merge \
   -p "{\"stringData\":{\"RECORDER_TOKEN\":\"$REC\",\"INGEST_TOKEN\":\"$ING\"}}"
-# verify: 24 keys, both new ones present, nothing else lost
+# verify: 23 keys (21 existing + 2), both new ones present, nothing else lost
 kubectl -n auto-school get secret auto-school-env -o json | \
   jq '.data | keys | length, (index("RECORDER_TOKEN"), index("INGEST_TOKEN"))'
 ```
 
 `--type merge` merges `stringData` key-by-key (`data` is untouched because it is not in the
-patch), so the ~22 existing keys (`GEMINI_API_KEY`, `TEAMS_*`, `TOTP_SECRET`, `GLM_*`, …) survive.
+patch), so the 21 existing keys (`GEMINI_API_KEY`, `TEAMS_*`, `TOTP_SECRET`, `GLM_*`, …) survive.
 Both consumers read them `optional: true`, so a missing key does not block pod start — it fails
 closed instead (`RECORDER_TOKEN` unset → heartbeat 401,
 `frontend/src/app/api/recorder/heartbeat/route.ts:12-22`; `INGEST_TOKEN` unset → ingest 401,
 `frontend/src/app/api/ingest/session/route.ts:36-38`). Patch **before** step 2 so the new pods
 pick the env up at creation (no restart needed).
+
+**kubectl gotcha (hit live on 2026-10-29):** on this kubectl version `--patch-file=-` does **not**
+read stdin — the command returns success and applies nothing. Write the patch (base64-decoded) to
+a file on the node and pass `--patch-file <file>`, then verify the key count.
 
 **(2) Retire the single-pod Deployment FIRST.**
 
@@ -263,13 +274,40 @@ PVC, Namespace and both Services are untouched by the whole cutover.
 | 2 | Recorder node pin | `auto-school-recorder.yaml:51` `nodeSelector kubernetes.io/hostname: k3s-worker-02` | PASS |
 | 3 | Services/ingress split | platform `Service/auto-school` selects `app: auto-school` (`:98`) = platform pod only; recorder pod is `app: auto-school-recorder` (`:48`), its Service `:111` is in no IngressRoute; `auto-school-ingress.yaml` M2M + catch-all → `auto-school:80` | PASS |
 | 3b | Media proxy path | `/api/media/[...path]` → `getActiveRecorder(owner)` → `proxyRecorderMedia(endpoint, …)` (`route.ts:93-104`) → recorder serves at **root, no `/media` prefix** (`src/daemon.ts:2532-2540`) | PASS |
-| 4 | Tokens read from `auto-school-env`, fail closed | `auto-school-platform.yaml:66,71`; `auto-school-recorder.yaml:74` (`optional: true`) + `envFrom` whole secret `:77`; unset ⇒ 401 in both handlers | PASS (manifest) / **GAP (live secret)**: neither key exists yet — step 1 |
+| 4 | Tokens read from `auto-school-env`, fail closed | `auto-school-platform.yaml:66,71`; `auto-school-recorder.yaml:74` (`optional: true`) + `envFrom` whole secret `:77`; unset ⇒ 401 in both handlers | PASS — live secret patched 2026-10-29 (21→23 keys), step 1 applied log |
 | 5 | Image refs | `auto-school-platform.yaml:54` frontend:latest; `auto-school-recorder.yaml:62` auto-school:latest | PASS |
 | 6 | recorder envs + code wiring | `PLATFORM_URL=http://auto-school:80` (`:72`, read at `src/recorder-heartbeat.ts:15,19`), `RECORDER_ENDPOINT=http://auto-school-recorder:7800` (`:73`, read at `:16,61`); **no `MEDIA_SERVE` env exists** — `mediaServe` is hard-coded true in the heartbeat (`recorder-heartbeat.ts:69`) and gated on the registry capability, not env | PASS (task premise stale) |
-| 7 | Leftover `Service/auto-school-ctrl` | still selects `app=auto-school` (live `10.43.188.193`) ⇒ points at the daemon-less platform pod after cutover | GAP — step 4 |
+| 7 | Leftover `Service/auto-school-ctrl` | selected `app=auto-school` (live `10.43.188.193`) ⇒ would point at the daemon-less platform pod after cutover | RESOLVED — repointed to `app=auto-school-recorder`, step 4 applied log |
 
 No blocker remains in the manifests themselves. The only hard prerequisite is the token patch
-(step 1); the ordering in step 2 is what keeps the cutover safe.
+(step 1); the ordering in step 2 is what keeps the cutover safe. Both were done as prescribed on
+2026-10-29.
+
+**APPLIED LOG — 2026-10-29** (`main` @ `6b9aa16`, worktree `docs-cutover-1`). Executed live and
+healthy, in this order:
+
+- **(a) Tokens — `stringData` merge on `auto-school-env`.** `RECORDER_TOKEN` + `INGEST_TOKEN`
+  added via `--type merge`; the secret went **21 → 23 keys** with every pre-existing key preserved
+  (count + key-presence check). *kubectl gotcha:* `--patch-file=-` does **not** read stdin on this
+  version (exit 0, no change); the patch JSON was base64-decoded to a file on the node and applied
+  with `--patch-file <file>`.
+- **(b) Retired the single-pod by name.** `kubectl delete deploy auto-school
+  --cascade=background` + `kubectl wait --for=delete pod -l app=auto-school` — the old pod was
+  fully unmounted (RWO PVC released) **before** anything new was applied. No `-f` deletes.
+- **(c) Applied both manifests.** `kubectl apply -f auto-school-platform.yaml -f
+  auto-school-recorder.yaml`. The PVC reporting **"configured" was benign**: the manifest already
+  declares 60Gi and the live claim stayed `Bound` at 60Gi (no resize, no rebind, no data motion).
+- **(d) Repointed the debug Service.** `svc/auto-school-ctrl` selector → `app:
+  auto-school-recorder` (it would otherwise have pointed at the daemon-less platform pod).
+- **(e) Verified live.** Both pods `Running` on `k3s-worker-02`; one registry row `mode=inbound`,
+  `endpoint http://auto-school-recorder:7800`, `capabilities {mediaServe: true, joinControl:
+  true}`, `last_seen` fresh; `/api/me` → `{recorder: {attached: true, mode: "inbound"}}`; media
+  `GET /api/media/…` → **200** (221 MB `.webm` streamed through the recorder proxy).
+- **(f) Cleared a stuck `joinPaused`.** It was persisted `true` in `app_settings` from an earlier
+  pause; `POST /pause` against the recorder → `{joinPaused: false, "auto-join resumed"}`.
+
+Rollback is unchanged (step 6): the `/tmp/auto-school-old-deploy.yaml` artifact captured in
+preflight is still the way back.
 
 ## 6. Risks / open questions
 
