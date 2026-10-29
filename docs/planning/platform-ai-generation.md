@@ -1,6 +1,6 @@
 # Platform AI generation — 5b-2(c) implementation map
 
-Status: **SCOPING** (map only; not implemented). See also ingestion-api.md §3, hosted-platform.md §1.6/§5b.
+Status: **IMPLEMENTED + DEPLOYED 2026-10-29** (5b-2c). See also ingestion-api.md §3/§4, hosted-platform.md §1.6/§5b.
 
 ## Goal
 Move notes/checklist/deadline GENERATION (and the tool surface they call) to the platform back end,

@@ -1,7 +1,6 @@
 # auto-school-recorder — the personal recording daemon as its own Deployment
-# (recorder-split.md §5 step 3). PREPARED, NOT APPLIED — part of the 5a
-# manifest split. Until it is applied, deploy/k8s/auto-school.yaml remains the
-# live single-pod manifest.
+# (recorder-split.md §5 step 3). APPLIED 2026-10-29 — the 5a manifest split is
+# LIVE (auto-school-platform + auto-school-recorder replace the old single pod).
 #
 # Today's daemon container spec VERBATIM (Xvfb/PulseAudio/Chromium/ffmpeg,
 # :7800 controller), plus three recorder-registry additions:
