@@ -80,6 +80,20 @@ platform frontend env in `deploy/k8s/auto-school-platform.yaml`; leave the singl
 - platform-side AI generation (transcribe/notes/checklists generation on the platform).
 - full OIDC token verification (v1 uses the shared-secret + owner-uid pattern).
 
+## 3a. KNOWN ISSUES / FLAGGED FOLLOW-UPS (found 2026-10-29 cohesion review)
+
+Do NOT lose these:
+
+1. **`embedPendingSessions()` writes `documents.owner_user_id` from the hardcoded OWNER const,
+   not `curOwner()`** — `src/db/ingest-embed.ts:267` (~). Ingested sessions kick this sweep
+   (fire-and-forget from the ingest route), so a non-seed owner's ingested materials would be
+   embedded under the system owner. Fixing it interacts with the `on conflict (course_id,
+   kind, rel_path)` dedupe used by backfill + the daemon sweep — needs a coordinated change, not
+   a one-liner. **Owner attribution bug, 5b-2.**
+2. **`future-product-goals.md §D/BYOK` still describes the AEAD "encrypted per-user credential
+   blob … in `authentik-federation.md` §5" as the plan** — that design is DEAD (credentials
+   live in the user's keychain, hosted-platform.md §6). Reword §D/BYOK to keychain storage.
+
 ## 4. STATUS — 5b-1 LANDED (2026-10-29, verifier SHIP)
 
 `feat/ingestion-api` merged to main. Verifier built a live harness (traversal/Range/streaming

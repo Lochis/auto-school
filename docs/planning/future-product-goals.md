@@ -26,8 +26,8 @@ What users configure on first login (all shown in their Settings tab):
 | Setting | Today (single-user) | Future (per-user) |
 | --- | --- | --- |
 | Discord webhook (screenshots + MFA pings) | `DISCORD_WEBHOOK_URL` env (`src/config.ts:12`, `src/notify.ts`) | encrypted `user_settings` row; `notify.ts` takes webhook from user record |
-| School login email/password | `TEAMS_EMAIL`, `CENTENNIAL_*` env | AEAD-encrypted per-user credential blob (already designed in `authentik-federation.md` §5) |
-| TOTP secret | `TOTP_SECRET` env | same encrypted blob |
+| School login email/password | `TEAMS_EMAIL`, `CENTENNIAL_*` env | user's own device keychain — NOT a platform-held blob (hosted-platform.md §6; the AEAD blob in authentik-federation.md §5 is DEAD) |
+| TOTP secret | `TOTP_SECRET` env | same — keychain, never with us |
 | AI keys (see C) | `.env` (`GEMINI_API_KEY`, `GLM_API_KEY`) | same blob, optional per-user override |
 
 Architecture fit: the users table + encrypted-blob design covers all of it.
@@ -83,7 +83,7 @@ settings-driven model choice. Options if charging:
 | Model | Pros | Cons |
 | --- | --- | --- |
 | **Platform keys + quotas** (recommended default) | Simple billing; margin; provider ToS-compliant (most prohibit reselling raw API access; metered *product* access is fine) | You carry AI cost per user; needs usage metering + caps |
-| **BYOK** | Zero marginal AI cost; power users like it | Key storage (encrypted blob — already designed), per-user key routing in `llm.ts`, support burden ("my key is invalid"), ToS nuance |
+| **BYOK** | Zero marginal AI cost; power users like it | Key storage in the user's keychain (NOT a platform blob — hosted-platform.md §6), per-user key routing in `llm.ts`, support burden ("my key is invalid"), ToS nuance |
 | **Hybrid tiering** | Free tier = metered platform keys; paid tier allows BYOK | Most code: both paths |
 
 Recommendation: ship with platform keys + **per-user usage metering** (the
@@ -142,7 +142,8 @@ quotas) is enough to add Stripe/usage billing later without schema surgery.
 ## 3. Verdict: does the planned architecture support this?
 
 **Yes.** Pod-per-user isolates each tenant's browser/audio/recordings;
-per-user encrypted blobs cover credentials, webhooks, and (optionally) AI
+per-user keychain-held credentials cover webhooks, and (optionally) AI keys — never a
+platform-held encrypted blob (hosted-platform.md §6).
 keys; Postgres gives users/ownership/metering; the auth seam keeps the IdP
 swappable. Nothing in the product vision requires re-architecting the
 migration plan — only additive work:
