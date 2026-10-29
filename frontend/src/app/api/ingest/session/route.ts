@@ -6,12 +6,21 @@
  *  pattern as /api/recorder/heartbeat — sha256 both sides, timingSafeEqual).
  *  Unset env fails closed (401).
  *
+ *  The bearer is a GLOBAL shared secret, so v1 binds it to the SEED system
+ *  owner (fix wave D, docs/planning/security-hardening.md P3): `body.owner`
+ *  must resolve to SYSTEM_OWNER, else 401 — a stolen token can no longer
+ *  write sessions/deadlines as an arbitrary user. Per-user ingest tokens
+ *  (one token per client, bound to users.id and resolved HERE instead of the
+ *  body's owner) are the multi-client future; the body field stays only so
+ *  the single owner's clients keep working unchanged.
+ *
  *  Writes go through src/db/writes.ts so the natural-key upserts keep
  *  resubmissions idempotent (session: course_id+stem+owner, artifact:
  *  session_id+kind+rel_path → update, never duplicate). */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getUserIdBySub } from "../../../../../../src/db/avatar.ts";
+import { SYSTEM_OWNER } from "@/lib/owner";
 import { listSessions } from "../../../../../../src/db/queries/sessions.ts";
 import { courseId, sessionId, upsertArtifact, upsertSegments, type SegmentInit } from "../../../../../../src/db/writes.ts";
 import { ownerALS } from "../../../../../../src/db/owner.ts";
@@ -145,6 +154,14 @@ export async function POST(req: Request) {
     if (typeof body.owner !== "string" || !body.owner) {
       return NextResponse.json({ ok: false, error: "owner required" }, { status: 400 });
     }
+    // v1 token bind: the GLOBAL INGEST_TOKEN may only write as the seed system
+    // owner. Resolve the authentik uid → users.id and require equality — an
+    // unknown uid or any other real user is 401, never "whatever id the body
+    // said". Per-user tokens (bound to users.id) replace this bind later.
+    const ownerUserId = await getUserIdBySub(body.owner);
+    if (!ownerUserId || ownerUserId !== SYSTEM_OWNER) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
 
     // course slug — same sanitizer as the daemon /ingest handler.
     const course =
@@ -199,11 +216,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Resolve the authentik uid → users.id; never fabricate a row for a stranger.
-    const ownerUserId = await getUserIdBySub(body.owner);
-    if (!ownerUserId) {
-      return NextResponse.json({ ok: false, error: "unknown owner" }, { status: 401 });
-    }
+    // Owner already resolved + bound to the seed owner above (no second query).
 
     if (!stem) {
       // No explicit stem: resubmitting the same day's derived text must update,

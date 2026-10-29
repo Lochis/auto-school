@@ -21,14 +21,23 @@ export interface ActiveRecorder {
   capabilities: Record<string, unknown>;
 }
 
-/** Upsert a heartbeat on (owner_user_id, name) and bump last_seen. */
+/** Upsert a heartbeat on (owner_user_id, name) and bump last_seen.
+ *
+ *  MERGE, not replace (fix wave D, docs/planning/security-hardening.md P3):
+ *  the row is a resolved proxy target, so a partial/older-client body must
+ *  never blank a live row's endpoint or capabilities — `coalesce` keeps the
+ *  existing value when the incoming one is NULL. The route is the primary
+ *  guard (400 unless the body carries endpoint + capabilities + mode); this is
+ *  the DB-side belt-and-braces for any other caller. */
 export async function upsertRecorderHeartbeat(p: RecorderHeartbeat): Promise<void> {
   await getPool().query(
     `insert into recorders (owner_user_id, name, mode, endpoint, last_seen, capabilities)
      values ($1, $2, $3, $4, now(), $5::jsonb)
      on conflict (owner_user_id, name)
-     do update set mode = excluded.mode, endpoint = excluded.endpoint,
-                   last_seen = now(), capabilities = excluded.capabilities`,
+     do update set mode = excluded.mode,
+                   endpoint = coalesce(excluded.endpoint, recorders.endpoint),
+                   last_seen = now(),
+                   capabilities = coalesce(excluded.capabilities, recorders.capabilities)`,
     [p.ownerUserId, p.name, p.mode, p.endpoint, JSON.stringify(p.capabilities)],
   );
 }

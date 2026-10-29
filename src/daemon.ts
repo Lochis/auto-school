@@ -2249,11 +2249,17 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
     // under DATA_DIR. Streaming + HTTP Range match the material-download
     // handler above (createReadStream, no buffering).
     //
-    // X-Auto-School-User is sent on this hop but IGNORED this phase:
-    // per-owner recorder resolution already happened platform-side, and this
-    // daemon is single-owner until the recorder-split lands.
+    // X-Auto-School-User is sent on this hop (signed with X-Internal-Auth by
+    // the platform); the media route is gated to the SEED owner below.
     const MEDIA_RE = /^\/(?:recordings|out|courses)\/.+/;
     if ((req.method === "GET" || req.method === "HEAD") && MEDIA_RE.test(url.pathname)) {
+      // Fix wave D (security-hardening P2 — media owner gate): the handler
+      // streams ANY path under the one shared DATA_DIR, so a non-seed
+      // authenticated user would read another owner's recordings/notes. There
+      // is no per-owner fs tree yet (documented follow-up), so the only sound
+      // answer for a non-seed owner is 401 — same rule as the destructive fs
+      // ops via seedOwnerOnly / OWNER.
+      if (!seedOwnerOnly()) return send(401, { error: "unauthorized" });
       let rel: string;
       try { rel = normalize(decodeURIComponent(url.pathname).replace(/^\/+/, "")); } catch { return send(400, { error: "bad path" }); }
       const root = resolve(DATA_DIR);

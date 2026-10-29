@@ -34,6 +34,23 @@ and fail-open.
 - **P3 (bearer)** — per-user ingest tokens bound to `users.id` (drop shared global token's
   owner-in-body surface); heartbeat row MERGE (no replace/endpoint poisoning) + endpoint
   private-range block.
+  - **wave D landed (v1)** — `INGEST_TOKEN`/`RECORDER_TOKEN` stay a single global secret, but
+    are now **bound to the seed owner**: `/api/ingest/session` resolves `body.owner` → `users.id`
+    and 401s unless it equals `SYSTEM_OWNER`; heartbeat requires `owner`+`mode`+`endpoint`+
+    `capabilities` (400 when partial, `name` ≤64) so a row can never be partially nulled, and
+    `src/db/recorders.ts` merges (`coalesce`) instead of replacing; the endpoint must parse as
+    http(s) and its host must not be loopback/RFC1918/link-local/metadata/ULA/link-local-v6
+    (the only loopback exception is the co-located daemon `localhost:7800`, which itself
+    HMAC-gates every hop). `RECORDER_TOKEN` has no owner-in-body bind because the registry row
+    is already keyed `(owner_user_id, name)` and the owner must resolve via `users.authentik_sub`.
+  - **P3 remainder (multi-client future)**: per-user ingest tokens (one row per client, token
+    hash bound to `users.id`, owner taken from the TOKEN instead of the body), per-user recorder
+    tokens, and DNS-resolved (not just literal) SSRF checks for the recorder endpoint.
+  - **media owner gate landed (wave D)** — the daemon's root-mounted media route (GET/HEAD
+    `recordings|out|courses`) now requires the seed owner via `seedOwnerOnly()` → 401 otherwise;
+    the platform's `/api/media/*` recorder-proxy hop is signed with `daemonUserHeaders()` (it was
+    unsigned after wave B, so every proxied stream silently fell back to fs). Per-owner fs dirs
+    remain the documented follow-up.
 - **P4 (harden)** — NetworkPolicy, `timingSafeEqual` on daemon compare, deadline_parts over-fetch,
   `/status` global-mirror leak, study-sheet/lexicon cross-owner metadata.
 

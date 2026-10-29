@@ -11,8 +11,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { Readable } from "node:stream";
 import { DATA_DIR } from "@/lib/data";
-import { getAuthUser } from "@/lib/auth";
-import { ownerId, requireUser, unauthorized } from "@/lib/owner";
+import { daemonUserHeaders, requireUser, unauthorized } from "@/lib/owner";
 import { getActiveRecorder } from "../../../../../../src/db/recorders.ts";
 
 export const runtime = "nodejs";
@@ -44,14 +43,23 @@ const MIME: Record<string, string> = {
  *  recorder → clean 404; mid-stream failures terminate the pass-through body.
  *  The abort deadline covers CONNECT/HEADERS only — never the body read
  *  (a body-spanning timeout killed streams longer than the timeout — review
- *  blocker, 2026-10-21). Threads the owner header for the future daemon-side
- *  media route (review: identity was missing on this hop). */
+ *  blocker, 2026-10-21). The hop is SIGNED (fix wave D): since fix wave B the
+ *  daemon 401s any request without X-Internal-Auth, so an unsigned
+ *  X-Auto-School-User here would silently degrade every recorder-proxied
+ *  stream to the fs fallback. `daemonUserHeaders()` is the single signing
+ *  seam (throws → we fall through to the fs path, never to an unsigned hop).
+ */
 async function proxyRecorderMedia(
   endpoint: string,
   req: Request,
   path: string[],
-  ownerUid?: string,
 ): Promise<Response | null> {
+  let authHeaders: Record<string, string>;
+  try {
+    authHeaders = await daemonUserHeaders();
+  } catch {
+    return null; // unprovable hop → fs fallback
+  }
   const url = `${endpoint.replace(/\/+$/, "")}/${path.map(encodeURIComponent).join("/")}`;
   const range = req.headers.get("range");
   const ctrl = new AbortController();
@@ -60,7 +68,7 @@ async function proxyRecorderMedia(
     const upstream = await fetch(url, {
       headers: {
         ...(range ? { Range: range } : {}),
-        ...(ownerUid ? { "X-Auto-School-User": ownerUid } : {}),
+        ...authHeaders,
       },
       signal: ctrl.signal,
     });
@@ -98,8 +106,7 @@ export async function GET(
   try {
     const rec = await getActiveRecorder(owner);
     if (rec?.endpoint && rec.capabilities?.mediaServe === true) {
-      const ownerUid = (await getAuthUser())?.uid;
-      const proxied = await proxyRecorderMedia(rec.endpoint, req, path, ownerUid);
+      const proxied = await proxyRecorderMedia(rec.endpoint, req, path);
       if (proxied) return proxied;
     }
   } catch {
