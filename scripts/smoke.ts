@@ -6,10 +6,11 @@
  *  Usage (inside the backend container, where PG env + the daemon exist):
  *    node scripts/smoke.ts [--base http://127.0.0.1:7800] [--fe http://127.0.0.1:3000]
  *
- *  Requires SMOKE_OWNER_SUB (the authentik `sub`, a 64-char hex uid) and the
- *  internal hop key — EDGE_SECRET, or INTERNAL_HMAC_KEY when the deployment
- *  has split it out (the daemon reads EDGE_SECRET today). Every daemon call
- *  is signed like the frontend hop (lib/owner.ts daemonUserHeaders):
+ *  Requires SMOKE_OWNER_SUB (the authentik `sub`, a 64-char hex uid) and
+ *  INTERNAL_HMAC_KEY (the internal daemon-hop HMAC key). EDGE_MARKER is
+ *  optional and only needed for the frontend read-parity check (step 7).
+ *  Every daemon call is signed like the frontend hop (lib/owner.ts
+ *  daemonUserHeaders):
  *    X-Auto-School-User: <sub>
  *    X-Internal-Auth: hex(HMAC-SHA256(key, message = sub))
  *  The daemon 401s any request without a valid signature (resolveRequestOwner).
@@ -27,10 +28,13 @@ import { createHmac, randomUUID } from "node:crypto";
 const BASE = process.argv.includes("--base") ? process.argv[process.argv.indexOf("--base") + 1]! : "http://127.0.0.1:7800";
 const FE = process.argv.includes("--fe") ? process.argv[process.argv.indexOf("--fe") + 1]! : "http://127.0.0.1:3000";
 const SMOKE_SUB = process.env.SMOKE_OWNER_SUB ?? "";
-/** The internal daemon-hop HMAC key — same secret the daemon verifies against
- *  (EDGE_SECRET in src/daemon.ts resolveRequestOwner; INTERNAL_HMAC_KEY is the
- *  planned split-out name, accepted as a fallback). */
-const HMAC_KEY = process.env.EDGE_SECRET ?? process.env.INTERNAL_HMAC_KEY ?? "";
+/** The internal daemon-hop HMAC key — the daemon verifies X-Internal-Auth
+ *  against INTERNAL_HMAC_KEY (src/daemon.ts resolveRequestOwner). */
+const HMAC_KEY = process.env.INTERNAL_HMAC_KEY ?? "";
+/** Edge marker value for the optional frontend parity check (sent as
+ *  x-edge-secret; the frontend's getAuthUser() compares against EDGE_MARKER).
+ *  Optional — the frontend check is skipped when unset. */
+const EDGE_MARKER = process.env.EDGE_MARKER ?? "";
 /** users.id of the smoke owner — resolved from SMOKE_SUB after the pool opens. */
 let SMOKE = "";
 const AUTH_HDRS: Record<string, string> = {
@@ -41,7 +45,7 @@ const HDRS: Record<string, string> = { ...AUTH_HDRS, "Content-Type": "applicatio
 const DATA = process.env.AUTO_SCHOOL_DATA ?? "/data";
 
 if (!SMOKE_SUB || !HMAC_KEY) {
-  console.error("✗ SMOKE_OWNER_SUB and the internal HMAC key (EDGE_SECRET / INTERNAL_HMAC_KEY) must be set — refusing (every daemon call would 401)");
+  console.error("✗ SMOKE_OWNER_SUB and INTERNAL_HMAC_KEY must be set — refusing (every daemon call would 401)");
   process.exit(2);
 }
 
@@ -246,7 +250,7 @@ console.log("\n7 · read-path parity (real data, read-only): daemon vs frontend 
     const feHdrs: Record<string, string> = {
       "x-authentik-uid": SMOKE_SUB,
       "x-authentik-username": "smoke-test",
-      ...(HMAC_KEY ? { "x-edge-secret": HMAC_KEY } : {}),
+      ...(EDGE_MARKER ? { "x-edge-secret": EDGE_MARKER } : {}),
     };
     const fe = await fetch(`${FE}/api/deadlines`, { headers: feHdrs, signal: AbortSignal.timeout(5000) });
     const fj = await fe.json();
