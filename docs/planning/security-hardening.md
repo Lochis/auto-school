@@ -121,3 +121,37 @@ and fail-open.
 - **D — bearer + heartbeat** (after A/B/C): `frontend/src/app/api/{ingest,ingest/session,recorder/heartbeat,media/[...path]}/route.ts`,
   `src/db/recorders.ts`.
 - **E — verifier** (independent re-audit of the whole fix).
+
+## EDGE_SECRET retirement (2026-10-30)
+Superseded by the `EDGE_MARKER` (edge marker) + `INTERNAL_HMAC_KEY` (daemon-hop HMAC) pair; the
+old `EDGE_SECRET` value was carried verbatim into `INTERNAL_HMAC_KEY`, so deleting the key loses
+nothing. **Nothing reads it**: `rg -n "EDGE_SECRET" src frontend/src deploy/k8s scripts/` is
+empty. Live check (2026-10-30): no deploy *consumes* it, but `frontend` + `recorder` pods still
+carried `EDGE_SECRET=` in their runtime env — leaked by `envFrom auto-school-env` (and the
+recorder Deployment retains a legacy explicit `secretKeyRef` entry marked `optional: true`, so a
+missing key resolves empty — no `CreateContainerConfigError`). Retiring the key closes that env
+leak for every future pod. Historical docs (`recorder-split.md`, `authentik-federation.md`) keep
+their historical mentions.
+
+**Rollback** = re-add the key with the `INTERNAL_HMAC_KEY` value (never read it from pod env —
+pull it from the secret):
+```sh
+kubectl -n auto-school create secret generic auto-school-env \
+  --from-literal=EDGE_SECRET="$(kubectl -n auto-school get secret auto-school-env -o jsonpath='{.data.INTERNAL_HMAC_KEY}' | base64 -d)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+### Runbook — delete the key
+```sh
+kubectl -n auto-school patch secret auto-school-env --type=json -p '[{"op":"remove","path":"/data/EDGE_SECRET"}]'
+```
+
+Post-checks:
+- (a) key gone: `kubectl -n auto-school get secret auto-school-env -o jsonpath='{.data}' | grep -o EDGE_SECRET` → no output.
+- (b) pods do **not** restart — a secret-data change triggers no rollout on its own; running
+  pods keep the stale `EDGE_SECRET=` env var until their next restart. Harmless (nothing reads
+  it); every pod started after the patch is leak-free.
+- (c) daemon still healthy: `kubectl -n auto-school logs deploy/auto-school-recorder | grep 'INTERNAL_HMAC_KEY is not set'`
+  → absent (that warning at `src/daemon.ts` only fires if the *live* key is missing).
+- (d) frontend→recorder hop still signed+200: `curl -s -o /dev/null -w '%{http_code}\n' https://school.vanderloch.com/api/backend` → 200
+  (`/api/backend` proxies to the daemon via `daemonUserHeaders()` HMAC).
