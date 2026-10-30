@@ -1,0 +1,91 @@
+# auto-school NetworkPolicy — restrict ingress to the recorder daemon's :7800
+# controller so only the platform pod can talk to it.
+#
+# ── ENFORCEMENT VERDICT: ENFORCED (verified live 2026-10-30) ────────────────
+# k3s' *default* flannel datapath does not implement NetworkPolicy, BUT k3s
+# also ships an embedded kube-router network-policy controller that is enabled
+# by default — and it is running here:
+#   k3s-worker-02 journal: "Starting network policy controller version
+#     v2.6.3-k3s1 ... Starting network policy controller full sync goroutine"
+#   node iptables: KUBE-ROUTER-INPUT/FORWARD/OUTPUT jump chains +
+#     KUBE-NWPLCY-* and 52 per-pod KUBE-POD-FW-* chains
+#   existing enforced policies in the cluster: authentik/authentik-postgresql,
+#     cattle-fleet-local-system/default-allow-all — and the per-pod chains carry
+#     live ACCEPT/REJECT rules, so the controller is actively programming.
+# There is no Calico/Cilium/weave/kube-router/CRD-based engine: the controller
+# is compiled into the k3s agent (`/usr/local/bin/k3s agent`, no extra flags,
+# no /etc/rancher/k3s/config.yaml, no /etc/default/k3s-agent overrides).
+# No `--disable-network-policy` anywhere → enforcement is ON.
+#
+# ── SAFE-APPLY CAVEAT ───────────────────────────────────────────────────────
+# This policy takes effect IMMEDIATELY on apply (no dry-run grace). After
+# applying, verify in this order:
+#   1. kubectl -n auto-school port-forward deploy/auto-school-platform 3000:3000
+#      then hit a proxied route (e.g. /api/backend -> /status) — the platform's
+#      registry/proxy hop to auto-school-recorder:7800 must still succeed.
+#   2. kubectl -n auto-school exec deploy/auto-school-platform -- \
+#      curl -m 5 -s -o /dev/null -w '%{http_code}' \
+#      -H "X-Internal-Auth: <hmac>" http://auto-school-recorder:7800/healthz
+#   3. Confirm the recorder pod is still Ready (kubelet probes, see below) and
+#      that auto-join/heartbeat keeps working.
+#   Rollback: kubectl -n auto-school delete networkpolicy auto-school-recorder-ingress
+#
+# Egress is deliberately NOT restricted: the recorder needs free internet egress
+# (Teams media/Graph, DNS, ghcr pulls at restart). `policyTypes: [Ingress]` only.
+#
+# KUBELET PROBES: no ipBlock workaround is needed. kube-router injects, per pod,
+#   "-d <podIP> -m addrtype --src-type LOCAL -j ACCEPT  # traffic to pods when
+#    source is the pod's local node"
+# i.e. node-originated traffic (liveness/readiness on :7800/healthz) bypasses
+# pod ingress policy in this CNI. Verified on the live recorder pod chain
+# (KUBE-POD-FW-FK6YQ4U2A4LW5XB6, pod 10.42.4.247):
+#   -d 10.42.4.247/32 -m addrtype --src-type LOCAL -j ACCEPT
+# Node IPs ARE known (k3s-master-01/02/03 = 192.168.10.138/139/142,
+# k3s-worker-01 = .140, k3s-longhorn-01/02 = .141/.145, k3s-worker-02 = .143;
+# the recorder is pinned to k3s-worker-02). They are intentionally NOT added as
+# an active ipBlock: the controller permits host->local-pod traffic already, and
+# an ipBlock would additionally widen the policy to any host-network client.
+# TODO: add node CIDR for kubelet probes before applying IF the CNI/policy
+# engine changes to one that does not exempt host traffic (see commented block).
+#
+# SELECTOR NOTE: the platform pod is labelled `app: auto-school` (Deployment
+# `auto-school-platform` in auto-school-platform.yaml), NOT
+# `app: auto-school-platform`. Using the deployment name as a label would allow
+# nobody and black-hole the recorder. Confirmed against the live cluster.
+# Before applying, also check for the leftover orphan pod `auto-school-frontend`
+# (app=auto-school-frontend, not managed by this repo): if that workload still
+# proxies recorder traffic, add its label to the `from` block first.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auto-school-recorder-ingress
+  namespace: auto-school
+  labels:
+    app: auto-school-recorder
+spec:
+  podSelector:
+    matchLabels:
+      app: auto-school-recorder
+  policyTypes:
+    - Ingress
+  ingress:
+    # (a) the platform pod (Next.js frontend + registry proxy) → recorder :7800
+    - from:
+        - podSelector:
+            matchLabels:
+              app: auto-school # Deployment auto-school-platform
+      ports:
+        - protocol: TCP
+          port: 7800
+    # (b) kubelet liveness/readiness probes (:7800/healthz).
+    # Intentionally absent — kube-router already allows LOCAL-src (node) traffic
+    # to the pod; see the header note. No `from: - {}` anywhere (that would allow
+    # everyone). TODO: add node CIDR for kubelet probes before applying if the
+    # policy engine changes; then scope it to the recorder's node:
+    # - from:
+    #     - ipBlock:
+    #         cidr: 192.168.10.143/32 # k3s-worker-02 (recorder node pin)
+    #   ports:
+    #     - protocol: TCP
+    #       port: 7800
