@@ -33,11 +33,20 @@ The two roles now have separate env vars and separate Secret keys: **`EDGE_MARKE
 **`INTERNAL_HMAC_KEY`** = the HMAC-SHA256 key for `X-Internal-Auth`. Rotate them independently —
 the marker still needs the render+apply step below, the HMAC key rolls with the two pods.
 
-**Code-landed follow-ups (not yet deployed):** marker/HMAC split (`EDGE_MARKER` + `INTERNAL_HMAC_KEY`
-Secret keys, platform gets both, recorder gets the HMAC key only) and the daemon `/status`
-`seedOwnerOnly()` gate — `/status` no longer mirrors the recorder owner's state/schedule/snapshot to
-non-seed members (401). Deploy must be atomic: create BOTH new Secret keys, re-render the edge marker
-from `EDGE_MARKER`, then roll platform + recorder together (old pods don't know the new names).
+**Code-landed follow-ups (DEPLOYED 2026-10-30):** marker/HMAC split (`EDGE_MARKER` +
+`INTERNAL_HMAC_KEY` Secret keys, platform gets both, recorder gets the HMAC key only) and the daemon
+`/status` `seedOwnerOnly()` gate are now LIVE. Deploy method: added `EDGE_MARKER` (fresh) +
+`INTERNAL_HMAC_KEY` (= the old `EDGE_SECRET` value, keeping the HMAC key stable so old/new pods
+interop during the window) to `auto-school-env`; re-rendered `auto-school-edge-marker` to the new
+`EDGE_MARKER`; patched the LIVE deployments surgically (NOT `kubectl apply`, which would have
+re-pointed `svc auto-school` at a leftover legacy daemon — see drift note). Verified: spoof no/wrong
+marker → 401, correct marker → 200, frontend→recorder HMAC hop 200, NetworkPolicy applied + hop
+still 200. Tag `security-split-code-complete-2026-10-30`.
+
+**⚠ Live drift (2026-10-30, fix before any manifest apply):** live frontend Deployment is
+`auto-school-frontend` (label `app: auto-school-frontend`); repo manifest says `auto-school-platform`
+(`app: auto-school`). A leftover `auto-school` daemon Deployment (SMOKE_OWNER_UUID) still runs. See
+project memory for the full map.
 
 ## Root cause
 The app is a single-user design with a PARTIAL multi-user migration. Phase 1/2 owner-scoped
