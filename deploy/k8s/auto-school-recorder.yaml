@@ -67,13 +67,15 @@ spec:
             - { name: PGPORT, value: "5432" }
             - { name: PGDATABASE, value: autoschool }
             # daemon-hop auth: the platform signs X-Internal-Auth =
-            # HMAC-SHA256(EDGE_SECRET, X-Auto-School-User) for every internal
+            # HMAC-SHA256(INTERNAL_HMAC_KEY, X-Auto-School-User) for every internal
             # call; the daemon verifies it and 401s otherwise (no seed fallback).
-            # REQUIRED (no `optional: true`): without the secret every hop would
+            # The daemon only VERIFIES this HMAC — it never checks the edge marker,
+            # so it does not need EDGE_MARKER at all.
+            # REQUIRED (no `optional: true`): without the key every hop would
             # be rejected, which must be a loud CrashLoop, not a silent one.
-            - name: EDGE_SECRET
+            - name: INTERNAL_HMAC_KEY
               valueFrom:
-                secretKeyRef: { name: auto-school-env, key: EDGE_SECRET }
+                secretKeyRef: { name: auto-school-env, key: INTERNAL_HMAC_KEY }
             # recorder registry (recorder-split.md §3): where to heartbeat + self endpoint
             - { name: PLATFORM_URL, value: "http://auto-school:80" } # platform Service (port 80 → frontend http)
             - { name: RECORDER_ENDPOINT, value: "http://auto-school-recorder:7800" }

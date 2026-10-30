@@ -15,10 +15,16 @@
 #     and the registry never populates (silently masked by daemon-less mode)
 #   * kubectl create secret ... auto-school-env with RECORDER_TOKEN (both pods
 #     read it; without it heartbeats 401 and the platform stays daemon-less)
-#   * the same Secret MUST carry EDGE_SECRET (32+ random bytes, hex): it is a
-#     REQUIRED secretKeyRef below and the material for the edge marker + the
-#     internal daemon-hop HMAC.  openssl rand -hex 32
-#     Render the matching Traefik marker from it (see authentik-edge.yaml).
+#   * the same Secret MUST carry BOTH edge secrets (32+ random bytes, hex each,
+#     generate with `openssl rand -hex 32`) as REQUIRED secretKeyRefs below:
+#       - EDGE_MARKER: the plaintext X-Edge-Secret header value the Authentik
+#         edge stamps and the frontend checks (lib/auth.ts, middleware.ts).
+#         Rendering it into a Traefik Middleware means it is liftable from a
+#         header-logging proxy — which is why it is NOT the HMAC key.
+#       - INTERNAL_HMAC_KEY: the HMAC-SHA256 key for the frontend→daemon hop
+#         (lib/owner.ts daemonUserHeaders → X-Internal-Auth). Never rendered
+#         into an edge component, so it never leaves the two pods.
+#     Render the matching Traefik marker from EDGE_MARKER (see authentik-edge.yaml).
 ---
 apiVersion: v1
 kind: Namespace
@@ -62,15 +68,22 @@ spec:
             - { name: TZ, value: America/Toronto }
             - { name: TRUST_AUTHENTIK_HEADERS, value: "1" }
             - { name: AUTHENTIK_ADMIN_GROUP, value: auto-school-admins }
-            - name: EDGE_SECRET
+            - name: EDGE_MARKER
               # REQUIRED (security-hardening.md §3): the shared edge marker
               # (deploy/k8s/authentik-edge.yaml stamps it, frontend/src/middleware.ts
-              # verifies it) AND the key for the internal daemon-hop HMAC
-              # (lib/owner.ts daemonUserHeaders → X-Internal-Auth). No
-              # `optional: true`: a missing key must stop the rollout, not
-              # silently degrade to an unverifiable edge (requireUser() 401s).
+              # verifies it). Plaintext header value by design — kept SEPARATE
+              # from the daemon-hop HMAC key so a leaked marker cannot forge an
+              # internal hop. No `optional: true`: a missing key must stop the
+              # rollout, not silently degrade to an unverifiable edge
+              # (requireUser() 401s).
               valueFrom:
-                secretKeyRef: { name: auto-school-env, key: EDGE_SECRET }
+                secretKeyRef: { name: auto-school-env, key: EDGE_MARKER }
+            - name: INTERNAL_HMAC_KEY
+              # REQUIRED: the HMAC-SHA256 key for the internal daemon-hop proof
+              # (lib/owner.ts daemonUserHeaders → X-Internal-Auth). Distinct from
+              # EDGE_MARKER; never shipped to the edge.
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: INTERNAL_HMAC_KEY }
             # recorder registry auth: the platform verifies daemon heartbeats
             # with this token (same key as the recorder pod's env)
             - name: RECORDER_TOKEN

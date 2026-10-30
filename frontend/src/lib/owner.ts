@@ -10,14 +10,14 @@
  *    returns SYSTEM_OWNER.
  *  - The frontend→daemon hop is authenticated: `daemonUserHeaders()` sets
  *    X-Auto-School-User: <sub> AND
- *    X-Internal-Auth: HMAC-SHA256(key=EDGE_SECRET, message=sub) hex. The
+ *    X-Internal-Auth: HMAC-SHA256(key=INTERNAL_HMAC_KEY, message=sub) hex. The
  *    daemon verifies the same HMAC (src/daemon.ts resolveRequestOwner) and
  *    401s on absent/mismatch. No user / no secret → throw (routes 401 first).
  *
  *  `SYSTEM_OWNER` survives ONLY for a deployment without any Authentik edge
- *  (localIdentity: neither TRUST_AUTHENTIK_HEADERS nor EDGE_SECRET set —
+ *  (localIdentity: neither TRUST_AUTHENTIK_HEADERS nor EDGE_MARKER set —
  *  `next dev`, the standalone docker-compose install). No user-facing route
- *  may fall back to it, and an edge-fronted deployment (TRUST=1 + EDGE_SECRET,
+ *  may fall back to it, and an edge-fronted deployment (TRUST=1 + EDGE_MARKER,
  *  the platform manifest) never reaches it: a request without a resolvable
  *  edge identity gets 401.
  *
@@ -37,7 +37,7 @@ export function unauthorized(): NextResponse {
   return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 }
 
-/** Internal hop proof: hex(HMAC-SHA256(key = EDGE_SECRET, message = sub)).
+/** Internal hop proof: hex(HMAC-SHA256(key = INTERNAL_HMAC_KEY, message = sub)).
  *  Mirrored by the daemon's resolveRequestOwner (src/daemon.ts). */
 export function internalAuthHmac(secret: string, sub: string): string {
   return createHmac("sha256", secret).update(sub).digest("hex");
@@ -45,15 +45,15 @@ export function internalAuthHmac(secret: string, sub: string): string {
 
 /** Single-user identity for a deployment that has NO Authentik edge at all
  *  (local `next dev`, deploy/docker-compose.yml, the pre-Phase-0 standalone
- *  image): neither TRUST_AUTHENTIK_HEADERS nor EDGE_SECRET is set there, so
+ *  image): neither TRUST_AUTHENTIK_HEADERS nor EDGE_MARKER is set there, so
  *  there is no identity to spoof and the seed owner is the only user —
- *  exactly the pre-federation behavior. As soon as EDGE_SECRET exists an edge
+ *  exactly the pre-federation behavior. As soon as EDGE_MARKER exists an edge
  *  is deployed, so a deployment that forgot TRUST_AUTHENTIK_HEADERS=1 is a
  *  misconfiguration: `undefined` here makes requireUser() fail closed (401)
  *  rather than silently becoming a single-user install behind a login wall. */
 function localIdentity(): string | undefined {
   if (trustAuthentikHeaders()) return undefined; // edge deployment — no fallback
-  if (process.env.EDGE_SECRET) return undefined; // edge without header trust → 401
+  if (process.env.EDGE_MARKER) return undefined; // edge without header trust → 401
   return SYSTEM_OWNER;
 }
 
@@ -74,7 +74,7 @@ export async function ownerId(): Promise<string | undefined> {
 /** The gate for user-facing routes: the authenticated owner's users.id, or
  *  null → the caller returns unauthorized() (401). Fails closed on every
  *  uncertainty of a trusted-edge deployment: missing identity, missing
- *  EDGE_SECRET (spoofable edge — the marker/secret chain is broken), or a DB
+ *  EDGE_MARKER (spoofable edge — the marker chain is broken), or a DB
  *  failure.
  *
   *  `SYSTEM_OWNER` is returned ONLY for a deployment with no Authentik edge at
@@ -85,8 +85,8 @@ export async function requireUser(): Promise<string | null> {
   if (local) return local; // no authentik in this deployment: single account
   // Header trust without the edge marker is spoofable: no shared secret means
   // src/middleware.ts cannot prove the X-authentik-* headers came from the
-  // outpost. Fail closed (the platform manifest makes EDGE_SECRET required).
-  if (!process.env.EDGE_SECRET) return null;
+  // outpost. Fail closed (the platform manifest makes EDGE_MARKER required).
+  if (!process.env.EDGE_MARKER) return null;
   const u = await getAuthUser();
   if (!u) return null;
   try {
@@ -98,9 +98,9 @@ export async function requireUser(): Promise<string | null> {
 
 /** Headers for a daemon hop:
  *    X-Auto-School-User: <authentik sub>
- *    X-Internal-Auth:    hex(HMAC-SHA256(EDGE_SECRET, sub))
+ *    X-Internal-Auth:    hex(HMAC-SHA256(INTERNAL_HMAC_KEY, sub))
  *  Throws when the hop cannot be authenticated (no user in a trusted-edge
- *  build, or EDGE_SECRET unset) — guarded routes 401 before reaching this, so
+ *  build, or INTERNAL_HMAC_KEY unset) — guarded routes 401 before reaching this, so
  *  a throw here is a misconfiguration, never a silent fallback to the daemon's
  *  seed OWNER. A deployment with no Authentik edge (TRUST unset) forwards no
  *  identity and its co-located daemon runs as the system owner, as before. */
@@ -110,8 +110,8 @@ export async function daemonUserHeaders(): Promise<Record<string, string>> {
     if (!trustAuthentikHeaders()) return {}; // no edge: co-located daemon runs as OWNER
     throw new Error("unauthorized: no authenticated user for the daemon hop");
   }
-  const secret = process.env.EDGE_SECRET;
-  if (!secret) throw new Error("unauthorized: EDGE_SECRET unset (daemon hop unprovable)");
+  const secret = process.env.INTERNAL_HMAC_KEY;
+  if (!secret) throw new Error("unauthorized: INTERNAL_HMAC_KEY unset (daemon hop unprovable)");
   try {
     await ensureUserRow(u); // JIT before the daemon resolves sub→id
   } catch {

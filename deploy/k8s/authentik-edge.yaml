@@ -21,7 +21,7 @@ spec:
 ---
 # Static marker stamped by the edge; frontend/src/middleware.ts strips
 # X-authentik-* / X-Auto-School-User / X-Internal-Auth from ANY request whose
-# X-Edge-Secret doesn't match EDGE_SECRET (closes the port-forward /
+# X-Edge-Secret doesn't match EDGE_MARKER (closes the port-forward /
 # direct-pod / client-spoofing path — for every route, not just /api/me*).
 #
 # WHY A RENDER STEP: Traefik's CRD `headers` middleware cannot read a value
@@ -30,8 +30,8 @@ spec:
 # replaced; an unrendered marker fails CLOSED (every request is stripped →
 # requireUser() 401s for everyone) rather than silently trusting spoofs.
 #
-#   EDGE=$(kubectl -n auto-school get secret auto-school-env -o jsonpath='{.data.EDGE_SECRET}' | base64 -d)
-#   sed "s|__EDGE_SECRET__|$EDGE|" deploy/k8s/authentik-edge.yaml | kubectl apply -f -
+#   EDGE=$(kubectl -n auto-school get secret auto-school-env -o jsonpath='{.data.EDGE_MARKER}' | base64 -d)
+#   sed "s|__EDGE_MARKER__|$EDGE|" deploy/k8s/authentik-edge.yaml | kubectl apply -f -
 #   # then: kubectl apply -f deploy/k8s/auto-school-ingress.yaml   (chains the marker)
 #
 # ORDER MATTERS: the marker is chained AFTER authentik-forwardauth on the
@@ -48,7 +48,7 @@ metadata:
 spec:
   headers:
     customRequestHeaders:
-      X-Edge-Secret: "__EDGE_SECRET__"
+      X-Edge-Secret: "__EDGE_MARKER__"
 ---
 # The chain lives in deploy/k8s/auto-school-ingress.yaml:
 #   middlewares:

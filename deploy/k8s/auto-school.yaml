@@ -158,9 +158,17 @@ spec:
             # Avatar (Gap 4): served from users.avatar via /api/me/avatar;
             # no provider API/token needed — the JWT picture claim only feeds
             # the lazy 7-day sync in /api/me.
-            - name: EDGE_SECRET
+            # Edge/daemon secrets (optional here: the legacy local install has
+            # no edge and runs the daemon in-pod as the seed owner). Two distinct
+            # roles: EDGE_MARKER = the X-Edge-Secret marker the edge stamps and
+            # lib/auth.ts checks; INTERNAL_HMAC_KEY = the X-Internal-Auth HMAC key
+            # for the frontend→daemon hop.
+            - name: EDGE_MARKER
               valueFrom:
-                secretKeyRef: { name: auto-school-env, key: EDGE_SECRET, optional: true }
+                secretKeyRef: { name: auto-school-env, key: EDGE_MARKER, optional: true }
+            - name: INTERNAL_HMAC_KEY
+              valueFrom:
+                secretKeyRef: { name: auto-school-env, key: INTERNAL_HMAC_KEY, optional: true }
             # PostgreSQL reads (plan/postgres-migration): DB_READS=1 switches the
             # frontend data APIs from fs scans to PG queries (fs stays fallback-safe:
             # unset → byte-identical legacy behavior). Creds come from auto-school-pg

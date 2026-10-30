@@ -2,14 +2,15 @@
 
 Status: **DEPLOYED 2026-10-29** — waves A–E merged (`main` 3d80ffe, tag
 `security-hardening-code-complete-2026-10-29`), re-audited (FIX-LIST closed by wave E), and applied
-to prod via the atomic EDGE_SECRET chain. Findings are the consolidated output of the trust-boundary,
-frontend-A/B/C, bearer/media, and daemon/db audits.
+to prod via the atomic marker + daemon-HMAC chain. Findings are the consolidated output of the
+trust-boundary, frontend-A/B/C, bearer/media, and daemon/db audits.
 
 ## Deploy log (APPLIED 2026-10-29)
 Atomic order: **secret → marker → ingress → rollout**. Do NOT reorder — new pods 401 without the
 marker, and `CreateContainerConfigError` without the key.
 1. `EDGE_SECRET` added to `auto-school-env` (`openssl rand -hex 32`, 64 hex chars; the secret now
-   has 25 keys).
+   has 25 keys). *Pre-split name — the same value was later carried under `EDGE_MARKER` +
+   `INTERNAL_HMAC_KEY` (see the follow-up note below).*
 2. Applied ONLY the `auto-school-edge-marker` doc from `deploy/k8s/authentik-edge.yaml`, rendered
    with the same value. **Do NOT whole-file-apply that manifest** — its first doc re-declares the
    live `authentik-forwardauth` (which points at `authentik-server.authentik.svc.cluster.local` with
@@ -22,13 +23,21 @@ Verified: direct-pod forged `X-Authentik-*` → 401; daemon hop bare → 401 / H
 authenticated; recorder heartbeat round-trip fresh (~27s); marker == EDGE_SECRET byte-identical;
 recorder rehydrated 50 sessions with no EDGE_SECRET/HMAC errors.
 
-**⚠ Rotation trap:** the marker is a *rendered* Traefik CRD — a later `EDGE_SECRET` rotation silently
+**⚠ Rotation trap:** the marker is a *rendered* Traefik CRD — a later `EDGE_MARKER` rotation silently
 desyncs (marker still holds the old value) until you re-render + re-apply the marker. Put
 `render + apply auto-school-edge-marker` into any key-rotation runbook.
 
-**⚠ Secret double-duty (open):** the SAME value is both the plaintext `X-Edge-Secret` marker (liftable
-from header-logging proxies) and the internal daemon-hop HMAC key. Split into `EDGE_MARKER` vs
-`INTERNAL_HMAC_KEY` before this goes multi-tenant.
+**⚠ Secret double-duty (RESOLVED — split LANDED):** the value used to be BOTH the plaintext
+`X-Edge-Secret` marker (liftable from header-logging proxies) and the internal daemon-hop HMAC key.
+The two roles now have separate env vars and separate Secret keys: **`EDGE_MARKER`** = the marker,
+**`INTERNAL_HMAC_KEY`** = the HMAC-SHA256 key for `X-Internal-Auth`. Rotate them independently —
+the marker still needs the render+apply step below, the HMAC key rolls with the two pods.
+
+**Code-landed follow-ups (not yet deployed):** marker/HMAC split (`EDGE_MARKER` + `INTERNAL_HMAC_KEY`
+Secret keys, platform gets both, recorder gets the HMAC key only) and the daemon `/status`
+`seedOwnerOnly()` gate — `/status` no longer mirrors the recorder owner's state/schedule/snapshot to
+non-seed members (401). Deploy must be atomic: create BOTH new Secret keys, re-render the edge marker
+from `EDGE_MARKER`, then roll platform + recorder together (old pods don't know the new names).
 
 ## Root cause
 The app is a single-user design with a PARTIAL multi-user migration. Phase 1/2 owner-scoped
@@ -41,18 +50,21 @@ and fail-open.
    user's data. `SYSTEM_OWNER` remains ONLY for ownerless internal jobs (`curOwner()` on the
    daemon already covers those). No `?? SYSTEM_OWNER` on a user-facing route.
 2. **Internal hop (frontend→daemon) is authenticated with a shared secret**: `daemonUserHeaders()`
-   sets `X-Auto-School-User: <sub>` AND `X-Internal-Auth: <HMAC-SHA256(EDGE_SECRET, sub)>`.
+   sets `X-Auto-School-User: <sub>` AND `X-Internal-Auth: <HMAC-SHA256(INTERNAL_HMAC_KEY, sub)>`.
    Daemon `resolveRequestOwner` verifies the HMAC and 401s on absent/mismatch — never falls back
    to seed OWNER. `x-owner-uuid`/`SMOKE_OWNER_UUID` impersonation is removed.
-3. **EDGE_SECRET is actually set** in `auto-school-env` and required (non-`optional`) in the
-   platform manifest, and the `auto-school-edge-marker` middleware is chained in the ingress so
-   `middleware.ts` strips client-supplied `x-authentik-*`. Must be ONE atomic change (secret +
-   marker + middleware strip), else enabling the strip downgrades everyone to seed.
+3. **`EDGE_MARKER` + `INTERNAL_HMAC_KEY` are actually set** in `auto-school-env` and required
+   (non-`optional`) in the platform manifest, and the `auto-school-edge-marker` middleware is
+   chained in the ingress so `middleware.ts` strips client-supplied `x-authentik-*`. The daemon
+   pod gets `INTERNAL_HMAC_KEY` only (it verifies the HMAC, never the marker). Must be ONE atomic
+   change (secret + marker + middleware strip), else enabling the strip downgrades everyone to seed.
+   `/status` (daemon) carries a `seedOwnerOnly()` gate: its state/schedule/snapshot mirror is the
+   recorder owner's, so non-seed members get 401.
 4. **Tenancy for courses/materials/mapping/search/media**: owner-scoped reads/writes; `safeSlug()`
    validation on every `/courses/*` handler; `doc?path=` sanitized (no arbitrary file read).
 
 ## Priority order
-- **P0 (root cause)** — fail-closed identity + EDGE_SECRET chain + daemon HMAC hop.
+- **P0 (root cause)** — fail-closed identity + `EDGE_MARKER` chain + `INTERNAL_HMAC_KEY` daemon hop.
 - **P1 (concrete RCE-grade vulns)** — `doc?path=` arbitrary read (→ settings.json API keys),
   slug traversal (`rm -rf`/read/write outside DATA_DIR), courses/materials IDOR.
 - **P2 (cross-tenant data)** — `vectorSearch`/`keywordSearch`/`listCourses`/`listMappings`/

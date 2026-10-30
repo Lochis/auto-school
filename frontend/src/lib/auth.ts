@@ -11,8 +11,8 @@
  *    frontend container env, NOT in local dev) — local `next dev` can't be
  *    spoofed by a stray curl.
  *  - Edge marker (OWNER of the trust decision, security fix wave E): when
- *    EDGE_SECRET is configured (required in the platform manifest) the
- *    request must ALSO carry X-Edge-Secret: <EDGE_SECRET> or getAuthUser()
+ *    EDGE_MARKER is configured (required in the platform manifest) the
+ *    request must ALSO carry X-Edge-Secret: <EDGE_MARKER> or getAuthUser()
  *    returns null → every caller 401s. The marker is checked HERE, in the
  *    node runtime, from headers only (no body): the streaming upload routes
  *    (/api/ingest, /api/courses/<slug>/materials) are excluded from
@@ -50,12 +50,12 @@ export function trustAuthentikHeaders(): boolean {
 export async function getAuthUser(): Promise<AuthUser | null> {
   if (!trustAuthentikHeaders()) return null;
   const h = await headers();
-  // Edge-marker trust: with EDGE_SECRET configured, headers that the
+  // Edge-marker trust: with EDGE_MARKER configured, headers that the
   // authentik outpost did not stamp (kubectl port-forward, direct pod hit,
   // spoofed curl) are unauthenticated — fail closed. No secret ⇒ no edge to
   // prove (local `next dev`, docker-compose) and TRUST_AUTHENTIK_HEADERS
   // already gates the rest.
-  const secret = process.env.EDGE_SECRET;
+  const secret = process.env.EDGE_MARKER;
   if (secret && h.get("x-edge-secret") !== secret) return null;
   const uid = h.get("x-authentik-uid");
   if (!uid) return null; // not behind the authentik outpost

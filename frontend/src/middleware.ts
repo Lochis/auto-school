@@ -9,7 +9,7 @@
  * note below).
  *
  * Trust mechanism (one atomic chain — security-hardening.md §3):
- *  - EDGE_SECRET is REQUIRED in the platform manifest (from the
+ *  - EDGE_MARKER is REQUIRED in the platform manifest (from the
  *    auto-school-env Secret; a missing key keeps the pod from starting).
  *  - deploy/k8s/authentik-edge.yaml defines the `auto-school-edge-marker`
  *    middleware, which stamps X-Edge-Secret: <same secret>. It is chained in
@@ -25,7 +25,7 @@
  *
  * THIS MIDDLEWARE IS DEFENSE-IN-DEPTH, NOT THE ENFORCEMENT POINT (fix wave
  * E). The real gate is lib/auth.ts getAuthUser(): it requires
- * X-Edge-Secret === EDGE_SECRET in the NODE runtime (headers only, no body)
+ * X-Edge-Secret === EDGE_MARKER in the NODE runtime (headers only, no body)
  * and returns null otherwise, so a route that never saw this middleware still
  * cannot be spoofed.
  *
@@ -38,14 +38,14 @@
  * getAuthUser()'s marker check instead. Raising the limit is not an option:
  * it buffers whole uploads in RAM next to the streaming proxies.
  *
- * EDGE_SECRET unset (local `next dev`, docker-compose) → pass through; there
+ * EDGE_MARKER unset (local `next dev`, docker-compose) → pass through; there
  * is no edge to be trusted, and lib/auth.ts requires
  * TRUST_AUTHENTIK_HEADERS=1 (never set locally) to honor headers at all.
  */
 import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(req: NextRequest) {
-  const secret = process.env.EDGE_SECRET;
+  const secret = process.env.EDGE_MARKER;
   if (!secret) return NextResponse.next();
   if (req.headers.get("x-edge-secret") === secret) return NextResponse.next();
 

@@ -767,10 +767,10 @@ function startController(): void {
   // manually-left meetings (today) are seeded into `handled` so a restart
   // doesn't auto-join them again — manual Join via /join still overrides
   for (const t of loadLeftToday()) handled.add(handledKey(t));
-  // Fail-closed by design: no secret ⇒ resolveRequestOwner rejects every hop.
+  // Fail-closed by design: no key ⇒ resolveRequestOwner rejects every hop.
   // Say it loudly instead of letting ops debug silent 401s.
-  if (!process.env.EDGE_SECRET) {
-    console.warn("[daemon] EDGE_SECRET is not set — every request will 401 (the daemon hop requires a signed X-Internal-Auth)");
+  if (!process.env.INTERNAL_HMAC_KEY) {
+    console.warn("[daemon] INTERNAL_HMAC_KEY is not set — every request will 401 (the daemon hop requires a signed X-Internal-Auth)");
   }
   const server = createServer((req, res) => {
     // /healthz stays UNAUTHENTICATED: the k8s liveness/readiness probe has no
@@ -793,10 +793,10 @@ function startController(): void {
 
   /** Phase-1 owner resolution (federation plan §8) — now AUTHENTICATED:
    *  X-Auto-School-User <authentik-uid> + X-Internal-Auth = hex
-   *  HMAC-SHA256(EDGE_SECRET, sub). The platform's daemonUserHeaders() signs
-   *  every internal hop with the same secret; a direct hit on :7800 has no way
+   *  HMAC-SHA256(INTERNAL_HMAC_KEY, sub). The platform's daemonUserHeaders() signs
+   *  every internal hop with the same key; a direct hit on :7800 has no way
    *  to guess it. Failure modes ALL return null → 401, never the seed OWNER:
-   *    - no user header, no auth header, or EDGE_SECRET unset/unprovisioned;
+   *    - no user header, no auth header, or INTERNAL_HMAC_KEY unset/unprovisioned;
    *    - signature mismatch (constant-time compare, length-checked);
    *    - valid signature but the sub is not in users.authentik_sub.
    *  The old x-owner-uuid / SMOKE_OWNER_UUID impersonation branch is REMOVED.
@@ -804,7 +804,7 @@ function startController(): void {
   async function resolveRequestOwner(req: IncomingMessage): Promise<string | null> {
     const sub = String(req.headers["x-auto-school-user"] ?? "").trim();
     const sig = String(req.headers["x-internal-auth"] ?? "").trim().toLowerCase();
-    const secret = process.env.EDGE_SECRET ?? "";
+    const secret = process.env.INTERNAL_HMAC_KEY ?? "";
     if (!sub || !sig || !secret) return null; // nothing to verify against → 401
     const want = createHmac("sha256", secret).update(sub).digest("hex");
     const a = Buffer.from(sig, "hex"), b = Buffer.from(want, "hex");
@@ -837,12 +837,18 @@ function startController(): void {
      *  drive ONE browser, ONE ingest+transcription pipeline and the shared
      *  DATA_DIR, so in the single-owner topology only the seed owner may issue
      *  them. GET reads stay available to every authenticated user (they are
-     *  owner-filtered at the row level). A real admin/ACL tier — per-user
-     *  recorders, per-course roles — is the multi-user future; it is
+     *  owner-filtered at the row level) — EXCEPT `/status`, which mirrors the
+     *  seed owner's whole recorder state (state/schedule/snapshot/sessions), so
+     *  it carries the same seed-owner gate as the writes below. A real
+     *  admin/ACL tier — per-user recorders, per-course roles — is the
+     *  multi-user future; it is
      *  deliberately NOT a `role` check yet, because a member has no recorder
      *  of their own to control. */
     const seedOwnerOnly = (): boolean => curOwner() === OWNER;
     if (req.method === "GET" && url.pathname === "/status") {
+      // /status exposes the recorder's GLOBAL mirror (state, schedule, snapshot)
+      // — not owner-filtered rows — so a non-seed member must never see it.
+      if (!seedOwnerOnly()) return send(401, { error: "status is restricted to the recorder owner" });
       return send(200, {
           state, lastScan, seen: lastSeen, handled: [...handled],
           joinPaused: getSettings().joinPaused,
