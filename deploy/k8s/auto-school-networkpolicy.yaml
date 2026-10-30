@@ -48,13 +48,14 @@
 # TODO: add node CIDR for kubelet probes before applying IF the CNI/policy
 # engine changes to one that does not exempt host traffic (see commented block).
 #
-# SELECTOR NOTE: the platform pod is labelled `app: auto-school` (Deployment
-# `auto-school-platform` in auto-school-platform.yaml), NOT
-# `app: auto-school-platform`. Using the deployment name as a label would allow
-# nobody and black-hole the recorder. Confirmed against the live cluster.
-# Before applying, also check for the leftover orphan pod `auto-school-frontend`
-# (app=auto-school-frontend, not managed by this repo): if that workload still
-# proxies recorder traffic, add its label to the `from` block first.
+# SELECTOR NOTE (corrected 2026-10-30 after live inspection): the LIVE platform
+# that proxies recorder traffic is the `auto-school-frontend` Deployment
+# (label `app: auto-school-frontend`) — NOT `app: auto-school`. The
+# `app: auto-school` label belongs to a leftover PRE-cutover daemon Deployment
+# (old combined image, env SMOKE_OWNER_UUID) that is not the recorder's client.
+# `auto-school-platform.yaml` (Deployment `auto-school-platform`, label
+# `app: auto-school`) has drifted from live and must NOT be applied as-is.
+# So `from` matches `app: auto-school-frontend` — the actual frontend pod.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -70,11 +71,11 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # (a) the platform pod (Next.js frontend + registry proxy) → recorder :7800
+    # (a) the live platform pod (Next.js frontend + registry proxy) → recorder :7800
     - from:
         - podSelector:
             matchLabels:
-              app: auto-school # Deployment auto-school-platform
+              app: auto-school-frontend
       ports:
         - protocol: TCP
           port: 7800
