@@ -1,4 +1,10 @@
-# auto-school-platform — the Next.js frontend (+ Postgres via auto-school-pg).
+# auto-school-frontend — the Next.js frontend (+ Postgres via auto-school-pg).
+# Matches live Deployment auto-school-frontend (reconciled 2026-10-30 —
+# previously drifted as auto-school-platform: the live object was renamed at
+# cutover, so applying the old name/selectors would have created a SECOND
+# Deployment colliding on the Service selector. Names below now match live,
+# so `kubectl apply -f deploy/k8s/` converges the live object instead).
+#
 # 5a-FINAL state (recorder-split.md §5): daemon-less by default. The recording
 # daemon lives in deploy/k8s/auto-school-recorder.yaml; this pod has NO daemon
 # container, NO /data mount, NO node pin — it resolves the owner's recorder via
@@ -7,9 +13,10 @@
 #
 # APPLY ATOMICALLY WITH auto-school-recorder.yaml (never one without the other —
 # running both the recorder pod AND the old single-pod manifest would run two
-# daemons on the same RWO PVC). At cutover:
+# daemons on the same RWO PVC; the legacy deploy/auto-school is scaled to 0,
+# see auto-school.yaml). At cutover:
 #   1. kubectl apply -f auto-school-recorder.yaml -f auto-school-platform.yaml
-#   2. kubectl delete -f deploy/k8s/auto-school.yaml   # retire the single-pod manifest
+#   2. legacy deploy/auto-school stays at replicas=0 (rollback path only)
 # Prerequisites (once, before cutover):
 #   * apply src/db/ddl.sql to Postgres (recorders table) — else heartbeats 500
 #     and the registry never populates (silently masked by daemon-less mode)
@@ -34,20 +41,20 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: auto-school-platform
+  name: auto-school-frontend
   namespace: auto-school
   labels:
-    app: auto-school
+    app: auto-school-frontend
 spec:
   replicas: 1
-  strategy: { type: RollingUpdate } # no PVC coupling — platform rolls freely
+  strategy: { type: RollingUpdate } # no PVC coupling — frontend rolls freely
   selector:
     matchLabels:
-      app: auto-school
+      app: auto-school-frontend
   template:
     metadata:
       labels:
-        app: auto-school
+        app: auto-school-frontend
     spec:
       terminationGracePeriodSeconds: 300
       imagePullSecrets:
@@ -59,15 +66,27 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         # ── frontend: serves every user; resolves the owner's recorder via the
-        #    registry only (no BACKEND_URL — daemon-less resolution by default)
+        #    registry first (BACKEND_URL below is only the dead fallback)
         - name: frontend
           image: ghcr.io/lochis/auto-school-frontend:latest
           imagePullPolicy: Always
           env:
             - { name: AUTO_SCHOOL_DATA, value: /data } # legacy path prefix for fs fallback constants only — no mount
+            # Transitional fallback read by lib/backend.ts resolveRecorder when
+            # the recorder registry has no fresh heartbeat for the owner.
+            # Points at the legacy controller Service, which is endpoint-less
+            # since the 2026-10-30 scale-down of deploy/auto-school — registry
+            # resolution is the live path, so the dead fallback is benign.
+            # Kept to match the live pod's env exactly.
+            - { name: BACKEND_URL, value: "http://auto-school-ctrl:7800" }
             - { name: TZ, value: America/Toronto }
             - { name: TRUST_AUTHENTIK_HEADERS, value: "1" }
             - { name: AUTHENTIK_ADMIN_GROUP, value: auto-school-admins }
+            # NOT declared (present on the live pod but stale — reconciling an
+            # apply will drop them): AUTHENTIK_API_URL / AUTHENTIK_API_TOKEN —
+            # zero references in frontend/src (the avatar flow reads users.avatar,
+            # no provider API call; see the Gap-4 note in auto-school.yaml), and
+            # EDGE_SECRET — retired key, superseded by EDGE_MARKER above/below.
             - name: EDGE_MARKER
               # REQUIRED (security-hardening.md §3): the shared edge marker
               # (deploy/k8s/authentik-edge.yaml stamps it, frontend/src/middleware.ts
@@ -84,7 +103,7 @@ spec:
               # EDGE_MARKER; never shipped to the edge.
               valueFrom:
                 secretKeyRef: { name: auto-school-env, key: INTERNAL_HMAC_KEY }
-            # recorder registry auth: the platform verifies daemon heartbeats
+            # recorder registry auth: the frontend verifies daemon heartbeats
             # with this token (same key as the recorder pod's env)
             - name: RECORDER_TOKEN
               valueFrom:
@@ -131,7 +150,9 @@ metadata:
   name: auto-school
   namespace: auto-school
 spec:
-  selector: { app: auto-school }
+  # matches the live selector: the ingress (auto-school-ingress.yaml) routes
+  # Host(school.vanderloch.com) → this Service → the frontend pods
+  selector: { app: auto-school-frontend }
   ports:
     - { name: http, port: 80, targetPort: http }
 # IngressRoute + basicAuth Middleware live in auto-school-ingress.yaml (unchanged):

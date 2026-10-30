@@ -1,13 +1,17 @@
 # auto-school — k3s / Traefik / Longhorn / lochis-tls
 #
-# SUPERSEDED at 5a-final by deploy/k8s/auto-school-platform.yaml +
-# deploy/k8s/auto-school-recorder.yaml (recorder-split.md §5 step 3). KEEP this
-# file as the transitional single-pod manifest until the split is applied.
-# CUTOVER IS ATOMIC: apply BOTH new manifests together, then `kubectl delete -f`
-# this one in the same change — never run this manifest alongside the recorder
-# Deployment (two daemons on one RWO PVC: double joins, profile lock fights).
-# Prerequisites: ddl.sql recorders table applied + RECORDER_TOKEN in
-# auto-school-env (see the platform manifest header).
+# ⚠⚠⚠ LEGACY — DO NOT APPLY TO PROD ⚠⚠⚠
+# Scaled to 0 replicas in prod on 2026-10-30 (deploy/auto-school) and kept
+# for ROLLBACK ONLY — restoring the single-pod daemon:
+#   kubectl -n auto-school scale deploy auto-school --replicas=1
+# (scale DOWN first / re-scale to 0 before re-applying the split manifests).
+# Applying this manifest as-is would set replicas back to 1 and run a second
+# daemon on the RWO PVC alongside deploy/auto-school-recorder (double joins,
+# profile lock fights) — see auto-school-platform.yaml + auto-school-recorder.yaml.
+# Superseded at 5a-final by the recorder/platform split (recorder-split.md §5
+# step 3); the PVC declaration below still owns the live auto-school-data PVC
+# (storage size must track the live capacity — see its comment).
+#
 # Single-file manifest in the firecrawl.yaml style (see ~/Projects/firecrawl-k8s).
 # One pod, two containers: the recording daemon (Xvfb+PulseAudio+Chromium+ffmpeg
 # in its image) and the Next.js frontend. Same pod because the Longhorn PVC is
@@ -209,7 +213,12 @@ spec:
   ports:
     - { name: http, port: 80, targetPort: http }
 ---
-# cluster-internal debug surface for the controller (port-forward target)
+# cluster-internal debug surface for the controller (port-forward target).
+# Endpoint-less since the 2026-10-30 legacy scale-down (selector app: auto-school
+# → deploy/auto-school at replicas=0): resolving it returns empty, by design.
+# Retained for rollback only. NB: BACKEND_URL in auto-school-platform.yaml still
+# names this Service as its dead fallback — resolveRecorder is registry-first,
+# so this is benign (see the comment there).
 apiVersion: v1
 kind: Service
 metadata:
