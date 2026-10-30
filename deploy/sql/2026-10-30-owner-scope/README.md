@@ -1,5 +1,10 @@
 # 2026-10-30 — owner-scope wave: `courses.slug`, `meeting_mappings.match_title`, `documents`
 
+**STATUS: APPLIED TO PROD 2026-10-30** — expand (3× `indisvalid=t`) → deploy (`0c00ca2…` images) →
+write-probe (3× `INSERT 0 1`, ROLLBACK, 0 residual rows) → contract (3 old constraints dropped,
+ANALYZE). Post-state verified: only PKs + the three owner-scoped arbiters remain. Smoke suite
+27/27 afterwards.
+
 Third application of the expand → deploy → contract pattern. Precedents:
 `docs/planning/deploy-runbook-2026-10-21.md` §8 (deadlines, applied 2026-10-29) and
 the sessions swap in the same runbook. Fixes the cross-owner collision class flagged in

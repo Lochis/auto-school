@@ -122,16 +122,33 @@ and fail-open.
   `src/db/recorders.ts`.
 - **E — verifier** (independent re-audit of the whole fix).
 
-## EDGE_SECRET retirement (2026-10-30)
+## EDGE_SECRET retirement (APPLIED 2026-10-30)
 Superseded by the `EDGE_MARKER` (edge marker) + `INTERNAL_HMAC_KEY` (daemon-hop HMAC) pair; the
 old `EDGE_SECRET` value was carried verbatim into `INTERNAL_HMAC_KEY`, so deleting the key loses
 nothing. **Nothing reads it**: `rg -n "EDGE_SECRET" src frontend/src deploy/k8s scripts/` is
-empty. Live check (2026-10-30): no deploy *consumes* it, but `frontend` + `recorder` pods still
-carried `EDGE_SECRET=` in their runtime env — leaked by `envFrom auto-school-env` (and the
-recorder Deployment retains a legacy explicit `secretKeyRef` entry marked `optional: true`, so a
-missing key resolves empty — no `CreateContainerConfigError`). Retiring the key closes that env
-leak for every future pod. Historical docs (`recorder-split.md`, `authentik-federation.md`) keep
-their historical mentions.
+empty. **APPLIED 2026-10-30**: key removed from `auto-school-env` via the runbook below;
+post-checks passed — key gone, pods unaffected, `INTERNAL_HMAC_KEY` still 64-hex, HMAC hop 200,
+and the full smoke suite passed **27/27** in the recorder pod afterwards (also validating the
+owner-scope wave's owner-aware conflict targets end-to-end).
+
+## Owner-scope wave (APPLIED 2026-10-30)
+`deploy/sql/2026-10-30-owner-scope/` — expand (3 CONCURRENTLY unique indexes, all `indisvalid=t`)
+→ deploy new images (`0c00ca2…`) → write-probe (3× `INSERT 0 1`, ROLLBACK, 0 residual) → contract
+(dropped `courses_slug_key`, `meeting_mappings_match_title_key`,
+`documents_course_id_kind_rel_path_key`; ANALYZE). Post-state: only PKs + the three owner-scoped
+arbiters remain. The `src/pipeline/materials.ts` residual unscoped `courses` select is closed.
+
+## ⚠ INCIDENT (2026-10-30): Terraform/HashiCorp SSA owns both Deployments
+Both `auto-school-frontend` and `auto-school-recorder` Deployments carry a **`HashiCorp`
+managedFields manager** (server-side-apply ownership; the frontend's original kubectl ownership
+entry was force-removed). Consequence: **a `terraform apply` in the kube repo reverts the
+Deployment specs to its declared state** — kubectl-added env (`EDGE_MARKER`, `INTERNAL_HMAC_KEY`,
+`BROWSER_CHANNEL`, `envFrom`) silently vanishes, and the next restarted pod fails closed (daemon
+logs `INTERNAL_HMAC_KEY is not set`; heartbeat dies; auth 401s). This happened 2026-10-30: specs
+were found reverted after a routine restart; restored by re-patch + rollout. **Before the next
+`terraform apply`**: either add these env entries to the TF config for both deployments, or
+`terraform state rm` the two deployments so kubectl/manifests own them again. Check ownership:
+`kubectl -n auto-school get deploy <d> -o jsonpath='{.metadata.managedFields}'`.
 
 **Rollback** = re-add the key with the `INTERNAL_HMAC_KEY` value (never read it from pod env —
 pull it from the secret):
