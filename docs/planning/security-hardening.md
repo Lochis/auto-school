@@ -45,8 +45,15 @@ still 200. Tag `security-split-code-complete-2026-10-30`.
 
 **⚠ Live drift (2026-10-30, fix before any manifest apply):** live frontend Deployment is
 `auto-school-frontend` (label `app: auto-school-frontend`); repo manifest says `auto-school-platform`
-(`app: auto-school`). A leftover `auto-school` daemon Deployment (SMOKE_OWNER_UUID) still runs. See
-project memory for the full map.
+(`app: auto-school`). The leftover `auto-school` daemon Deployment was **scaled to 0** (2026-10-30,
+reversible via `kubectl -n auto-school scale deploy auto-school --replicas=1`); `svc auto-school-ctrl`
+still selects it and now has no endpoints. See project memory for the full map.
+
+**Recorder join-path fixups (2026-10-30, live-patched to match the manifest):** added `envFrom:
+[auto-school-env, auto-school-pg]` back (live deployment had lost it — no Teams/TOTP/Graph creds) and
+wired `BROWSER_CHANNEL` (secret) into env. Headful msedge launch verified in-pod under Xvfb;
+heartbeat fresh. Root cause of the "chromium not found" join errors was ONLY the missing
+`BROWSER_CHANNEL` env — Edge lives at `/opt/microsoft/msedge/msedge`, not `/ms-playwright`.
 
 ## Root cause
 The app is a single-user design with a PARTIAL multi-user migration. Phase 1/2 owner-scoped
