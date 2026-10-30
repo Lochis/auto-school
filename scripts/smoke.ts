@@ -6,9 +6,13 @@
  *  Usage (inside the backend container, where PG env + the daemon exist):
  *    node scripts/smoke.ts [--base http://127.0.0.1:7800] [--fe http://127.0.0.1:3000]
  *
- *  Requires SMOKE_OWNER_UUID to be set identically in THIS process and the
- *  daemon env — the daemon then honors `x-owner-uuid` for owner-scoped
- *  endpoints (deadlines/folds/checklists). Unset env = header ignored.
+ *  Requires SMOKE_OWNER_SUB (the authentik `sub`, a 64-char hex uid) and the
+ *  internal hop key — EDGE_SECRET, or INTERNAL_HMAC_KEY when the deployment
+ *  has split it out (the daemon reads EDGE_SECRET today). Every daemon call
+ *  is signed like the frontend hop (lib/owner.ts daemonUserHeaders):
+ *    X-Auto-School-User: <sub>
+ *    X-Internal-Auth: hex(HMAC-SHA256(key, message = sub))
+ *  The daemon 401s any request without a valid signature (resolveRequestOwner).
  *
  *  Every mutating step seeds scratch rows directly in PG or via daemon
  *  endpoints under the smoke owner, asserts the round-trip, and cleans up:
@@ -18,14 +22,28 @@
  */
 import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { createHmac, randomUUID } from "node:crypto";
 
 const BASE = process.argv.includes("--base") ? process.argv[process.argv.indexOf("--base") + 1]! : "http://127.0.0.1:7800";
 const FE = process.argv.includes("--fe") ? process.argv[process.argv.indexOf("--fe") + 1]! : "http://127.0.0.1:3000";
-const SMOKE = process.env.SMOKE_OWNER_UUID ?? "";
-const HDRS: Record<string, string> = SMOKE ? { "x-owner-uuid": SMOKE, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+const SMOKE_SUB = process.env.SMOKE_OWNER_SUB ?? "";
+/** The internal daemon-hop HMAC key — same secret the daemon verifies against
+ *  (EDGE_SECRET in src/daemon.ts resolveRequestOwner; INTERNAL_HMAC_KEY is the
+ *  planned split-out name, accepted as a fallback). */
+const HMAC_KEY = process.env.EDGE_SECRET ?? process.env.INTERNAL_HMAC_KEY ?? "";
+/** users.id of the smoke owner — resolved from SMOKE_SUB after the pool opens. */
+let SMOKE = "";
+const AUTH_HDRS: Record<string, string> = {
+  "X-Auto-School-User": SMOKE_SUB,
+  "X-Internal-Auth": createHmac("sha256", HMAC_KEY || "").update(SMOKE_SUB).digest("hex"),
+};
+const HDRS: Record<string, string> = { ...AUTH_HDRS, "Content-Type": "application/json" };
 const DATA = process.env.AUTO_SCHOOL_DATA ?? "/data";
 
-if (!SMOKE) { console.error("✗ SMOKE_OWNER_UUID not set — refusing (would run as the real owner)"); process.exit(2); }
+if (!SMOKE_SUB || !HMAC_KEY) {
+  console.error("✗ SMOKE_OWNER_SUB and the internal HMAC key (EDGE_SECRET / INTERNAL_HMAC_KEY) must be set — refusing (every daemon call would 401)");
+  process.exit(2);
+}
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, detail = "") => {
@@ -42,6 +60,17 @@ const { getPool } = await import("../src/db/client.ts");
 const { geminiApiKey } = await import("../src/db/embeddings.ts");
 const pool = getPool();
 const q = (text: string, params: unknown[] = []) => pool.query(text, params as never[]);
+
+// users.id for the smoke sub (the daemon resolves sub → users.id, so the
+// impersonation id is now derived, not supplied).
+{
+  const found = await q(`select id from users where authentik_sub = $1`, [SMOKE_SUB]);
+  SMOKE = found.rows.length
+    ? String(found.rows[0].id)
+    : String((await q(`insert into users (id, display_name, username, authentik_sub)
+        values ($1, 'smoke test', 'smoke-test', $2)
+        on conflict (authentik_sub) do update set display_name = 'smoke test' returning id`, [randomUUID(), SMOKE_SUB])).rows[0].id);
+}
 
 /** Poll a PG/API condition until true or timeout (fire-and-forget write races). */
 async function waitFor(cond: () => Promise<boolean>, ms = 8000): Promise<boolean> {
@@ -163,7 +192,7 @@ console.log("\n6 · materials: upload → documents row + DB listing (Gap 3)");
   ok("POST /courses/create (materials)", c.status === 200, JSON.stringify(c.json).slice(0, 120));
 
   // multipart upload (fetch sets the boundary; do NOT set Content-Type manually)
-  const upHdrs: Record<string, string> = SMOKE ? { "x-owner-uuid": SMOKE } : {};
+  const upHdrs: Record<string, string> = { ...AUTH_HDRS }; // multipart: no Content-Type
   const upload = async (filename: string, bytes: string, type: string) => {
     const fd = new FormData();
     fd.append("file", new Blob([bytes], { type }), filename);
@@ -207,14 +236,23 @@ console.log("\n6 · materials: upload → documents row + DB listing (Gap 3)");
 
 console.log("\n7 · read-path parity (real data, read-only): daemon vs frontend vs PG");
 {
-  const daemonFeed = await fetch(`${BASE}/deadlines`, { headers: { "Content-Type": "application/json" } }).then((r) => r.json()); // NO smoke header — real owner, like the UI
+  // same identity as the UI hop — every daemon call is signed now
+  const daemonFeed = await fetch(`${BASE}/deadlines`, { headers: HDRS }).then((r) => r.json());
   const daemonIds = new Set(((daemonFeed.deadlines ?? []) as any[]).map((d) => `${d.id}|${d.done}`));
   let feIds: Set<string> | null = null;
   try {
-    const fe = await fetch(`${FE}/api/deadlines`, { signal: AbortSignal.timeout(5000) });
+    // edge-shaped identity for the frontend (honored only when the deployment
+    // trusts authentik headers + the marker, i.e. TRUST_AUTHENTIK_HEADERS=1)
+    const feHdrs: Record<string, string> = {
+      "x-authentik-uid": SMOKE_SUB,
+      "x-authentik-username": "smoke-test",
+      ...(HMAC_KEY ? { "x-edge-secret": HMAC_KEY } : {}),
+    };
+    const fe = await fetch(`${FE}/api/deadlines`, { headers: feHdrs, signal: AbortSignal.timeout(5000) });
     const fj = await fe.json();
+    if (!fe.ok) throw new Error(`frontend ${fe.status}`);
     feIds = new Set((fj.deadlines ?? []).map((d: any) => `${d.id}|${d.done}`));
-  } catch { console.log("  (frontend unreachable — skipping)"); }
+  } catch { console.log("  (frontend unreachable or unauthenticated — skipping)"); }
   if (feIds) {
     const missing = [...daemonIds].filter((x) => !feIds.has(x));
     const extra = [...feIds].filter((x) => !daemonIds.has(x));
