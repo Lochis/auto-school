@@ -13,7 +13,8 @@ import { join, dirname, resolve, sep } from "node:path";
 import { DATA_DIR } from "../paths.ts";
 import { getPool } from "../db/client.ts";
 import { pgConfigured } from "../db/reader.ts";
-import { upsertCourseConfig, courseId, OWNER } from "../db/writes.ts";
+import { upsertCourseConfig, courseId } from "../db/writes.ts";
+import { curOwner } from "../db/owner.ts";
 
 export type MaterialCategory =
   | "syllabus" | "assignment" | "lecture-notes" | "reference" | "rubric" | "transcript" | "other";
@@ -99,7 +100,11 @@ export async function hydrateCourseConfigs(): Promise<void> {
     for (const e of readdirSync(join(DATA_DIR, "courses"), { withFileTypes: true }))
       if (e.isDirectory() && known.has(e.name)) fsCfgs.set(e.name, fsCourseConfig(e.name));
   } catch { /* no courses root yet */ }
-  const rows = (await getPool().query(`select slug, semester_start, icon from courses`)).rows;
+  // Owner-scoped (2026-10-30 wave, resolveCourses pattern in pipeline/tools.ts):
+  // boot hydration runs without an ALS store so curOwner() = seed owner, while
+  // any request-time re-hydrate sees only the requesting user's rows.
+  const owner = curOwner();
+  const rows = (await getPool().query(`select slug, semester_start, icon from courses where owner_user_id = $1`, [owner])).rows;
   const bySlug = new Map(rows.map((r) => [String(r.slug), r]));
   for (const [slug, fs] of fsCfgs) {
     const row = bySlug.get(slug);
@@ -110,7 +115,7 @@ export async function hydrateCourseConfigs(): Promise<void> {
           ...(row?.semester_start == null && fs?.semesterStart ? { semesterStart: fs.semesterStart } : {}),
           ...(row?.icon == null && fs?.icon ? { icon: fs.icon } : {}),
         });
-        const upd = (await getPool().query(`select semester_start, icon from courses where slug = $1`, [slug])).rows[0];
+        const upd = (await getPool().query(`select semester_start, icon from courses where slug = $1 and owner_user_id = $2`, [slug, owner])).rows[0];
         if (upd) bySlug.set(slug, upd);
       } catch (e) { console.warn(`[materials] config seed-migrate failed for ${slug}: ${String(e).slice(0, 100)}`); }
     }
@@ -239,9 +244,9 @@ export async function listMaterials(course: string): Promise<MaterialEntry[]> {
       const { rows } = await getPool().query(
         `select rel_path, filename, week, category, description, size_bytes, uploaded_at
          from documents
-         where course_id = (select id from courses where slug=$1) and kind='material'
+         where course_id = (select id from courses where slug=$1 and owner_user_id=$2) and kind='material'
          order by rel_path`,
-        [course],
+        [course, curOwner()],
       );
       if (rows.length > 0) {
         return rows.map((r) => ({
@@ -317,7 +322,7 @@ async function upsertDocumentRow(course: string, entry: MaterialEntry): Promise<
     await getPool().query(
       `insert into documents (course_id, kind, rel_path, filename, week, category, description, size_bytes, uploaded_at, owner_user_id, updated_at)
        values ($1,'material',$2,$3,$4,$5,$6,$7,$8,$9, now())
-       on conflict (course_id, kind, rel_path) do update set
+       on conflict (course_id, kind, rel_path, owner_user_id) do update set
          filename=excluded.filename, week=excluded.week, category=excluded.category,
          description=excluded.description, size_bytes=excluded.size_bytes, updated_at=now()`,
       [cid, entry.path, entry.filename, entry.week,
@@ -325,7 +330,7 @@ async function upsertDocumentRow(course: string, entry: MaterialEntry): Promise<
         entry.description ?? "",
         Number(entry.size) || 0,
         entry.uploadedAt ? new Date(entry.uploadedAt) : null,
-        OWNER],
+        curOwner()],
     );
   } catch (e) {
     console.error(`materials: document row upsert failed (${course}/${entry.path}):`, e);
@@ -346,7 +351,7 @@ async function forgetDocumentRows(course: string, relPath: string): Promise<void
   try {
     if (!pgConfigured()) return;
     const pool = getPool();
-    const cid = (await pool.query(`select id from courses where slug=$1`, [course])).rows[0]?.id;
+    const cid = (await pool.query(`select id from courses where slug=$1 and owner_user_id=$2`, [course, curOwner()])).rows[0]?.id;
     if (!cid) return;
     const r = await pool.query(
       `delete from documents where course_id=$1 and kind='material'
@@ -360,7 +365,7 @@ async function moveDocumentRows(course: string, from: string, to: string): Promi
   try {
     if (!pgConfigured()) return;
     const pool = getPool();
-    const cid = (await pool.query(`select id from courses where slug=$1`, [course])).rows[0]?.id;
+    const cid = (await pool.query(`select id from courses where slug=$1 and owner_user_id=$2`, [course, curOwner()])).rows[0]?.id;
     if (!cid) return;
     // folder rename rewrites the "from/" prefix POSITIONALLY (replace() could
     // re-hit an identical segment deeper in the path); file rename rewrites the

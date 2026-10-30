@@ -139,9 +139,12 @@ export type CourseListFn = () => Promise<string[]> | string[];
 
 /** Course slugs — replacement for pipeline/tools.ts `allCourses()` (a readdir
  *  union of recordings/notes/courses). PG is the only source on the platform;
- *  the recorder's PG already holds every course it has seen. */
+ *  the recorder's PG already holds every course it has seen. Owner-scoped
+ *  (2026-10-30 wave, resolveCourses pattern): platform calls run inside
+ *  ownerALS.run so each user probes only their own courses; system jobs fall
+ *  back to the seed owner. */
 export async function courseList(): Promise<string[]> {
-  const { rows } = await q(`select slug from courses order by slug`);
+  const { rows } = await q(`select slug from courses where owner_user_id = $1 order by slug`, [curOwner()]);
   return (rows as { slug: string }[]).map((r) => String(r.slug));
 }
 

@@ -281,10 +281,10 @@ export async function POST(req: Request) {
     // Make the ingested text semantically searchable without waiting for the
     // daemon's 6h sweep (the daemon need not be running when a client posts
     // here). Fire-and-forget: an embedding/API-key failure must never fail an
-    // ingest that already committed. The owner is passed EXPLICITLY: this kick
-    // runs outside the ownerALS.run above, so curOwner() would file the
-    // documents row under the system owner.
-    void embedPendingSessions({ owner: ownerUserId }).catch(() => { });
+    // ingest that already committed. No owner param needed: the sweep derives
+    // each documents row's owner from its SESSION row (s.owner_user_id), so it
+    // stays correctly attributed even outside ownerALS.run.
+    void embedPendingSessions().catch(() => { });
 
     // Deadline batch — its OWN try/catch: the session + artifacts are already
     // committed, so a bad batch must never roll that back or turn into a 500.

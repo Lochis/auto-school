@@ -943,7 +943,7 @@ function startController(): void {
           try {
             const cid = await courseId(safe(to));
             const r = await getPool().query(
-              `update sessions set course_id=$1 where course_id=(select id from courses where slug=$2) and stem=$3 and owner_user_id=$4`,
+              `update sessions set course_id=$1 where course_id=(select id from courses where slug=$2 and owner_user_id=$4) and stem=$3 and owner_user_id=$4`,
               [cid, safe(from), base, curOwner()]);
             if (r.rowCount) {
               await getPool().query(
@@ -1006,7 +1006,7 @@ function startController(): void {
       // — gated on the same sibling-recording condition as the fs notes purge
       try {
         if (!sameDayLeft) await getPool().query(
-          `delete from sessions where course_id=(select id from courses where slug=$1) and stem=$2 and owner_user_id=$3`,
+          `delete from sessions where course_id=(select id from courses where slug=$1 and owner_user_id=$3) and stem=$2 and owner_user_id=$3`,
           [course, base, curOwner()]);
       } catch (e) { console.error(`[daemon] DB session purge failed: ${String(e)}`); }
       pushEvent(`purged ${removed} file(s) — ${course}/${stem}`);
@@ -1732,10 +1732,10 @@ Then output ONLY the cheat sheet itself as GitHub-flavored markdown (no preamble
         // DB: rename the SAME courses row (id/FKs hold) — remap mappings by
         // that id, then rewrite rel_path prefixes in artifacts + documents
         try {
-          const oldId = (await q(`select id from courses where slug = $1`, [from])).rows[0]?.id as number | undefined;
+          const oldId = (await q(`select id from courses where slug = $1 and owner_user_id = $2`, [from, curOwner()])).rows[0]?.id as number | undefined;
           const upd = await q(
-            `update courses set slug=$1, name=$2, updated_at=now() where slug=$3 returning id`,
-            [to, to.replace(/_/g, " "), from]);
+            `update courses set slug=$1, name=$2, updated_at=now() where slug=$3 and owner_user_id=$4 returning id`,
+            [to, to.replace(/_/g, " "), from, curOwner()]);
           const toCid = upd.rows.length ? Number(upd.rows[0].id) : await courseId(to); // course absent from PG — register it
           if (oldId) await q(`update meeting_mappings set course_id = $1 where course_id = $2`, [toCid, oldId]);
           await q(
@@ -2254,7 +2254,7 @@ FORMATTING: any sequence of steps, priorities or due dates is a markdown list ("
         // live sessions). Without this the course reappears in the PG-backed
         // course list (DB_READS=1) even after its folders are gone.
         try {
-          await q(`delete from courses where slug = $1`, [course]);
+          await q(`delete from courses where slug = $1 and owner_user_id = $2`, [course, curOwner()]);
           await refreshMappings().catch(() => {});
         } catch (e) { console.error(`[daemon] db course delete failed: ${String(e)}`); }
         pushEvent(`course deleted: ${course} (had no sessions)`);

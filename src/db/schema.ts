@@ -42,7 +42,7 @@ export const users = pgTable("users", {
 // ── courses (replaces folder-union + course.json) ─────────────────────────
 export const courses = pgTable("courses", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
-  slug: text("slug").notNull().unique("courses_slug_key"),
+  slug: text("slug").notNull(),
   name: text("name").notNull(),
   code: text("code").notNull().default("GEN"),
   icon: text("icon"),
@@ -51,12 +51,15 @@ export const courses = pgTable("courses", {
     .default("00000000-0000-0000-0000-000000000001").references(() => users.id),
   createdAt: tstz("created_at").notNull().defaultNow(),
   updatedAt: tstz("updated_at").notNull().defaultNow(),
-});
+}, (t) => [
+  // owner-scoped arbiter (2026-10-30 wave): two owners may hold the same slug
+  unique("courses_slug_owner_key").on(t.slug, t.ownerUserId),
+]);
 
 // ── meeting mappings (replaces mapping.json) ──────────────────────────────
 export const meetingMappings = pgTable("meeting_mappings", {
   id: bigserial("id", { mode: "number" }).primaryKey(),
-  matchTitle: text("match_title").notNull().unique("meeting_mappings_match_title_key"),
+  matchTitle: text("match_title").notNull(),
   normTitle: text("norm_title").notNull(),
   courseId: bigint("course_id", { mode: "number" }).notNull()
     .references(() => courses.id, { onDelete: "cascade" }),
@@ -66,6 +69,8 @@ export const meetingMappings = pgTable("meeting_mappings", {
 }, (t) => [
   check("meeting_mappings_source_check", sql`${t.source} IN ('manual','auto')`),
   index("meeting_mappings_norm_idx").on(t.normTitle.op("text_pattern_ops")),
+  // owner-scoped arbiter (2026-10-30 wave): same meeting title per owner
+  unique("meeting_mappings_match_title_owner_key").on(t.matchTitle, t.ownerUserId),
 ]);
 
 // ── sessions (replaces out/sessions.json + note/recording stems as identity) ──
@@ -159,7 +164,7 @@ export const documents = pgTable("documents", {
   check("documents_week_check", sql`${t.week} BETWEEN 1 AND 15`),
   check("documents_category_check",
     sql`${t.category} IN ('syllabus','assignment','lecture-notes','reference','rubric','transcript','other')`),
-  unique("documents_course_id_kind_rel_path_key").on(t.courseId, t.kind, t.relPath),
+  unique("documents_course_kind_rel_path_owner_key").on(t.courseId, t.kind, t.relPath, t.ownerUserId),
   index("documents_course_week_idx").on(t.courseId, sql`${t.week} NULLS LAST`),
 ]);
 

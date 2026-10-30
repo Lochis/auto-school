@@ -8,7 +8,6 @@ import { embedTexts, geminiApiKey, toVectorLiteral, EMBEDDING_MODEL } from "./em
 import { pgConfigured } from "./reader.ts";
 import { courseId } from "./writes.ts";
 import { resolveApiKey } from "./llm-keys.ts";
-import { curOwner } from "./owner.ts";
 
 export interface Chunk { page: number; chunk_index: number; content: string }
 
@@ -49,10 +48,6 @@ export interface EmbedSweepResult {
  *  (timeline). Call it from the 6h sweep AND right after finalizeNotes. */
 export async function embedPendingSessions(opts: {
   dataDir?: string; batch?: number; rpm?: number; log?: (m: string) => void;
-  /** Data owner for the documents row. Callers that kick this OUTSIDE an
-   *  ownerALS.run (e.g. the platform ingest route's fire-and-forget) must pass
-   *  it explicitly — curOwner() would otherwise fall back to the system owner. */
-  owner?: string;
 } = {}): Promise<EmbedSweepResult> {
   const DATA = opts.dataDir ?? process.env.AUTO_SCHOOL_DATA ?? ".";
   const log = opts.log ?? (() => { });
@@ -66,13 +61,16 @@ export async function embedPendingSessions(opts: {
   const q = (text: string, params: unknown[] = []) => pool.query(text, params);
 
   try {
-    // 1. ensure documents rows for session text artifacts (mirror backfill step a)
+    // 1. ensure documents rows for session text artifacts (mirror backfill step a).
+    //    Owner is derived from the SESSION row (s.owner_user_id) — the SELECT spans
+    //    every owner's artifacts, so a sweep kicked by owner B can never stamp (or
+    //    re-own, pre-2026-10-30-wave) owner A's documents rows.
     await q(`insert into documents (course_id, kind, session_id, rel_path, filename, owner_user_id, updated_at)
-      select s.course_id, a.kind, s.id, a.rel_path, regexp_replace(a.rel_path, '^.*/', ''), $1, now()
+      select s.course_id, a.kind, s.id, a.rel_path, regexp_replace(a.rel_path, '^.*/', ''), s.owner_user_id, now()
       from session_artifacts a join sessions s on s.id = a.session_id
-      where a.kind = any($2) and a.content is not null
-      on conflict (course_id, kind, rel_path) do update set session_id = excluded.session_id, updated_at = now()`,
-      [opts.owner ?? curOwner(), ["notes", "transcript", "timeline"]]);
+      where a.kind = any($1) and a.content is not null
+      on conflict (course_id, kind, rel_path, owner_user_id) do update set session_id = excluded.session_id, updated_at = now()`,
+      [["notes", "transcript", "timeline"]]);
 
     // 2. pending docs (notes/transcript by artifact mtime; timeline by newest segment)
     const { rows } = await q(`select d.id, d.kind, d.session_id, d.rel_path, d.filename, d.indexed_at, c.slug,

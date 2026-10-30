@@ -31,7 +31,6 @@ const LIMIT = Number(flag("limit")) > 0 ? Number(flag("limit")) : Infinity;
 const BATCH = Math.max(1, Math.min(Number(flag("batch-size")) || 80, 100));
 const RPM = Math.max(1, Number(flag("rpm")) || 200);
 
-const OWNER = "00000000-0000-0000-0000-000000000001";
 const log = (...m: unknown[]) => console.log(...m);
 
 const { getPool, closeDb } = await import("../src/db/client.ts");
@@ -93,11 +92,11 @@ async function main() {
   const sessionKinds = KINDS.filter((k) => k !== "material");
   if (sessionKinds.length) {
     const r = await q(`insert into documents (course_id, kind, session_id, rel_path, filename, owner_user_id, updated_at)
-      select s.course_id, a.kind, s.id, a.rel_path, regexp_replace(a.rel_path, '^.*/', ''), $1, now()
+      select s.course_id, a.kind, s.id, a.rel_path, regexp_replace(a.rel_path, '^.*/', ''), s.owner_user_id, now()
       from session_artifacts a join sessions s on s.id = a.session_id
-      where a.kind = any($2) and a.content is not null
-      on conflict (course_id, kind, rel_path) do update set session_id = excluded.session_id, updated_at = now()`,
-      [OWNER, sessionKinds]);
+      where a.kind = any($1) and a.content is not null
+      on conflict (course_id, kind, rel_path, owner_user_id) do update set session_id = excluded.session_id, updated_at = now()`,
+      [sessionKinds]);
     log(`documents upsert: ${r.rowCount} session-kind row(s) ensured`);
   }
 

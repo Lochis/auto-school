@@ -17,20 +17,24 @@ export const OWNER = "00000000-0000-0000-0000-000000000001";
  *  the *requesting* user take curOwner() — sessions (via sessionId below) is
  *  the key one, so /ingest, /transcribe and manual /join record as the
  *  clicking user while the scheduled join loop (no ALS store) stays system.
- *  SYSTEM-OWNED (keep OWNER — global by UNIQUE constraint, Phase 2 revisits):
- *  courses (slug UNIQUE global catalog), meeting_mappings (join-loop cache),
- *  documents (shared corpus, (course_id,kind,rel_path) UNIQUE),
- *  activity_events (global in-memory board feed). */
+ *  OWNER-SCOPED since the 2026-10-30 wave (courses.slug, meeting_mappings.
+ *  match_title, documents (course_id,kind,rel_path) arbiters all gained
+ *  owner_user_id): courseId()/upsertCourseConfig()/upsertMapping() now stamp
+ *  curOwner() and target the owner-scoped conflict arbiter. SYSTEM-OWNED
+ *  (keep OWNER): activity_events (global in-memory board feed). */
 
 const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
 
-/** Upsert a course and return its id (folder-union courses self-register). */
+/** Upsert a course and return its id (folder-union courses self-register).
+ *  Owner-scoped (2026-10-30 wave): the arbiter is (slug, owner_user_id), so
+ *  a request-time caller registers the course under the REQUESTING user
+ *  while boot hydration / system jobs fall back to the seed owner. */
 export async function courseId(slug: string, name?: string): Promise<number> {
   const r = await q(
     `insert into courses (slug, name, owner_user_id) values ($1,$2,$3)
-     on conflict (slug) do update set name = excluded.name
+     on conflict (slug, owner_user_id) do update set name = excluded.name
      returning id`,
-    [slug, name ?? slug.replace(/_/g, " "), OWNER],
+    [slug, name ?? slug.replace(/_/g, " "), curOwner()],
   );
   return Number(r.rows[0].id);
 }
@@ -82,7 +86,7 @@ export async function upsertCourseConfig(
   cfg: { semesterStart?: string | null; icon?: string | null },
 ): Promise<void> {
   const cols = ["slug", "name", "owner_user_id"];
-  const vals: unknown[] = [slug, slug.replace(/_/g, " "), OWNER];
+  const vals: unknown[] = [slug, slug.replace(/_/g, " "), curOwner()];
   const sets = ["name = excluded.name"];
   if ("semesterStart" in cfg) {
     cols.push("semester_start"); vals.push(cfg.semesterStart || null);
@@ -94,7 +98,7 @@ export async function upsertCourseConfig(
   }
   await q(
     `insert into courses (${cols.join(",")}) values (${cols.map((_, i) => `$${i + 1}`).join(",")})
-     on conflict (slug) do update set ${sets.join(", ")}, updated_at = now()`,
+     on conflict (slug, owner_user_id) do update set ${sets.join(", ")}, updated_at = now()`,
     vals,
   );
 }
@@ -176,16 +180,15 @@ export async function listEvents(n = 60): Promise<{ ts: string; msg: string }[]>
 }
 
 /** Upsert a meeting→course mapping (mapping.json replacement).
- *  `owner` is REQUIRED — mappings are per-user rows (owner_user_id), never a
- *  shared cache. NOTE: meeting_mappings.match_title is still globally UNIQUE in
- *  ddl.sql, so two owners cannot hold the same title; the `where` clause on the
- *  conflict update keeps an upsert from overwriting another owner's row. */
+ *  `owner` is REQUIRED — mappings are per-user rows (owner_user_id). Since the
+ *  2026-10-30 wave the arbiter is (match_title, owner_user_id), so the old
+ *  same-owner WHERE guard on the conflict update is unnecessary: the arbiter
+ *  itself can only collide with the same owner's row. */
 export async function upsertMapping(matchTitle: string, normTitle: string, courseId: number, owner: string, source = "manual"): Promise<void> {
   await q(
     `insert into meeting_mappings (match_title, norm_title, course_id, source, owner_user_id)
      values ($1,$2,$3,$4,$5)
-     on conflict (match_title) do update set norm_title = excluded.norm_title, course_id = excluded.course_id, source = excluded.source
-     where meeting_mappings.owner_user_id = excluded.owner_user_id`,
+     on conflict (match_title, owner_user_id) do update set norm_title = excluded.norm_title, course_id = excluded.course_id, source = excluded.source`,
     [matchTitle, normTitle, courseId, source, owner],
   );
 }

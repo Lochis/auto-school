@@ -145,7 +145,7 @@ console.log("\n4 · deadlines (owner-scoped): feed · toggle · fold");
 {
   // seed parent + child under the smoke owner, as the importer would
   const cid = (await q(`insert into courses (slug, name, owner_user_id) values ('__smoke__dl', '__smoke__ dl', $1)
-    on conflict (slug) do update set name = '__smoke__ dl' returning id`, [SMOKE])).rows[0].id;
+    on conflict (slug, owner_user_id) do update set name = '__smoke__ dl' returning id`, [SMOKE])).rows[0].id;
   const parent = (await q(`insert into deadlines (legacy_id, course_id, title, due, kind, owner_user_id)
     values ('smokeparent', $1, '__smoke__ Parent Assignment', '2026-11-01', 'assignment', $2) returning id`, [cid, SMOKE])).rows[0].id;
   await q(`insert into deadlines (legacy_id, course_id, title, due, kind, owner_user_id)
@@ -174,8 +174,8 @@ console.log("\n5 · session move + delete (fs + PG)");
   mkdirSync(join(DATA, "recordings", to), { recursive: true }); // /session/move requires the target to exist in allCourses()
   writeFileSync(join(DATA, "recordings", from, "2026-10-17____smoke__.webm"), "x");
   writeFileSync(join(DATA, "notes", from, "2026-10-17____smoke____notes.md"), "# notes");
-  const cf = (await q(`insert into courses (slug, name, owner_user_id) values ($1,$1,$2) on conflict (slug) do update set name=$1 returning id`, [from, SMOKE])).rows[0].id;
-  const ct = (await q(`insert into courses (slug, name, owner_user_id) values ($1,$1,$2) on conflict (slug) do update set name=$1 returning id`, [to, SMOKE])).rows[0].id;
+  const cf = (await q(`insert into courses (slug, name, owner_user_id) values ($1,$1,$2) on conflict (slug, owner_user_id) do update set name=$1 returning id`, [from, SMOKE])).rows[0].id;
+  const ct = (await q(`insert into courses (slug, name, owner_user_id) values ($1,$1,$2) on conflict (slug, owner_user_id) do update set name=$1 returning id`, [to, SMOKE])).rows[0].id;
   const sid = (await q(`insert into sessions (course_id, stem, session_date, title, stage, owner_user_id)
     values ($1, '2026-10-17____smoke__', '2026-10-17', '__smoke__ session', 'done', $2) returning id`, [cf, SMOKE])).rows[0].id;
   const m = await api("POST", "/session/move", { from, to, stem: "2026-10-17____smoke__" });

@@ -159,7 +159,7 @@ async function importCourses() {
     const cfg = readJson<{ semesterStart?: string; icon?: string; code?: string }>(join("courses", slug, "course.json")) ?? {};
     const r = await q(`insert into courses (slug, name, code, icon, semester_start, owner_user_id, updated_at)
       values ($1,$2,$3,$4,$5,$6, now())
-      on conflict (slug) do update set name=excluded.name, code=excluded.code,
+      on conflict (slug, owner_user_id) do update set name=excluded.name, code=excluded.code,
         icon=excluded.icon, semester_start=excluded.semester_start, updated_at=now()
       returning id`, [slug, slug.replace(/_/g, " "), cfg.code ?? "GEN", cfg.icon ?? null, cfg.semesterStart ?? null, OWNER]);
     courseIds.set(slug, Number(r.rows[0].id));
@@ -172,7 +172,7 @@ async function courseId(slug: string, autoCreate = false): Promise<number | null
   if (id) return id;
   if (!autoCreate) return null;
   const r = await q(`insert into courses (slug, name, code, owner_user_id) values ($1,$2,'GEN',$3)
-    on conflict (slug) do update set name=excluded.name returning id`, [slug, slug.replace(/_/g, " "), OWNER]);
+    on conflict (slug, owner_user_id) do update set name=excluded.name returning id`, [slug, slug.replace(/_/g, " "), OWNER]);
   courseIds.set(slug, Number(r.rows[0].id));
   log(`  note: created course '${slug}' referenced outside the folder union`);
   bump("courses");
@@ -187,7 +187,7 @@ async function importMappings() {
     if (!cid) { log(`  skip mapping '${title}': no course '${slug}'`); continue; }
     await q(`insert into meeting_mappings (match_title, norm_title, course_id, source, owner_user_id)
       values ($1,$2,$3,'manual',$4)
-      on conflict (match_title) do update set norm_title=excluded.norm_title, course_id=excluded.course_id`,
+      on conflict (match_title, owner_user_id) do update set norm_title=excluded.norm_title, course_id=excluded.course_id`,
       [title.trim(), normTitle(title.trim()), cid, OWNER]);
     seen.mappings.add(title.trim());
     bump("meeting_mappings");
@@ -385,7 +385,7 @@ async function importMaterials() {
         await q(`insert into documents (course_id, kind, rel_path, filename, week, category,
             description, size_bytes, uploaded_at, owner_user_id)
           values ($1,'material',$2,$3,$4,$5,$6,$7,$8,$9)
-          on conflict (course_id, kind, rel_path) do update set filename=excluded.filename,
+          on conflict (course_id, kind, rel_path, owner_user_id) do update set filename=excluded.filename,
             week=excluded.week, category=excluded.category, description=excluded.description,
             size_bytes=excluded.size_bytes, uploaded_at=excluded.uploaded_at`,
           [cid, child, d.name, week && week >= 1 && week <= 15 ? week : null,

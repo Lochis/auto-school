@@ -107,7 +107,7 @@ export async function embedOneMaterial(course: string, relPath: string, opts: {
     const chunks = await materialChunks(join(DATA, "courses", course, "materials", relPath), filename);
     const row = (await q(`insert into documents (course_id, kind, rel_path, filename, owner_user_id, updated_at)
       values ($1,'material',$2,$3,$4, now())
-      on conflict (course_id, kind, rel_path) do update set filename = excluded.filename, updated_at = now()
+      on conflict (course_id, kind, rel_path, owner_user_id) do update set filename = excluded.filename, updated_at = now()
       returning id`, [cid, relPath, filename, curOwner()])).rows[0];
     await q(`delete from document_chunks where document_id = $1`, [row.id]);
     if (chunks.length) {

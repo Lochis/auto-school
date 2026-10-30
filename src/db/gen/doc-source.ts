@@ -79,7 +79,7 @@ const SELECT_DOCS = `
          ) as parts
     from documents d
     left join document_chunks c on c.document_id = d.id
-   where d.course_id = (select id from courses where slug = $1)
+   where d.course_id = (select id from courses where slug = $1 and owner_user_id = $2)
      and d.kind = 'material'
      and d.owner_user_id = $2
    group by d.id, d.rel_path, d.filename, d.week, d.category, d.page_count

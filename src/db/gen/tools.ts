@@ -254,17 +254,19 @@ function timelineToMarkdown(
 
 const q = (text: string, params: unknown[] = []) => getPool().query(text, params);
 
-/** Course slugs (PG only — no fs union on the platform). */
+/** Course slugs (PG only — no fs union on the platform). Owner-scoped
+ *  (2026-10-30 wave): mirrors gen/deadlines.ts courseList() / pipeline/tools.ts
+ *  resolveCourses() — curOwner() under ownerALS.run, seed owner for jobs. */
 async function courseSlugs(): Promise<string[]> {
-  const { rows } = await q(`select slug from courses order by slug`);
+  const { rows } = await q(`select slug from courses where owner_user_id = $1 order by slug`, [curOwner()]);
   return rows.map((r: { slug: string }) => r.slug);
 }
 
 /** courses.semester_start equivalent of pipeline/materials.ts getCourseConfig(). */
 async function semesterStart(slug: string): Promise<string | null> {
   const { rows } = await q(
-    `select semester_start::text as start from courses where slug = $1`,
-    [slug],
+    `select semester_start::text as start from courses where slug = $1 and owner_user_id = $2`,
+    [slug, curOwner()],
   );
   const raw = rows[0]?.start as string | null | undefined;
   return raw ? raw.slice(0, 10) : null;
@@ -434,7 +436,7 @@ async function docPages(slug: string, rel: string, owner: string): Promise<{ tot
     `select coalesce(d.page_count, 0) as page_count, c.page, c.content
        from documents d
        left join document_chunks c on c.document_id = d.id
-      where d.course_id = (select id from courses where slug = $1)
+      where d.course_id = (select id from courses where slug = $1 and owner_user_id = $3)
         and d.kind = 'material'
         and d.rel_path = $2
         and d.owner_user_id = $3

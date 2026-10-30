@@ -27,25 +27,27 @@ ON CONFLICT (id) DO NOTHING;  -- bootstrap owner for every imported row
 -- ── courses (replaces folder-union + course.json) ─────────────────────────
 CREATE TABLE IF NOT EXISTS courses (
   id             bigserial PRIMARY KEY,
-  slug           text NOT NULL UNIQUE,          -- "Java_Programming" (courses.ts slug())
+  slug           text NOT NULL,                 -- "Java_Programming" (courses.ts slug()); unique PER OWNER (2026-10-30 wave)
   name           text NOT NULL,                 -- human name
   code           text NOT NULL DEFAULT 'GEN',   -- "26M" | "MAP" | "GEN" (courses.ts:46-56)
   icon           text,                          -- course.json icon
   semester_start date,                          -- course.json semesterStart
   owner_user_id  uuid NOT NULL REFERENCES users(id) DEFAULT '00000000-0000-0000-0000-000000000001',  -- lochis
   created_at     timestamptz NOT NULL DEFAULT now(),
-  updated_at     timestamptz NOT NULL DEFAULT now()
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT courses_slug_owner_key UNIQUE (slug, owner_user_id)
 );
 
 -- ── meeting mappings (replaces mapping.json) ──────────────────────────────
 CREATE TABLE IF NOT EXISTS meeting_mappings (
   id               bigserial PRIMARY KEY,
-  match_title      text NOT NULL UNIQUE,        -- exact meeting title as captured
+  match_title      text NOT NULL,               -- exact meeting title as captured; unique PER OWNER (2026-10-30 wave)
   norm_title       text NOT NULL,               -- precomputed normalized form (courses.ts:20-21)
   course_id        bigint NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
   source           text NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
   owner_user_id    uuid NOT NULL REFERENCES users(id),
-  created_at       timestamptz NOT NULL DEFAULT now()
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT meeting_mappings_match_title_owner_key UNIQUE (match_title, owner_user_id)
 );
 CREATE INDEX IF NOT EXISTS meeting_mappings_norm_idx ON meeting_mappings (norm_title text_pattern_ops);
 -- containment matching ("chip truncation", courses.ts:25-32) stays app-side; norm_title
@@ -128,7 +130,7 @@ CREATE TABLE IF NOT EXISTS documents (
   owner_user_id uuid NOT NULL REFERENCES users(id),
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (course_id, kind, rel_path)
+  CONSTRAINT documents_course_kind_rel_path_owner_key UNIQUE (course_id, kind, rel_path, owner_user_id)
 );
 CREATE INDEX IF NOT EXISTS documents_course_week_idx ON documents (course_id, week NULLS LAST);
 
@@ -303,6 +305,46 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sessions_course_stem_owner_key') THEN
     ALTER TABLE sessions ADD CONSTRAINT sessions_course_stem_owner_key
       UNIQUE (course_id, stem, owner_user_id);
+  END IF;
+END
+$$;
+
+-- courses / meeting_mappings / documents (2026-10-30 owner-scope wave): the
+-- natural keys gain owner_user_id exactly like sessions/deadlines before them.
+-- ⚠ ORDERING on PROD: this drop is the CONTRACT step — only re-run ddl.sql
+-- wholesale once the owner-scoped ON CONFLICT code is live (runbook order
+-- expand → deploy → write-probe → contract; deploy/sql/2026-10-30-owner-scope).
+ALTER TABLE courses DROP CONSTRAINT IF EXISTS courses_slug_key;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'courses_slug_owner_key')
+     AND NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                      WHERE c.relname = 'courses_slug_owner_key') THEN
+    ALTER TABLE courses ADD CONSTRAINT courses_slug_owner_key UNIQUE (slug, owner_user_id);
+  END IF;
+END
+$$;
+
+ALTER TABLE meeting_mappings DROP CONSTRAINT IF EXISTS meeting_mappings_match_title_key;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'meeting_mappings_match_title_owner_key')
+     AND NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                      WHERE c.relname = 'meeting_mappings_match_title_owner_key') THEN
+    ALTER TABLE meeting_mappings ADD CONSTRAINT meeting_mappings_match_title_owner_key
+      UNIQUE (match_title, owner_user_id);
+  END IF;
+END
+$$;
+
+ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_course_id_kind_rel_path_key;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'documents_course_kind_rel_path_owner_key')
+     AND NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                      WHERE c.relname = 'documents_course_kind_rel_path_owner_key') THEN
+    ALTER TABLE documents ADD CONSTRAINT documents_course_kind_rel_path_owner_key
+      UNIQUE (course_id, kind, rel_path, owner_user_id);
   END IF;
 END
 $$;
