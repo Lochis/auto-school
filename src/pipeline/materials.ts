@@ -245,6 +245,7 @@ export async function listMaterials(course: string): Promise<MaterialEntry[]> {
         `select rel_path, filename, week, category, description, size_bytes, uploaded_at
          from documents
          where course_id = (select id from courses where slug=$1 and owner_user_id=$2) and kind='material'
+           and owner_user_id = $2
          order by rel_path`,
         [course, curOwner()],
       );

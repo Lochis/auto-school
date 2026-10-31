@@ -38,6 +38,10 @@ export async function GET() {
   if (!(await requireUser())) return unauthorized();
   try {
     const res = await fetch(`${await daemonBaseOrThrow()}/status`, { headers: await daemonUserHeaders(), signal: AbortSignal.timeout(3000) });
+    // The daemon gates /status to the recorder owner (seed) — a non-seed
+    // member's signed hop 401s. Translate to a benign offline shape instead of
+    // passing the error JSON through (use-status would cache it as status).
+    if (!res.ok) return NextResponse.json({ online: false, state: "offline", ...(res.status === 401 ? { restricted: true } : {}) });
     const body = await res.json();
     if (body?.sessions && Array.isArray(body.sessions) && body.sessions.length) {
       const canon = new Map<string, string>();

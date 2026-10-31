@@ -6,7 +6,6 @@
 import { getPool } from "./pg.ts";
 import { embedTexts, geminiApiKey, toVectorLiteral, EMBEDDING_MODEL } from "./embeddings.ts";
 import { pgConfigured } from "./reader.ts";
-import { courseId } from "./writes.ts";
 import { resolveApiKey } from "./llm-keys.ts";
 
 export interface Chunk { page: number; chunk_index: number; content: string }

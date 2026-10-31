@@ -122,8 +122,9 @@ spec:
             - { name: PGHOST, value: auto-school-pg }
             - { name: PGPORT, value: "5432" }
             - { name: PGDATABASE, value: autoschool }
-            # smoke-test identity: when set, the daemon honors `x-owner-uuid`
-            # for exactly this UUID (scripts/smoke.ts runs as this user).
+            # STALE (kept for rollback image parity only): the current daemon
+            # ignores `x-owner-uuid` entirely — smoke.ts now signs the hop with
+            # SMOKE_OWNER_SUB + INTERNAL_HMAC_KEY instead.
             - { name: SMOKE_OWNER_UUID, value: "00000000-0000-4000-8000-000000000002" }
           envFrom:
             - secretRef: { name: auto-school-env }
