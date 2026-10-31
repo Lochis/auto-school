@@ -30,7 +30,7 @@ export const users = pgTable("users", {
   username: text("username").unique("users_username_key"),
   email: text("email").unique("users_email_key"),
   displayName: text("display_name").notNull().default(""),
-  role: text("role").notNull().default("owner"),
+  role: text("role").notNull().default("member"),
   avatar: bytea("avatar"),
   avatarMime: text("avatar_mime"),
   avatarSyncedAt: tstz("avatar_synced_at"),

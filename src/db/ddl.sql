@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   username      text UNIQUE,
   email         text UNIQUE,
   display_name  text NOT NULL DEFAULT '',
-  role          text NOT NULL DEFAULT 'owner'
+  role          text NOT NULL DEFAULT 'member'
                 CHECK (role IN ('owner','member','viewer')),
   created_at    timestamptz NOT NULL DEFAULT now()
 );
