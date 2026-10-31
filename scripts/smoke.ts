@@ -68,12 +68,28 @@ const q = (text: string, params: unknown[] = []) => pool.query(text, params as n
 // users.id for the smoke sub (the daemon resolves sub → users.id, so the
 // impersonation id is now derived, not supplied).
 {
-  const found = await q(`select id from users where authentik_sub = $1`, [SMOKE_SUB]);
+  // HARD GUARD (2026-10-31 incident): the cleanup deletes ALL
+  // deadlines/checklists owned by the smoke user — running the suite as the
+  // seed owner (the real user) therefore deletes the real user's deadlines.
+  // The smoke owner must be a dedicated throwaway user, NEVER the seed
+  // (SYSTEM_OWNER) account or the lochis sub. Refuse before touching data.
+  const SEED_USER_ID = "00000000-0000-0000-0000-000000000001";
+  const found = await q(`select id, username from users where authentik_sub = $1`, [SMOKE_SUB]);
+  if (found.rows.length && String(found.rows[0].id) === SEED_USER_ID) {
+    console.error(`✗ SMOKE_OWNER_SUB resolves to the SEED OWNER (${found.rows[0].username}) — refusing.
+   The smoke suite deletes everything owned by its user (deadlines, checklists).
+   Create a dedicated smoke user and pass ITS authentik_sub (never your own).`);
+    process.exit(2);
+  }
   SMOKE = found.rows.length
     ? String(found.rows[0].id)
     : String((await q(`insert into users (id, display_name, username, authentik_sub)
         values ($1, 'smoke test', 'smoke-test', $2)
         on conflict (authentik_sub) do update set display_name = 'smoke test' returning id`, [randomUUID(), SMOKE_SUB])).rows[0].id);
+  if (SMOKE === SEED_USER_ID) {
+    console.error("✗ smoke owner id collided with SEED_USER_ID — refusing.");
+    process.exit(2);
+  }
 }
 
 /** Poll a PG/API condition until true or timeout (fire-and-forget write races). */
