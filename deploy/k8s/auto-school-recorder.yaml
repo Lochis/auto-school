@@ -1,3 +1,8 @@
+# ⚠ DEPLOYMENT OWNERSHIP: the Deployments/Services in ns auto-school are owned by the Terraform
+# module terraform/apps/modules/auto-school in the SEPARATE Lochis/kube repo — kubectl patches to
+# them are reverted on the next terraform apply. Change env/deployment shape THERE (PR + atlantis
+# apply). This manifest mirrors the intended shape for reference only.
+#
 # auto-school-recorder — the personal recording daemon as its own Deployment
 # (recorder-split.md §5 step 3). APPLIED 2026-10-29 — the 5a manifest split is
 # LIVE (auto-school-platform + auto-school-recorder replace the old single pod).

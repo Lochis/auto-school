@@ -321,3 +321,14 @@ preflight is still the way back.
   free from Phase-1 owner scoping; keep the global singleton on the recorder itself.
 - Open: does the frontend proxy recorder traffic *with* the user's X-Auto-School-User header
   (Phase 1 already does) — yes, unchanged; the daemon trusts it cluster-internally only.
+
+## Deployment ownership (2026-10-30)
+
+The `auto-school-frontend` and `auto-school-recorder` Deployments (ns `auto-school`) are owned by
+the Terraform module `terraform/apps/modules/auto-school` in the **separate `Lochis/kube` repo**
+(SSA manager `HashiCorp`; consolidated there 2026-10-30) — kubectl patches to them are
+non-durable: every `terraform apply` (Atlantis PR or local) reverts the specs to the module's
+declared env. On 2026-10-30 this reverted the security-split env twice (18:23Z and 19:07Z; the
+second caused an 8.4h silent heartbeat outage, auth 401s, and resurrected the legacy `auto-school`
+daemon at replicas 1); both restored by hand. Durable env/deployment changes go through the kube
+repo (PR + `atlantis apply`) — full incident record in `security-hardening.md`.

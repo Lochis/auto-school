@@ -1,3 +1,8 @@
+# ⚠ DEPLOYMENT OWNERSHIP: the Deployments/Services in ns auto-school are owned by the Terraform
+# module terraform/apps/modules/auto-school in the SEPARATE Lochis/kube repo — kubectl patches to
+# them are reverted on the next terraform apply. Change env/deployment shape THERE (PR + atlantis
+# apply). The NetworkPolicy is the EXCEPTION — it is kubectl-owned (not in the TF module).
+#
 # auto-school NetworkPolicy — restrict ingress to the recorder daemon's :7800
 # controller so only the platform pod can talk to it.
 #

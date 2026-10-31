@@ -12,6 +12,7 @@
 | `deploy-runbook-2026-10-21.md` | Non-destructive ordering for the Phase-2 DDL swap + the recorder-split deploy (plan only; unapplied) |
 | `future-product-goals.md` | Deferred product vision (onboarding, AI login recipes, BYOK, billing) |
 | `personal-not-commercial-phase3-gaps.md` | Post-Phase-3 gaps split: personal-only (calendar, mapping candidates — deferred) vs commercial (materials single source of truth + auto-embed, avatar upload/FaceHash — provider picture claim removed) |
+| `security-hardening.md` | Security hardening + **2026-10-30 2× reversion incident**: deployment ownership lives in the kube-repo TF module (`terraform/apps/modules/auto-school`); kubectl patches to the Deployments are non-durable (reverted on every apply) — change shape via kube-repo PR |
 
 ## Recommended build order (dependency-driven) — revised 2026-10-20, see hosted-platform.md
 

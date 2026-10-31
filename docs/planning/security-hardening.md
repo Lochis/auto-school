@@ -138,16 +138,27 @@ owner-scope wave's owner-aware conflict targets end-to-end).
 `documents_course_id_kind_rel_path_key`; ANALYZE). Post-state: only PKs + the three owner-scoped
 arbiters remain. The `src/pipeline/materials.ts` residual unscoped `courses` select is closed.
 
-## ⚠ INCIDENT (2026-10-30): Terraform/HashiCorp SSA owns both Deployments
-Both `auto-school-frontend` and `auto-school-recorder` Deployments carry a **`HashiCorp`
-managedFields manager** (server-side-apply ownership; the frontend's original kubectl ownership
-entry was force-removed). Consequence: **a `terraform apply` in the kube repo reverts the
-Deployment specs to its declared state** — kubectl-added env (`EDGE_MARKER`, `INTERNAL_HMAC_KEY`,
-`BROWSER_CHANNEL`, `envFrom`) silently vanishes, and the next restarted pod fails closed (daemon
-logs `INTERNAL_HMAC_KEY is not set`; heartbeat dies; auth 401s). This happened 2026-10-30: specs
-were found reverted after a routine restart; restored by re-patch + rollout. **Before the next
-`terraform apply`**: either add these env entries to the TF config for both deployments, or
-`terraform state rm` the two deployments so kubectl/manifests own them again. Check ownership:
+## ⚠ INCIDENT (2026-10-30): Terraform owns both Deployments — TWO reversion outages
+Both `auto-school-frontend` and `auto-school-recorder` Deployments (ns `auto-school`) are owned
+by the homelab's Terraform module `terraform/apps/modules/auto-school` in the **separate
+`Lochis/kube` repo** (SSA manager `HashiCorp`; consolidated there 2026-10-30). Consequence:
+**kubectl patches to those Deployments are NON-DURABLE — every `terraform apply` (Atlantis PR or
+local) reverts the specs to the module's declared env.** This caused TWO outages on 2026-10-30:
+
+- **18:23Z** — an apply reverted specs; restarted pods came up without
+  `INTERNAL_HMAC_KEY`/`EDGE_MARKER`/`BROWSER_CHANNEL`/`envFrom`, the daemon logged
+  `INTERNAL_HMAC_KEY is not set`, and the module is stale vs the security-split env
+  (root cause: env added via kubectl patch after the split, never reflected in the module).
+  Restored by hand: env re-patch + rollout.
+- **19:07Z** — a second apply reverted again; heartbeat died 8.4h silent, valid logins 401'd,
+  and the legacy `auto-school` daemon was **resurrected** (replicas 1) after being scaled to 0
+  — the module still declares it. Restored by hand; heartbeat/auth verified green.
+
+**Resolution (in flight)**: PR to the kube repo updating the module — `EDGE_MARKER` +
+`INTERNAL_HMAC_KEY` on frontend; `INTERNAL_HMAC_KEY` + `BROWSER_CHANNEL` + `envFrom`
+(`auto-school-env`, `auto-school-pg`) on recorder; legacy `auto-school` replicas 0; dead
+`AUTHENTIK_API_*` envs removed — pending `atlantis apply`. **Durable changes go THERE (PR +
+`atlantis apply`), never via kubectl patch.** Check ownership:
 `kubectl -n auto-school get deploy <d> -o jsonpath='{.metadata.managedFields}'`.
 
 **Rollback** = re-add the key with the `INTERNAL_HMAC_KEY` value (never read it from pod env —

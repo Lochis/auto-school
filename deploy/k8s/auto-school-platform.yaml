@@ -1,3 +1,8 @@
+# ⚠ DEPLOYMENT OWNERSHIP: the Deployments/Services in ns auto-school are owned by the Terraform
+# module terraform/apps/modules/auto-school in the SEPARATE Lochis/kube repo — kubectl patches to
+# them are reverted on the next terraform apply. Change env/deployment shape THERE (PR + atlantis
+# apply). This manifest mirrors the intended shape for reference only.
+#
 # auto-school-frontend — the Next.js frontend (+ Postgres via auto-school-pg).
 # Matches live Deployment auto-school-frontend (reconciled 2026-10-30 —
 # previously drifted as auto-school-platform: the live object was renamed at
