@@ -2,7 +2,7 @@
  *  applied via psql; see docs/planning/postgres-migration.md §2). Table,
  *  column, CHECK, UNIQUE and index names follow the DDL. Constraint names for
  *  FKs are drizzle-generated (DDL authority is ddl.sql). */
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import {
   pgTable, text, uuid, integer, bigint, bigserial, boolean, date, time, timestamp,
   numeric, jsonb, index, unique, check, customType, primaryKey,
@@ -338,4 +338,21 @@ export const recorders = pgTable("recorders", {
   capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default({}),
 }, (t) => [
   primaryKey({ columns: [t.ownerUserId, t.name] }),
+]);
+
+// ── per-user ingest tokens (per-user-ingest-tokens.md §1) ────────────────
+// Hashed bearer credentials for POST /api/ingest/session — owner comes from
+// the token. Only token_hash is stored (raw `asi_…` shown once at mint).
+export const ingestTokens = pgTable("ingest_tokens", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  ownerUserId: uuid("owner_user_id").notNull().references(() => users.id),
+  tokenHash: text("token_hash").notNull().unique("ingest_tokens_token_hash_key"),
+  prefix: text("prefix").notNull(),
+  label: text("label").notNull().default(""),
+  createdAt: tstz("created_at").notNull().defaultNow(),
+  lastUsedAt: tstz("last_used_at"),
+  expiresAt: tstz("expires_at"),
+  revokedAt: tstz("revoked_at"),
+}, (t) => [
+  index("ingest_tokens_owner_idx").on(t.ownerUserId, desc(t.createdAt)),
 ]);

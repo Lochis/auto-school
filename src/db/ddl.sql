@@ -377,3 +377,23 @@ CREATE TABLE IF NOT EXISTS recorders (
   capabilities  jsonb NOT NULL DEFAULT '{}',
   PRIMARY KEY (owner_user_id, name)
 );
+
+-- ── per-user ingest tokens (docs/planning/per-user-ingest-tokens.md §1) ───
+-- Hashed bearer credentials for POST /api/ingest/session: the owner comes
+-- from the TOKEN, not the body (unlike the shared INGEST_TOKEN, which stays
+-- hard-bound to the seed owner until deprecation). Only token_hash is stored
+-- — the raw `asi_…` token is shown once at mint (GitHub-PAT model), so a DB
+-- leak can never yield a usable credential. revoked/expired/unknown all read
+-- as a miss → the ingest route's single 401 shape (no state oracle).
+CREATE TABLE IF NOT EXISTS ingest_tokens (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_user_id uuid NOT NULL REFERENCES users(id),
+  token_hash    text NOT NULL UNIQUE,        -- sha256 hex of the full raw token
+  prefix        text NOT NULL,               -- first 12 chars, e.g. 'asi_9f3ab2c1' — display only
+  label         text NOT NULL DEFAULT '',    -- user-chosen, e.g. 'laptop electron client'
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  last_used_at  timestamptz,                 -- audit trail (§6); fire-and-forget update
+  expires_at    timestamptz,                 -- NULL = never
+  revoked_at    timestamptz                  -- NULL = active; set = revoked, checked at lookup
+);
+CREATE INDEX IF NOT EXISTS ingest_tokens_owner_idx ON ingest_tokens (owner_user_id, created_at DESC);

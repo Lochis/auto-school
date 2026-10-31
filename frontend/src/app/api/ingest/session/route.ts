@@ -2,17 +2,19 @@
  *  finished session's derived *text* (transcript / notes / timeline). No raw
  *  video here — video sync is storage-backends §4.
  *
- *  Auth: Authorization: Bearer $INGEST_TOKEN, constant-time compared (same
- *  pattern as /api/recorder/heartbeat — sha256 both sides, timingSafeEqual).
- *  Unset env fails closed (401).
- *
- *  The bearer is a GLOBAL shared secret, so v1 binds it to the SEED system
- *  owner (fix wave D, docs/planning/security-hardening.md P3): `body.owner`
- *  must resolve to SYSTEM_OWNER, else 401 — a stolen token can no longer
- *  write sessions/deadlines as an arbitrary user. Per-user ingest tokens
- *  (one token per client, bound to users.id and resolved HERE instead of the
- *  body's owner) are the multi-client future; the body field stays only so
- *  the single owner's clients keep working unchanged.
+ *  Auth (per-user-ingest-tokens.md §3): resolution order in POST —
+ *  1. A per-user bearer (`asi_…`, stored sha256-hashed in ingest_tokens)
+ *     that resolves to an active token → the OWNER COMES FROM THE TOKEN.
+ *     `body.owner`, if still sent, must resolve to the same users.id — a
+ *     mismatch is 401 (defensive: catches misconfigured clients).
+ *  2. No per-user match → the legacy GLOBAL shared secret path: Bearer
+ *     $INGEST_TOKEN, constant-time compared (same pattern as
+ *     /api/recorder/heartbeat — sha256 both sides, timingSafeEqual), bound
+ *     hard to the SEED system owner (fix wave D,
+ *     docs/planning/security-hardening.md P3) via `body.owner`. Unset env
+ *     fails closed (401).
+ *  3. Neither → 401 { ok:false, error:"unauthorized" } — one shape for
+ *     unknown/revoked/expired, no state oracle.
  *
  *  Writes go through src/db/writes.ts so the natural-key upserts keep
  *  resubmissions idempotent (session: course_id+stem+owner, artifact:
@@ -20,6 +22,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getUserIdBySub } from "../../../../../../src/db/avatar.ts";
+import { resolveIngestToken } from "../../../../../../src/db/ingest-tokens.ts";
 import { SYSTEM_OWNER } from "@/lib/owner";
 import { listSessions } from "../../../../../../src/db/queries/sessions.ts";
 import { courseId, sessionId, upsertArtifact, upsertSegments, type SegmentInit } from "../../../../../../src/db/writes.ts";
@@ -129,7 +132,13 @@ async function readJsonBody(req: Request): Promise<unknown | null | typeof TOO_L
 
 export async function POST(req: Request) {
   try {
-    if (!tokenOk(req.headers.get("authorization"))) {
+    const authHeader = req.headers.get("authorization");
+    const bearer = (authHeader ?? "").replace(/^Bearer\s+/i, "");
+    // Resolution order (per-user-ingest-tokens.md §3): per-user token first,
+    // then the legacy shared secret — both before body parsing so an
+    // unauthenticated request never spends the 8 MiB read.
+    const tokenHit = bearer ? await resolveIngestToken(bearer) : null;
+    if (!tokenHit && !tokenOk(authHeader)) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
 
@@ -151,16 +160,33 @@ export async function POST(req: Request) {
     if (!body || typeof body !== "object") {
       return NextResponse.json({ ok: false, error: "json body required" }, { status: 400 });
     }
-    if (typeof body.owner !== "string" || !body.owner) {
-      return NextResponse.json({ ok: false, error: "owner required" }, { status: 400 });
-    }
-    // v1 token bind: the GLOBAL INGEST_TOKEN may only write as the seed system
-    // owner. Resolve the authentik uid → users.id and require equality — an
-    // unknown uid or any other real user is 401, never "whatever id the body
-    // said". Per-user tokens (bound to users.id) replace this bind later.
-    const ownerUserId = await getUserIdBySub(body.owner);
-    if (!ownerUserId || ownerUserId !== SYSTEM_OWNER) {
-      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    let ownerUserId: string;
+    if (tokenHit) {
+      // Per-user token: the owner comes from the TOKEN (hosted users can
+      // ingest as themselves — no SYSTEM_OWNER bind here). Defensive
+      // cross-check: a body.owner still sent by the client must resolve to
+      // the token's own owner, else the client's idea of itself diverged
+      // from its credential — 401 instead of a silently misattributed write.
+      if (typeof body.owner === "string" && body.owner) {
+        const bodyOwner = await getUserIdBySub(body.owner);
+        if (bodyOwner !== tokenHit.ownerUserId) {
+          return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+        }
+      }
+      ownerUserId = tokenHit.ownerUserId;
+    } else {
+      // Legacy shared-secret path (wave-D bind, unchanged): the GLOBAL
+      // INGEST_TOKEN may only write as the seed system owner. Resolve the
+      // authentik uid → users.id and require equality — an unknown uid or
+      // any other real user is 401, never "whatever id the body said".
+      if (typeof body.owner !== "string" || !body.owner) {
+        return NextResponse.json({ ok: false, error: "owner required" }, { status: 400 });
+      }
+      const resolved = await getUserIdBySub(body.owner);
+      if (!resolved || resolved !== SYSTEM_OWNER) {
+        return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+      }
+      ownerUserId = resolved;
     }
 
     // course slug — same sanitizer as the daemon /ingest handler.
@@ -216,7 +242,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // Owner already resolved + bound to the seed owner above (no second query).
+    // Owner resolved above (token owner, or the wave-D-bound seed owner).
+    // Every downstream write keys on ownerUserId: listSessions/ownerALS.run
 
     if (!stem) {
       // No explicit stem: resubmitting the same day's derived text must update,
