@@ -10,9 +10,11 @@
  *    returns SYSTEM_OWNER.
  *  - The frontend→daemon hop is authenticated: `daemonUserHeaders()` sets
  *    X-Auto-School-User: <sub> AND
- *    X-Internal-Auth: HMAC-SHA256(key=INTERNAL_HMAC_KEY, message=sub) hex. The
- *    daemon verifies the same HMAC (src/daemon.ts resolveRequestOwner) and
- *    401s on absent/mismatch. No user / no secret → throw (routes 401 first).
+ *    X-Internal-Auth: HMAC-SHA256(key=INTERNAL_HMAC_KEY, message=sub.ts.nonce)
+ *    hex, plus plaintext X-Internal-Ts / X-Internal-Nonce companion headers —
+ *    a captured pair can no longer be replayed (5-min skew + 6-min nonce TTL,
+ *    src/internal-auth.ts). The daemon verifies the same HMAC and 401s on
+ *    absent/mismatch. No user / no secret → throw (routes 401 first).
  *
  *  `SYSTEM_OWNER` survives ONLY for a deployment without any Authentik edge
  *  (localIdentity: neither TRUST_AUTHENTIK_HEADERS nor EDGE_MARKER set —
@@ -23,7 +25,7 @@
  *
  *  Never leaks: DB-down degrades to `undefined`/`null` (caller 401s), not to
  *  an unfiltered view. */
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getAuthUser, trustAuthentikHeaders } from "./auth";
 import { ensureUserRow } from "./avatar";
@@ -37,10 +39,12 @@ export function unauthorized(): NextResponse {
   return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 }
 
-/** Internal hop proof: hex(HMAC-SHA256(key = INTERNAL_HMAC_KEY, message = sub)).
- *  Mirrored by the daemon's resolveRequestOwner (src/daemon.ts). */
-export function internalAuthHmac(secret: string, sub: string): string {
-  return createHmac("sha256", secret).update(sub).digest("hex");
+/** Internal hop proof: hex(HMAC-SHA256(key, message)). The message is
+ *  `sub.ts.nonce` (replay-resistant, security re-audit 2026-10-31); ts/nonce
+ *  travel as plaintext companion headers so the daemon can reconstruct it.
+ *  Mirrored by the daemon's verifyInternalAuth (src/internal-auth.ts). */
+export function internalAuthHmac(secret: string, message: string): string {
+  return createHmac("sha256", secret).update(message).digest("hex");
 }
 
 /** Single-user identity for a deployment that has NO Authentik edge at all
@@ -98,7 +102,11 @@ export async function requireUser(): Promise<string | null> {
 
 /** Headers for a daemon hop:
  *    X-Auto-School-User: <authentik sub>
- *    X-Internal-Auth:    hex(HMAC-SHA256(INTERNAL_HMAC_KEY, sub))
+ *    X-Internal-Auth:    hex(HMAC-SHA256(INTERNAL_HMAC_KEY, sub.ts.nonce))
+ *    X-Internal-Ts:      <epoch ms>   X-Internal-Nonce: <16 random bytes hex>
+ *  ts+nonce make a captured header set replay-proof (5-min skew window + a
+ *  6-min daemon-side nonce TTL — see src/internal-auth.ts). Fresh ts/nonce
+ *  are minted PER CALL: never reuse a header object across hops.
  *  Throws when the hop cannot be authenticated (no user in a trusted-edge
  *  build, or INTERNAL_HMAC_KEY unset) — guarded routes 401 before reaching this, so
  *  a throw here is a misconfiguration, never a silent fallback to the daemon's
@@ -118,8 +126,12 @@ export async function daemonUserHeaders(): Promise<Record<string, string>> {
     // DB down: still forward the header. The daemon 401s an unresolvable sub
     // (fail closed) instead of silently writing this user's data as OWNER.
   }
+  const ts = Date.now().toString();
+  const nonce = randomBytes(16).toString("hex");
   return {
     "X-Auto-School-User": u.uid,
-    "X-Internal-Auth": internalAuthHmac(secret, u.uid),
+    "X-Internal-Auth": internalAuthHmac(secret, `${u.uid}.${ts}.${nonce}`),
+    "X-Internal-Ts": ts,
+    "X-Internal-Nonce": nonce,
   };
 }

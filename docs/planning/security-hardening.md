@@ -66,9 +66,11 @@ and fail-open.
    user's data. `SYSTEM_OWNER` remains ONLY for ownerless internal jobs (`curOwner()` on the
    daemon already covers those). No `?? SYSTEM_OWNER` on a user-facing route.
 2. **Internal hop (frontend→daemon) is authenticated with a shared secret**: `daemonUserHeaders()`
-   sets `X-Auto-School-User: <sub>` AND `X-Internal-Auth: <HMAC-SHA256(INTERNAL_HMAC_KEY, sub)>`.
-   Daemon `resolveRequestOwner` verifies the HMAC and 401s on absent/mismatch — never falls back
-   to seed OWNER. `x-owner-uuid`/`SMOKE_OWNER_UUID` impersonation is removed.
+   sets `X-Auto-School-User: <sub>` AND `X-Internal-Auth:
+   <HMAC-SHA256(INTERNAL_HMAC_KEY, sub.ts.nonce)>` plus plaintext `X-Internal-Ts` / `X-Internal-Nonce`
+   companion headers (replay hardening 2026-10-31, see the section below).
+   Daemon `resolveRequestOwner` verifies the HMAC and 401s on absent/mismatch/stale/replayed — never
+   falls back to seed OWNER. `x-owner-uuid`/`SMOKE_OWNER_UUID` impersonation is removed.
 3. **`EDGE_MARKER` + `INTERNAL_HMAC_KEY` are actually set** in `auto-school-env` and required
    (non-`optional`) in the platform manifest, and the `auto-school-edge-marker` middleware is
    chained in the ingress so `middleware.ts` strips client-supplied `x-authentik-*`. The daemon
@@ -108,6 +110,31 @@ and fail-open.
     remain the documented follow-up.
 - **P4 (harden)** — NetworkPolicy, `timingSafeEqual` on daemon compare, deadline_parts over-fetch,
   `/status` global-mirror leak, study-sheet/lexicon cross-owner metadata.
+
+## Internal-hop replay hardening (CODE-LANDED 2026-10-31 — re-audit finding CLOSED)
+Re-audit finding: `X-Internal-Auth = hex(HMAC-SHA256(key, sub))` had no timestamp/nonce, so a
+**captured header pair could be replayed against :7800 indefinitely**. NetworkPolicy (the port is
+reachable only from the platform pod) mitigated but did not close it.
+
+**New contract** (src/internal-auth.ts — shared by src/daemon.ts and mirrored in
+frontend/src/lib/owner.ts + scripts/smoke.ts):
+- Signed message is `sub + "." + ts + "." + nonce` (ts = epoch ms, nonce = 16 random bytes hex);
+  ts/nonce travel as PLAINTEXT `X-Internal-Ts` / `X-Internal-Nonce` so the daemon reconstructs the
+  message. Header objects must be minted per request (`daemonUserHeaders()` does; a reused header
+  set 401s as a replayed nonce).
+- Daemon verify order: format → ts freshness (**|now − ts| ≤ 5 min**; pods are TZ-synced via k8s) →
+  HMAC (timingSafeEqual, length-checked) → nonce. A ts+nonce pair already seen is rejected; the
+  in-memory seen-set carries a **6-minute TTL**, swept on insert (one entry per hop, stays tiny).
+  Nonces are recorded only AFTER the HMAC passes (garbage can't poison the set). Every rejection →
+  the same uniform 401 (no state oracle).
+- The seen-set is **per-daemon-process** — fine for the single-recorder pod; horizontal scaling
+  would need shared state (documented future follow-up).
+- **Legacy fallback (rollout window ONLY, remove next release):** a request signing the old
+  sub-only format is accepted iff BOTH companion headers are ABSENT (exactly one present → 401);
+  the HMAC-over-sub check is unchanged, so legacy stays fail-closed. The daemon logs a
+  rate-limited (once/10 min) deprecation warning per legacy verify. Both sides ship in the same
+  images and roll in the same window, so the fallback exists only to make the interleaved rollout
+  non-breaking.
 
 ## Fix wave split (disjoint files)
 - **A — trust boundary** (frontend): `frontend/src/lib/{owner,auth,avatar}.ts`,

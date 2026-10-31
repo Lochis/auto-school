@@ -16,7 +16,7 @@ import { Readable } from "node:stream";
 import { createReadStream, readdirSync, statSync, existsSync, rmSync, writeFileSync, readFileSync, mkdirSync, renameSync } from "node:fs";
 import archiver from "archiver";
 import { join, dirname, extname, normalize, resolve, sep } from "node:path";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { verifyInternalAuth } from "./internal-auth.ts";
 import { TEAMS_URL } from "./login/teams-login.ts";
 import { getBrowser, invalidateBrowser, closeBrowser, authAlive, isSharedPage, lastLoginFailedAt, lastLoginFailDetail } from "./meetings/browser.ts";
 import { listMeetings } from "./meetings/list.ts";
@@ -763,6 +763,15 @@ function decodeSlug(raw: string | undefined | null): string | null {
   try { return safeSlug(decodeURIComponent(raw ?? "")); } catch { return null; }
 }
 
+/** Replay state for the new internal-auth format: ts+nonce → expiry (TTL
+ *  swept on insert, src/internal-auth.ts). Process-local by design — one
+ *  daemon per recorder pod; a horizontally scaled daemon would need shared
+ *  state (documented follow-up, fine to defer while the topology is
+ *  single-recorder). */
+const seenNonces = new Map<string, number>();
+/** Rate limiter for the legacy-format deprecation warning (once per 10 min). */
+let lastLegacyAuthWarn = 0;
+
 function startController(): void {
   // manually-left meetings (today) are seeded into `handled` so a restart
   // doesn't auto-join them again — manual Join via /join still overrides
@@ -791,26 +800,41 @@ function startController(): void {
     })();
   });
 
-  /** Phase-1 owner resolution (federation plan §8) — now AUTHENTICATED:
-   *  X-Auto-School-User <authentik-uid> + X-Internal-Auth = hex
-   *  HMAC-SHA256(INTERNAL_HMAC_KEY, sub). The platform's daemonUserHeaders() signs
-   *  every internal hop with the same key; a direct hit on :7800 has no way
-   *  to guess it. Failure modes ALL return null → 401, never the seed OWNER:
+  /** Phase-1 owner resolution (federation plan §8) — AUTHENTICATED + REPLAY-
+   *  RESISTANT (security re-audit 2026-10-31): the signed message is now
+   *  `sub.ts.nonce` (daemonUserHeaders() signs every hop; scripts/smoke.ts
+   *  signs the same way), with ts/nonce as plaintext companion headers the
+   *  daemon reconstructs the message from. Rejections ALL return null → the
+   *  uniform 401 (no state oracle), never the seed OWNER:
    *    - no user header, no auth header, or INTERNAL_HMAC_KEY unset/unprovisioned;
+   *    - missing/malformed/stale (> 5 min skew) X-Internal-Ts, or a ts+nonce
+   *      pair already seen (6-min TTL in-memory set — per-process state; the
+   *      single-recorder pod has one daemon, horizontal scaling would need a
+   *      shared store — documented follow-up);
    *    - signature mismatch (constant-time compare, length-checked);
    *    - valid signature but the sub is not in users.authentik_sub.
-   *  The old x-owner-uuid / SMOKE_OWNER_UUID impersonation branch is REMOVED.
-   *  (scripts/smoke.ts must sign the same HMAC instead of impersonating.) */
+   *  LEGACY fallback (rollout window only, REMOVE next release): pods signing
+   *  the old sub-only format are accepted ONLY when both companion headers are
+   *  absent (half-signed → 401), still fail-closed HMAC-over-sub — today's
+   *  behavior — plus a rate-limited deprecation warning (once per 10 min).
+   *  The old x-owner-uuid / SMOKE_OWNER_UUID impersonation branch is REMOVED. */
   async function resolveRequestOwner(req: IncomingMessage): Promise<string | null> {
     const sub = String(req.headers["x-auto-school-user"] ?? "").trim();
     const sig = String(req.headers["x-internal-auth"] ?? "").trim().toLowerCase();
     const secret = process.env.INTERNAL_HMAC_KEY ?? "";
     if (!sub || !sig || !secret) return null; // nothing to verify against → 401
-    const want = createHmac("sha256", secret).update(sub).digest("hex");
-    const a = Buffer.from(sig, "hex"), b = Buffer.from(want, "hex");
-    // Buffer.from("zz","hex") yields an empty/short buffer — the length test
-    // rejects malformed hex before timingSafeEqual (which throws on mismatch)
-    if (a.length !== b.length || a.length !== 32 || !timingSafeEqual(a, b)) return null;
+    const hdr = (name: string): string => {
+      const v = req.headers[name];
+      return (Array.isArray(v) ? v[0] : v ?? "").trim();
+    };
+    const ts = hdr("x-internal-ts"), nonce = hdr("x-internal-nonce");
+    const legacy = !ts && !nonce; // both absent → rollout-window sub-only format
+    const result = verifyInternalAuth({ secret, sub, sig, ts: legacy ? undefined : ts, nonce: legacy ? undefined : nonce, seen: seenNonces });
+    if (!result.ok) return null;
+    if (legacy && Date.now() - lastLegacyAuthWarn > 10 * 60_000) {
+      lastLegacyAuthWarn = Date.now();
+      console.warn("[daemon] legacy internal-auth accepted (sub-only HMAC, no ts/nonce) — an old frontend pod is still rolling; remove the fallback next release");
+    }
     return (await getUserIdBySub(sub).catch(() => null)) ?? null; // unresolvable sub → 401
   }
 

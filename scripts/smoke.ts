@@ -12,7 +12,8 @@
  *  Every daemon call is signed like the frontend hop (lib/owner.ts
  *  daemonUserHeaders):
  *    X-Auto-School-User: <sub>
- *    X-Internal-Auth: hex(HMAC-SHA256(key, message = sub))
+ *    X-Internal-Auth: hex(HMAC-SHA256(key, message = sub.ts.nonce))
+ *    X-Internal-Ts / X-Internal-Nonce: plaintext ts+nonce (fresh per request)
  *  The daemon 401s any request without a valid signature (resolveRequestOwner).
  *
  *  Every mutating step seeds scratch rows directly in PG or via daemon
@@ -23,7 +24,7 @@
  */
 import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
 const BASE = process.argv.includes("--base") ? process.argv[process.argv.indexOf("--base") + 1]! : "http://127.0.0.1:7800";
 const FE = process.argv.includes("--fe") ? process.argv[process.argv.indexOf("--fe") + 1]! : "http://127.0.0.1:3000";
@@ -37,11 +38,20 @@ const HMAC_KEY = process.env.INTERNAL_HMAC_KEY ?? "";
 const EDGE_MARKER = process.env.EDGE_MARKER ?? "";
 /** users.id of the smoke owner — resolved from SMOKE_SUB after the pool opens. */
 let SMOKE = "";
-const AUTH_HDRS: Record<string, string> = {
-  "X-Auto-School-User": SMOKE_SUB,
-  "X-Internal-Auth": createHmac("sha256", HMAC_KEY || "").update(SMOKE_SUB).digest("hex"),
+/** Fresh internal-auth headers for ONE hop (ts+nonce minted per call — a
+ *  static header set would 401 as a replayed nonce on the second request,
+ *  src/internal-auth.ts). Same construction as daemonUserHeaders(). */
+const authHdrs = (): Record<string, string> => {
+  const ts = Date.now().toString();
+  const nonce = randomBytes(16).toString("hex");
+  return {
+    "X-Auto-School-User": SMOKE_SUB,
+    "X-Internal-Auth": createHmac("sha256", HMAC_KEY).update(`${SMOKE_SUB}.${ts}.${nonce}`).digest("hex"),
+    "X-Internal-Ts": ts,
+    "X-Internal-Nonce": nonce,
+  };
 };
-const HDRS: Record<string, string> = { ...AUTH_HDRS, "Content-Type": "application/json" };
+const jsonHdrs = (): Record<string, string> => ({ ...authHdrs(), "Content-Type": "application/json" });
 const DATA = process.env.AUTO_SCHOOL_DATA ?? "/data";
 
 if (!SMOKE_SUB || !HMAC_KEY) {
@@ -56,7 +66,7 @@ const ok = (name: string, cond: boolean, detail = "") => {
 };
 
 async function api(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
-  const res = await fetch(`${BASE}${path}`, { method, headers: HDRS, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(`${BASE}${path}`, { method, headers: jsonHdrs(), body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, json: await res.json().catch(() => ({})) };
 }
 
@@ -212,7 +222,7 @@ console.log("\n6 · materials: upload → documents row + DB listing (Gap 3)");
   ok("POST /courses/create (materials)", c.status === 200, JSON.stringify(c.json).slice(0, 120));
 
   // multipart upload (fetch sets the boundary; do NOT set Content-Type manually)
-  const upHdrs: Record<string, string> = { ...AUTH_HDRS }; // multipart: no Content-Type
+  const upHdrs: Record<string, string> = authHdrs(); // multipart: no Content-Type
   const upload = async (filename: string, bytes: string, type: string) => {
     const fd = new FormData();
     fd.append("file", new Blob([bytes], { type }), filename);
@@ -257,7 +267,7 @@ console.log("\n6 · materials: upload → documents row + DB listing (Gap 3)");
 console.log("\n7 · read-path parity (real data, read-only): daemon vs frontend vs PG");
 {
   // same identity as the UI hop — every daemon call is signed now
-  const daemonFeed = await fetch(`${BASE}/deadlines`, { headers: HDRS }).then((r) => r.json());
+  const daemonFeed = await fetch(`${BASE}/deadlines`, { headers: authHdrs() }).then((r) => r.json());
   const daemonIds = new Set(((daemonFeed.deadlines ?? []) as any[]).map((d) => `${d.id}|${d.done}`));
   let feIds: Set<string> | null = null;
   try {
